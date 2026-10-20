@@ -272,9 +272,13 @@ fn show_config(cli: &Cli) -> anyhow::Result<rapidfind_core::config::Config> {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let mut cli = Cli::parse();
     let cmd = cli.cmd.take().unwrap_or(Cmd::Ui);
+    // `service run` installs its own file logger in service_main; a global logger set here
+    // first would make that try_init fail and send everything to the service's absent stderr.
+    if !matches!(cmd, Cmd::Service { action: ServiceCmd::Run }) {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    }
     match cmd {
         Cmd::Service { action } => match action {
             ServiceCmd::Install => service::install()?,
