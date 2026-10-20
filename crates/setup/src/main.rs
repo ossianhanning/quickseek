@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! rapidfind-setup.exe                       window with options
-//! rapidfind-setup.exe --silent [--mcp]      install with defaults (winget uses this)
+//! rapidfind-setup.exe --silent [--no-mcp]  install with defaults (winget uses this)
 //!     --dir <folder> --no-service --no-shortcut --no-path --no-startup --no-launch
 //!     --mcp-clients claude-code,cursor      connect only these AI clients
 //!     --log <file>                          (default %TEMP%\rapidfind-setup.log)

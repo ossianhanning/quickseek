@@ -246,7 +246,16 @@ fn claude_cli() -> Option<PathBuf> {
 
 fn claude(args: &[&str]) -> Result<String, String> {
     let cli = claude_cli().ok_or("the `claude` command isn't on PATH")?;
-    let out = Command::new(&cli).args(args).output().map_err(|e| format!("running {}: {e}", cli.display()))?;
+    // No console window: the GUI and the installer have none to share, so
+    // Windows would open one per call (`claude.cmd` runs through cmd.exe).
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = Command::new(&cli)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("running {}: {e}", cli.display()))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if out.status.success() { Ok(text) } else { Err(format!("claude {}: {}", args.join(" "), text.trim())) }
 }

@@ -28,9 +28,10 @@ Features; your index and settings in `%ProgramData%\rapidfind` are kept
 (`rapidfind-setup.exe --uninstall --purge` removes them too).
 
 Silent switches (winget passes `--silent`): `--dir <folder>`, `--no-service`,
-`--no-shortcut`, `--no-path`, `--no-startup`, `--mcp` (connect detected AI
-assistants; off in silent mode unless given), `--mcp-clients cursor,claude-code`,
-`--log <file>`. Through winget: `winget install OssianHanning.rapidfind --custom "--mcp"`.
+`--no-shortcut`, `--no-path`, `--no-startup`, `--no-mcp` (don't connect AI
+assistants; detected ones are connected by default, except when installing as
+SYSTEM), `--mcp-clients cursor,claude-code`, `--log <file>`. Through winget:
+`winget install OssianHanning.rapidfind` (add `--custom "--no-mcp"` to skip the assistants).
 
 Reading the MFT needs administrator rights, so the index normally lives in a
 background service. The GUI and CLI talk to it as a normal user over
@@ -213,7 +214,7 @@ started it. Registering it is per user and needs no admin, three ways:
 - **GUI:** Tools → Connect AI Assistants… (a checkbox per client).
 - **CLI:** `rapidfind mcp install` (every detected client, or `--client cursor`),
   `rapidfind mcp status`, `rapidfind mcp uninstall`.
-- **Installer:** the "Connect AI assistants" option (`--mcp` when silent).
+- **Installer:** the "Connect AI assistants" option, on by default, also for winget (`--no-mcp` skips it).
 
 Supported clients: Claude Code (through `claude mcp add --scope user`), Claude
 Desktop, Cursor, VS Code and VS Code Insiders (agent mode), and Windsurf. Their

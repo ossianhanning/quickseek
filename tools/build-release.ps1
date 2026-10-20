@@ -45,6 +45,15 @@ foreach ($t in Get-ChildItem "$root\packaging\winget\*.yaml") {
   $text = [IO.File]::ReadAllText($t.FullName).Replace("{VERSION}", $version).Replace("{URL}", $url).Replace("{SHA256}", $sha).Replace("{REPO}", $Repo)
   [IO.File]::WriteAllText((Join-Path $out $t.Name), $text)
 }
+# winget compares PackageVersion with what the installer writes to Apps & Features
+# (DisplayVersion); a mismatch fails validation. All come from Cargo.toml: check.
+$exeVersion = (Get-Item $setup).VersionInfo.ProductVersion
+if ($exeVersion -ne $version) { throw "installer file version '$exeVersion' isn't $version" }
+foreach ($m in Get-ChildItem $out -Filter *.yaml) {
+  foreach ($line in Select-String -Path $m.FullName -Pattern '^\s*(PackageVersion|DisplayVersion):\s*(.+)$') {
+    if ($line.Matches[0].Groups[2].Value.Trim() -ne $version) { throw "$($m.Name): $($line.Line.Trim()) doesn't match $version" }
+  }
+}
 winget validate --manifest $out
 if ($LASTEXITCODE) { throw "winget validate failed" }
 Write-Output ""

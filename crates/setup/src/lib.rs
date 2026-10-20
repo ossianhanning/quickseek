@@ -46,8 +46,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             other => return Err(format!("unknown option --{other}")),
         }
     }
-    // Silent installs only touch AI clients' configs when asked to.
-    if a.mcp_choice == Some(false) || (a.silent && a.mcp_choice.is_none()) {
+    // AI assistants are connected by default (silent installs and winget
+    // too), unless --no-mcp, or when running as SYSTEM (deployment tools):
+    // that account's profile isn't anybody's, so there's no one to connect.
+    if a.mcp_choice == Some(false) || (a.mcp_choice.is_none() && running_as_system()) {
         a.opts.mcp.clear();
     }
     Ok(a)
@@ -56,6 +58,11 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
 static LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Appends to `--log <file>` (default %TEMP%\rapidfind-setup.log).
+/// Running as the LocalSystem account (its profile lives under system32).
+pub fn running_as_system() -> bool {
+    std::env::var("USERPROFILE").is_ok_and(|p| p.to_lowercase().contains(r"\\systemprofile"))
+}
+
 pub fn log_line(s: &str) {
     let p = LOG.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("rapidfind-setup.log"));
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
@@ -76,7 +83,8 @@ mod tests {
         let a = p("/S --dir D:\\Apps\\rf --no-path");
         assert!(a.silent && !a.opts.path && a.opts.service);
         assert_eq!(a.opts.dir, PathBuf::from(r"D:\Apps\rf"));
-        assert!(a.opts.mcp.is_empty(), "silent installs don't touch AI clients unless asked");
+        assert_eq!(a.opts.mcp.is_empty(), running_as_system() || !reg::ALL.iter().any(|c| c.detected()), "silent installs connect detected clients");
+        assert!(p("--silent --no-mcp").opts.mcp.is_empty());
         let a = p("--silent --mcp-clients cursor,claude-code");
         assert_eq!(a.opts.mcp, [reg::Client::Cursor, reg::Client::ClaudeCode]);
         assert!(p("--uninstall --purge").purge);

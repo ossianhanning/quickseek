@@ -13,7 +13,8 @@ Description: |-
   (like Everything). It also shows a folder size tree of what takes space, indexes network shares and folders,
   searches file contents, and ships rapidfind-mcp, an MCP server that lets AI assistants find files and free
   disk space. Installs a background service (so searches run unelevated), the GUI, the CLI and the MCP server.
-  Pass --custom "--mcp" to also connect detected AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf).
+  Detected AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf) are connected for the installing user;
+  pass --custom "--no-mcp" to skip that.
 Moniker: rapidfind
 Tags:
   - search
