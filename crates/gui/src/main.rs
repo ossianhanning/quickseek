@@ -13,6 +13,7 @@ mod options;
 mod results;
 mod settings;
 mod shell;
+mod tree;
 mod w;
 
 use std::ptr::null_mut;

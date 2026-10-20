@@ -38,10 +38,11 @@ use crate::engine::Engine;
 use crate::ntfs::win::wide;
 use crate::query::SearchFlags;
 use crate::search::{Hit, ResultSet, SearchOptions, SortKey};
+use crate::tree::{NodeRef, Tree, TreeLevel, TreeRow, TreeSort};
 
 pub const PIPE_NAME: &str = r"\\.\pipe\rapidfind";
 const MAX_FRAME: u32 = 64 << 20;
-const PROTOCOL: u8 = 2;
+const PROTOCOL: u8 = 3;
 /// Error text for a fetch from a result set the index has outgrown.
 pub const STALE: &str = "stale result set";
 pub const LOADING: &str = "index is still loading";
@@ -63,6 +64,13 @@ pub enum Request {
     GetConfig,
     SetConfig(String),
     RecordRun(String),
+    /// Opens a folder-size tree (only over `query`'s matches if non-empty)
+    /// and returns the volume roots.
+    Tree { query: String, flags: SearchFlags, sort: TreeSort, descending: bool },
+    /// Children of a folder in the open tree.
+    Children { node: NodeRef, sort: TreeSort, descending: bool, offset: u64, count: u32 },
+    /// Frees the open tree.
+    TreeClose,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -124,6 +132,7 @@ pub enum Response {
     Count(u32),
     Ok,
     Error(String),
+    Tree(TreeLevel),
 }
 
 // ---- encoding ---------------------------------------------------------------
@@ -226,6 +235,25 @@ impl Request {
                 w.u8(6);
                 w.str(p);
             }
+            Request::Tree { query, flags, sort, descending } => {
+                w.u8(7);
+                w.u8(flags.bits());
+                w.u8(sort.to_u8());
+                w.u8(*descending as u8);
+                w.str(query);
+            }
+            Request::Children { node, sort, descending, offset, count } => {
+                w.u8(8);
+                w.str(&node.vol);
+                w.u32(node.idx);
+                w.u64(node.epoch);
+                w.str(&node.path);
+                w.u8(sort.to_u8());
+                w.u8(*descending as u8);
+                w.u64(*offset);
+                w.u32(*count);
+            }
+            Request::TreeClose => w.u8(9),
         }
         w.0
     }
@@ -248,6 +276,18 @@ impl Request {
             4 => Request::GetConfig,
             5 => Request::SetConfig(r.str()?),
             6 => Request::RecordRun(r.str()?),
+            7 => {
+                let flags = SearchFlags::from_bits(r.u8()?);
+                let sort = TreeSort::from_u8(r.u8()?).ok_or_else(|| bad("tree sort"))?;
+                let descending = r.u8()? != 0;
+                Request::Tree { query: r.str()?, flags, sort, descending }
+            }
+            8 => {
+                let node = NodeRef { vol: r.str()?, idx: r.u32()?, epoch: r.u64()?, path: r.str()? };
+                let sort = TreeSort::from_u8(r.u8()?).ok_or_else(|| bad("tree sort"))?;
+                Request::Children { node, sort, descending: r.u8()? != 0, offset: r.u64()?, count: r.u32()? }
+            }
+            9 => Request::TreeClose,
             _ => return Err(bad("request kind")),
         })
     }
@@ -301,6 +341,28 @@ impl Response {
                 w.u32(*n);
             }
             Response::Ok => w.u8(6),
+            Response::Tree(l) => {
+                w.u8(7);
+                w.u64(l.size);
+                w.u64(l.cloud);
+                w.u64(l.files);
+                w.u64(l.total);
+                w.u32(l.rows.len() as u32);
+                for r in &l.rows {
+                    w.str(&r.name);
+                    w.str(&r.dir);
+                    w.u64(r.size);
+                    w.u64(r.cloud);
+                    w.u64(r.files);
+                    w.u64(r.modified as u64);
+                    w.u8(r.is_dir as u8 | (r.has_children as u8) << 1 | (r.has_size as u8) << 2 | (r.matched as u8) << 3 | (r.hardlink as u8) << 4);
+                    w.str(&r.vol);
+                    w.u32(r.idx);
+                    w.u64(r.epoch);
+                    w.u64(r.capacity);
+                    w.u64(r.free);
+                }
+            }
         }
         w.0
     }
@@ -337,6 +399,34 @@ impl Response {
             4 => Response::Config(r.str()?),
             5 => Response::Count(r.u32()?),
             6 => Response::Ok,
+            7 => {
+                let mut l = TreeLevel { size: r.u64()?, cloud: r.u64()?, files: r.u64()?, total: r.u64()?, rows: Vec::new() };
+                let n = r.u32()? as usize;
+                l.rows.reserve(n.min(1 << 16));
+                for _ in 0..n {
+                    let (name, dir) = (r.str()?, r.str()?);
+                    let (size, cloud, files, modified, f) = (r.u64()?, r.u64()?, r.u64()?, r.u64()? as i64, r.u8()?);
+                    l.rows.push(TreeRow {
+                        name,
+                        dir,
+                        size,
+                        cloud,
+                        hardlink: f & 16 != 0,
+                        files,
+                        modified,
+                        is_dir: f & 1 != 0,
+                        has_children: f & 2 != 0,
+                        has_size: f & 4 != 0,
+                        matched: f & 8 != 0,
+                        vol: r.str()?,
+                        idx: r.u32()?,
+                        epoch: r.u64()?,
+                        capacity: r.u64()?,
+                        free: r.u64()?,
+                    });
+                }
+                Response::Tree(l)
+            }
             _ => return Err(bad("response kind")),
         })
     }
@@ -374,6 +464,7 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
 pub struct Session {
     rs: Option<ResultSet>,
     generation: u64,
+    tree: Option<Tree>,
 }
 
 fn rows(eng: &Engine, hits: &[Hit]) -> Vec<Row> {
@@ -464,6 +555,31 @@ impl Session {
                 Some(n) => Response::Count(n),
                 None => Response::Error(format!("not indexed: {path}")),
             },
+            Request::Tree { query, flags, sort, descending } => {
+                self.tree = None; // free the old one before building
+                let tree = Tree::build(eng, query, *flags).and_then(|mut t| {
+                    let roots = t.children(eng, &NodeRef::default(), *sort, *descending, 0, usize::MAX)?;
+                    Ok((t, roots))
+                });
+                match tree {
+                    Ok((t, roots)) => {
+                        self.tree = Some(t);
+                        Response::Tree(roots)
+                    }
+                    Err(e) => Response::Error(e),
+                }
+            }
+            Request::Children { node, sort, descending, offset, count } => {
+                let Some(t) = self.tree.as_mut() else { return Response::Error("no tree open".into()) };
+                match t.children(eng, node, *sort, *descending, *offset as usize, *count as usize) {
+                    Ok(l) => Response::Tree(l),
+                    Err(e) => Response::Error(e),
+                }
+            }
+            Request::TreeClose => {
+                self.tree = None;
+                Response::Ok
+            }
         }
     }
 }
@@ -688,6 +804,28 @@ pub trait Backend: Send {
             _ => None,
         }
     }
+
+    /// Opens a folder-size tree; returns the volume roots.
+    fn tree(&mut self, query: &str, flags: SearchFlags, sort: TreeSort, descending: bool) -> Result<TreeLevel, String> {
+        tree_reply(self.call(&Request::Tree { query: query.into(), flags, sort, descending }))
+    }
+
+    fn children(&mut self, node: &NodeRef, sort: TreeSort, descending: bool, offset: u64, count: u32) -> Result<TreeLevel, String> {
+        tree_reply(self.call(&Request::Children { node: node.clone(), sort, descending, offset, count }))
+    }
+
+    fn tree_close(&mut self) {
+        let _ = self.call(&Request::TreeClose);
+    }
+}
+
+fn tree_reply(r: io::Result<Response>) -> Result<TreeLevel, String> {
+    match r {
+        Ok(Response::Tree(l)) => Ok(l),
+        Ok(Response::Error(e)) => Err(e),
+        Ok(_) => Err("unexpected response".into()),
+        Err(e) => Err(format!("service connection: {e}")),
+    }
 }
 
 pub struct Local {
@@ -745,6 +883,15 @@ mod tests {
             Request::GetConfig,
             Request::SetConfig("{}".into()),
             Request::RecordRun(r"C:\x".into()),
+            Request::Tree { query: "*.mp4".into(), flags: SearchFlags { path: true, ..Default::default() }, sort: TreeSort::Files, descending: true },
+            Request::Children {
+                node: NodeRef { vol: r"\\nas\share".into(), idx: 7, epoch: 3, path: r"C:\Users".into() },
+                sort: TreeSort::Modified,
+                descending: false,
+                offset: 10,
+                count: 500,
+            },
+            Request::TreeClose,
         ] {
             assert_eq!(Request::decode(&req.encode()).unwrap(), req);
         }
@@ -767,7 +914,17 @@ mod tests {
             generation: 7,
             volumes: vec![VolumeInfo { key: "C".into(), kind: "NTFS".into(), entries: 3, ready: true, state: "ready".into() }],
         });
-        let all = [page, status, Response::Error("bad size: x".into()), Response::Config("{}".into()), Response::Count(4), Response::Ok];
+        let tree = Response::Tree(TreeLevel {
+            size: 1 << 40,
+            cloud: 77,
+            files: 12,
+            total: 2,
+            rows: vec![
+                TreeRow { name: "C:".into(), size: 5, files: 2, is_dir: true, has_children: true, has_size: true, vol: "C".into(), idx: 9, epoch: 1, capacity: 100, free: 40, ..Default::default() },
+                TreeRow { name: "a.mp4".into(), dir: r"C:\v".into(), size: 3, files: 1, modified: -5, matched: true, cloud: 9, hardlink: true, ..Default::default() },
+            ],
+        });
+        let all = [page, status, Response::Error("bad size: x".into()), Response::Config("{}".into()), Response::Count(4), Response::Ok, tree];
         let mut wire = Vec::new();
         for r in &all {
             write_frame(&mut wire, &r.encode()).unwrap();
@@ -816,6 +973,24 @@ mod tests {
         assert_eq!(be.search("notepad", SearchFlags::default(), SortKey::Name, false, 10).unwrap().total, 0);
         assert!(be.search("size:x", SearchFlags::default(), SortKey::Name, false, 10).is_err());
         assert!(be.generation().is_some());
+    }
+
+    #[test]
+    fn session_tree() {
+        let mut be = Local::new(Arc::new(Engine::from_indexes(vec![sample()])));
+        let none = NodeRef { path: "C:".into(), ..Default::default() };
+        assert!(be.children(&none, TreeSort::Size, true, 0, 10).is_err()); // no tree yet
+        let roots = be.tree("", SearchFlags::default(), TreeSort::Size, true).unwrap();
+        assert_eq!(roots.rows[0].full_path(), r"C:\");
+        let r = &roots.rows[0];
+        let l = be.children(&NodeRef { vol: r.vol.clone(), idx: r.idx, epoch: r.epoch, path: r.full_path() }, TreeSort::Size, true, 0, 10).unwrap();
+        assert_eq!(l.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Users", "Windows"]);
+        assert_eq!(l.rows[0].full_path(), r"C:\Users");
+        let f = be.tree("ext:exe", SearchFlags::default(), TreeSort::Size, true).unwrap();
+        assert_eq!(f.rows[0].size, 200);
+        assert!(be.tree("size:bad", SearchFlags::default(), TreeSort::Size, true).is_err());
+        be.tree_close();
+        assert!(be.children(&none, TreeSort::Size, true, 0, 10).is_err());
     }
 
     /// Real named-pipe round trip with the production DACL and client access

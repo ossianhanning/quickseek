@@ -9,7 +9,9 @@
 //! | `"a b"`                   | literal containing spaces                                |
 //! | `*.rs`, `a?c`             | wildcards match the whole name                           |
 //! | `users\me`, `users/me`    | a path separator matches against the full path           |
+//! | `users\*\*.pdf`           | in a path, `*` spans any number of folders; the pattern may start anywhere but must match to the end |
 //! | `case:` `ww:` `path:` `regex:` (and `nocase:` `nopath:` ...) | per-term options   |
+//! | `wfn:node_modules`        | the whole name (or path) exactly                         |
 //! | `ext:jpg;png`             | extension list                                           |
 //! | `size:>10mb`, `size:1mb..2mb` | size compare                                         |
 //! | `dm:` `dc:` `rc:`         | date modified / created / recently changed (see [`crate::date`]) |
@@ -67,8 +69,9 @@ pub enum DateField {
 pub enum Leaf {
     /// Substring. `needle` is folded unless `case`.
     Text { needle: Vec<u8>, case: bool, path: bool, whole_word: bool },
-    /// Whole-name (or whole-path) wildcard pattern.
-    Glob { pat: Vec<u8>, case: bool, path: bool },
+    /// Whole-name (or whole-path) wildcard pattern. Path patterns are also
+    /// in [`Query::path_globs`] at `slot`.
+    Glob { pat: Vec<u8>, case: bool, path: bool, slot: usize },
     Regex { re: regex::bytes::Regex, path: bool },
     /// Folded extensions without the dot.
     Ext(HashSet<Vec<u8>>),
@@ -120,6 +123,8 @@ pub struct Query {
     pub uses_runs: bool,
     pub uses_recent: bool,
     pub uses_created: bool,
+    /// Path wildcard patterns (folded unless case-sensitive) and their case flag.
+    pub path_globs: Vec<(Vec<u8>, bool)>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -128,6 +133,8 @@ struct Mods {
     path: bool,
     ww: bool,
     regex: bool,
+    /// The term is the whole name (or path), not a substring.
+    exact: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -251,6 +258,51 @@ fn unquote(s: &str) -> String {
     s.replace('"', "")
 }
 
+/// A wildcard pattern matched against full paths: `*` (or `**`) spans any
+/// number of folders, and the pattern may start anywhere in the path (like a
+/// plain path term) but must match through to its end, so `users\*\*.pdf`
+/// finds `C:\Users\me\Documents\a.pdf`.
+fn path_glob(pat: Vec<u8>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pat.len() + 1);
+    if pat.first() != Some(&b'*') {
+        out.push(b'*');
+    }
+    for b in pat {
+        if !(b == b'*' && out.last() == Some(&b'*')) {
+            out.push(b);
+        }
+    }
+    // `\*\` is "any folders in between", including none: `a\*\b` matches `a\b`.
+    let mut i = 0;
+    while i + 2 < out.len() {
+        if out[i] == b'\\' && out[i + 1] == b'*' && out[i + 2] == b'\\' {
+            let mut j = i + 1;
+            while out.get(j) == Some(&b'*') && out.get(j + 1) == Some(&b'\\') {
+                j += 2; // `\*\*\` is the same as `\*\`
+            }
+            out.splice(i + 1..j, [ANY_DIRS]);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Pattern byte for zero or more whole folders (what `\*\` becomes in a
+/// path pattern): matches the empty string or anything ending with `\`.
+const ANY_DIRS: u8 = 0x01;
+
+fn is_wild(b: u8) -> bool {
+    matches!(b, b'*' | b'?' | ANY_DIRS)
+}
+
+/// The literal a wildcard pattern ends with, when it lies within the last
+/// path component (so every match's *name* contains it).
+fn glob_tail(pat: &[u8]) -> Option<&[u8]> {
+    let start = pat.iter().rposition(|&b| is_wild(b)).map_or(0, |p| p + 1);
+    let tail = &pat[start..];
+    (!tail.is_empty() && !tail.contains(&b'\\')).then_some(tail)
+}
+
 fn ext_set(list: &str, fold: FoldMode) -> HashSet<Vec<u8>> {
     list.split(';')
         .map(|e| e.trim().trim_start_matches('.'))
@@ -362,6 +414,7 @@ impl Parser<'_> {
                     break; // the rest is the pattern verbatim
                 }
                 "noregex" => (m.regex, consumed_value) = (false, false),
+                "wfn" | "wholefilename" | "exact" => (m.exact, consumed_value) = (true, false),
                 "file" | "files" => {
                     filters.push(leaf(Leaf::IsFile));
                     consumed_value = false;
@@ -469,9 +522,22 @@ impl Parser<'_> {
                     .build()
                     .map_err(|e| e.to_string())?;
                 Leaf::Regex { re, path }
-            } else if text.contains(['*', '?']) {
-                let pat = if m.case { text.into_bytes() } else { fold_mode(&text, fold).into_bytes() };
-                Leaf::Glob { pat, case: m.case, path }
+            } else if text.contains(['*', '?']) || m.exact {
+                let mut pat = if m.case { text.into_bytes() } else { fold_mode(&text, fold).into_bytes() };
+                let slot = self.q.path_globs.len();
+                if path {
+                    pat = path_glob(pat);
+                    self.q.path_globs.push((pat.clone(), m.case));
+                }
+                Leaf::Glob { pat, case: m.case, path, slot }
+            } else if path && !m.ww && text.chars().count() <= 60 {
+                // A path substring is the wildcard `*text*`, which the
+                // per-folder matcher answers without building every path.
+                let needle = if m.case { text } else { fold_mode(&text, fold) };
+                let pat = format!("*{needle}*").into_bytes();
+                let slot = self.q.path_globs.len();
+                self.q.path_globs.push((pat.clone(), m.case));
+                Leaf::Glob { pat, case: m.case, path, slot }
             } else {
                 let needle = if m.case { text.into_bytes() } else { fold_mode(&text, fold).into_bytes() };
                 Leaf::Text { needle, case: m.case, path, whole_word: m.ww }
@@ -497,7 +563,7 @@ impl Query {
         let mut p = Parser {
             toks: tokenize(s),
             pos: 0,
-            defaults: Mods { case: flags.case, path: flags.path, ww: flags.whole_word, regex: flags.regex },
+            defaults: Mods { case: flags.case, path: flags.path, ww: flags.whole_word, regex: flags.regex, exact: false },
             fold,
             env,
             q: Query {
@@ -509,6 +575,7 @@ impl Query {
                 uses_runs: false,
                 uses_recent: false,
                 uses_created: false,
+                path_globs: Vec::new(),
             },
         };
         let mut items = Vec::new();
@@ -544,11 +611,12 @@ impl Query {
             .iter()
             .filter_map(|n| match n {
                 Node::Leaf(Leaf::Text { needle, case: false, path: false, .. }) => Some(needle.clone()),
-                Node::Leaf(Leaf::Glob { pat, case: false, path: false }) => pat
-                    .split(|&b| b == b'*' || b == b'?')
+                Node::Leaf(Leaf::Glob { pat, case: false, path: false, .. }) => pat
+                    .split(|&b| is_wild(b))
                     .max_by_key(|p| p.len())
                     .filter(|p| !p.is_empty())
                     .map(|p| p.to_vec()),
+                Node::Leaf(Leaf::Glob { pat, case: false, path: true, .. }) => glob_tail(pat).map(|t| t.to_vec()),
                 Node::Leaf(Leaf::Ext(exts)) if exts.len() == 1 => {
                     let mut v = vec![b'.'];
                     v.extend_from_slice(exts.iter().next().unwrap());
@@ -567,7 +635,7 @@ impl Query {
                 Node::Not(c) => walk(c, !neg, out),
                 Node::Leaf(Leaf::Text { needle, case: false, .. }) if !neg => out.push(needle.clone()),
                 Node::Leaf(Leaf::Glob { pat, case: false, .. }) if !neg => out.extend(
-                    pat.split(|&b| b == b'*' || b == b'?').filter(|p| !p.is_empty()).map(|p| p.to_vec()),
+                    pat.split(|&b| is_wild(b)).filter(|p| !p.is_empty()).map(|p| p.to_vec()),
                 ),
                 _ => {}
             }
@@ -591,6 +659,8 @@ pub struct Prep {
     pub runs: HashMap<u32, u32>,
     /// Entry → time of the last change seen in the journal.
     pub recent: HashMap<u32, i64>,
+    /// Matchers for [`Query::path_globs`] (missing: match on built paths).
+    pub path_globs: Vec<Option<PathGlob>>,
 }
 
 /// Per-entry evaluation context; builds paths lazily and at most once.
@@ -643,17 +713,21 @@ fn contains_word(hay: &[u8], needle: &[u8]) -> bool {
     })
 }
 
+fn char_len(s: &[u8], i: usize) -> usize {
+    let mut j = i + 1;
+    while j < s.len() && s[j] & 0xC0 == 0x80 {
+        j += 1;
+    }
+    j - i
+}
+
 /// Wildcard match over UTF-8 bytes; `?` consumes one character.
 pub fn glob_match(pat: &[u8], s: &[u8]) -> bool {
+    if pat.contains(&ANY_DIRS) {
+        return glob_match_dirs(pat, s);
+    }
     let (mut p, mut i) = (0usize, 0usize);
     let (mut star_p, mut star_i) = (usize::MAX, 0usize);
-    let char_len = |s: &[u8], i: usize| {
-        let mut j = i + 1;
-        while j < s.len() && s[j] & 0xC0 == 0x80 {
-            j += 1;
-        }
-        j - i
-    };
     while i < s.len() {
         if p < pat.len() && pat[p] == b'?' {
             p += 1;
@@ -677,6 +751,198 @@ pub fn glob_match(pat: &[u8], s: &[u8]) -> bool {
         p += 1;
     }
     p == pat.len()
+}
+
+/// [`glob_match`] for patterns with [`ANY_DIRS`]: backtracking with a memo
+/// of failed (pattern, text) positions, so it stays O(pattern × text).
+fn glob_match_dirs(pat: &[u8], s: &[u8]) -> bool {
+    fn go(pat: &[u8], s: &[u8], p: usize, i: usize, failed: &mut [u64]) -> bool {
+        let key = p * (s.len() + 1) + i;
+        if failed[key / 64] >> (key % 64) & 1 == 1 {
+            return false;
+        }
+        let ok = match pat.get(p) {
+            None => i == s.len(),
+            Some(b'*') => go(pat, s, p + 1, i, failed) || (i < s.len() && go(pat, s, p, i + char_len(s, i), failed)),
+            Some(&ANY_DIRS) => go(pat, s, p + 1, i, failed) || (i..s.len()).any(|j| s[j] == b'\\' && go(pat, s, p + 1, j + 1, failed)),
+            Some(b'?') => i < s.len() && go(pat, s, p + 1, i + char_len(s, i), failed),
+            Some(&c) => i < s.len() && s[i] == c && go(pat, s, p + 1, i + 1, failed),
+        };
+        if !ok {
+            failed[key / 64] |= 1 << (key % 64);
+        }
+        ok
+    }
+    let mut failed = vec![0u64; ((pat.len() + 1) * (s.len() + 1)).div_ceil(64)];
+    go(pat, s, 0, 0, &mut failed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GTok {
+    Lit(char),
+    One,
+    Star,
+    /// [`ANY_DIRS`] is two states: an entry that can skip ahead (no folders)
+    /// and a loop that consumes anything but can only move on after a `\`.
+    DirsEntry,
+    DirsLoop,
+}
+
+/// A path wildcard pattern as an NFA over characters, with the state after
+/// each folder's path cached, so an entry only feeds `\` and its own name
+/// (and a folder that can't lead to a match prunes everything below it).
+pub struct PathGlob {
+    toks: Vec<GTok>,
+    case: bool,
+    start: u64,
+    /// Shift-and tables: positions whose token consumes the byte and moves
+    /// on (per ASCII byte), or that stay put (`*`, folder loops).
+    advance: [u64; 128],
+    one: u64,
+    stay: u64,
+    dirs_loop: u64,
+    /// Epsilon closure of each position.
+    eps: Vec<u64>,
+    /// Per entry: `KNOWN | state` once computed (0 = not yet).
+    states: Vec<std::sync::atomic::AtomicU64>,
+}
+
+const KNOWN: u64 = 1 << 63;
+
+impl PathGlob {
+    /// `None` for patterns too long for a 62-position state set.
+    pub fn new(pat: &[u8], case: bool, entries: usize) -> Option<PathGlob> {
+        let s = std::str::from_utf8(pat).ok()?;
+        let mut toks = Vec::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '*' => toks.push(GTok::Star),
+                '?' => toks.push(GTok::One),
+                '\u{1}' => toks.extend([GTok::DirsEntry, GTok::DirsLoop]),
+                c => toks.push(GTok::Lit(c)),
+            }
+        }
+        if toks.len() > 62 {
+            return None;
+        }
+        let m = toks.len();
+        let mut advance = [0u64; 128];
+        let (mut one, mut stay, mut dirs_loop) = (0u64, 0u64, 0u64);
+        for (p, t) in toks.iter().enumerate() {
+            match *t {
+                GTok::Lit(c) if (c as u32) < 128 => advance[c as usize] |= 1 << p,
+                GTok::One => one |= 1 << p,
+                GTok::Star => stay |= 1 << p,
+                GTok::DirsLoop => dirs_loop |= 1 << p,
+                _ => {}
+            }
+        }
+        // Closures back to front: a position reaches what its epsilon targets reach.
+        let mut eps = vec![0u64; m + 1];
+        eps[m] = 1 << m;
+        for p in (0..m).rev() {
+            eps[p] = 1 << p
+                | match toks[p] {
+                    GTok::Star => eps[p + 1],
+                    GTok::DirsEntry => eps[p + 1] | eps.get(p + 2).copied().unwrap_or(0),
+                    _ => 0,
+                };
+        }
+        let mut g = PathGlob { toks, case, start: 0, advance, one, stay, dirs_loop, eps, states: Vec::new() };
+        g.start = g.closure(1);
+        g.states = (0..entries).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
+        Some(g)
+    }
+
+    fn closure(&self, s: u64) -> u64 {
+        let mut out = s;
+        let mut bits = s;
+        while bits != 0 {
+            let p = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            out |= self.eps[p];
+        }
+        out
+    }
+
+    fn step(&self, s: u64, c: char) -> u64 {
+        let lit = if (c as u32) < 128 {
+            self.advance[c as usize]
+        } else {
+            self.toks.iter().enumerate().filter(|(_, t)| **t == GTok::Lit(c)).fold(0, |m, (p, _)| m | 1 << p)
+        };
+        let mut t = ((s & (lit | self.one)) << 1) | (s & (self.stay | self.dirs_loop));
+        if c == '\\' {
+            t |= (s & self.dirs_loop) << 1;
+        }
+        self.closure(t)
+    }
+
+    fn feed(&self, mut s: u64, text: &[u8]) -> u64 {
+        if text.is_ascii() {
+            for &b in text {
+                if s == 0 {
+                    break;
+                }
+                s = self.step(s, b as char);
+            }
+            return s;
+        }
+        for c in unsafe { std::str::from_utf8_unchecked(text) }.chars() {
+            if s == 0 {
+                break;
+            }
+            s = self.step(s, c);
+        }
+        s
+    }
+
+    fn name<'a>(&self, ix: &'a Index, i: u32) -> &'a [u8] {
+        if self.case { ix.name(i).as_bytes() } else { ix.fold_name(i) }
+    }
+
+    /// State after the full path of entry `i`.
+    fn state(&self, ix: &Index, i: u32) -> u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let cached = |i: u32| self.states.get(i as usize).map(|a| a.load(Relaxed)).filter(|v| v & KNOWN != 0);
+        if let Some(v) = cached(i) {
+            return v & !KNOWN;
+        }
+        // Climb to the nearest known ancestor, then compute back down.
+        let mut chain = Vec::with_capacity(16);
+        let mut cur = i;
+        let mut s = loop {
+            if cur == crate::index::NONE {
+                break None;
+            }
+            if let Some(v) = cached(cur) {
+                break Some(v & !KNOWN);
+            }
+            chain.push(cur);
+            if chain.len() > 1024 {
+                return 0;
+            }
+            cur = ix.entries[cur as usize].parent;
+        };
+        for &c in chain.iter().rev() {
+            let next = match s {
+                None => self.feed(self.start, self.name(ix, c)),
+                Some(st) => self.feed(self.step(st, '\\'), self.name(ix, c)),
+            };
+            // Only folders' states are reused (by their children).
+            if ix.entries[c as usize].is_dir()
+                && let Some(a) = self.states.get(c as usize)
+            {
+                a.store(next | KNOWN, Relaxed);
+            }
+            s = Some(next);
+        }
+        s.unwrap_or(0)
+    }
+
+    pub fn matches(&self, ix: &Index, i: u32) -> bool {
+        self.state(ix, i) >> self.toks.len() & 1 == 1
+    }
 }
 
 /// Folded extension of a folded name (after the last `.`), if any.
@@ -704,7 +970,11 @@ impl Leaf {
                 let hay = c.hay(*path, *case);
                 if *whole_word { contains_word(hay, needle) } else { memchr::memmem::find(hay, needle).is_some() }
             }
-            Leaf::Glob { pat, case, path } => glob_match(pat, c.hay(*path, *case)),
+            Leaf::Glob { pat, case, path: true, slot } => match c.prep.path_globs.get(*slot) {
+                Some(Some(g)) => g.matches(c.ix, c.i),
+                _ => glob_match(pat, c.hay(true, *case)),
+            },
+            Leaf::Glob { pat, case, path: false, .. } => glob_match(pat, c.hay(false, *case)),
             Leaf::Regex { re, path } => re.is_match(c.hay(*path, true)),
             Leaf::Ext(exts) => !e.is_dir() && extension(c.ix.fold_name(c.i)).is_some_and(|x| exts.contains(x)),
             Leaf::Size { lo, hi } => !e.is_dir() && e.size >= *lo && e.size <= *hi,
@@ -807,6 +1077,70 @@ mod tests {
         assert_eq!(matches("depth:1"), vec!["Users", "Windows"]);
         assert_eq!(matches("depth:>2"), vec!["Report.PDF", "notes.txt"]);
         assert_eq!(matches("attrib:D"), vec!["C:", "Me", "Users", "Windows"]);
+    }
+
+    #[test]
+    fn path_wildcards_span_folders() {
+        assert_eq!(matches(r"users\*\*.pdf"), vec!["Report.PDF"]);
+        assert_eq!(matches(r"users\*.pdf"), vec!["Report.PDF"]); // `*` crosses `\me\`
+        assert_eq!(matches(r"c:\*\notes.txt"), vec!["notes.txt"]);
+        assert_eq!(matches(r"C:\**\*.exe"), vec!["notepad.exe"]);
+        assert_eq!(matches(r"users\*"), vec!["Me", "Report.PDF", "notes.txt"]);
+        assert_eq!(matches("users/m?/*"), vec!["Report.PDF", "notes.txt"]);
+        assert_eq!(matches(r"sers\*\notes.txt"), vec!["notes.txt"]); // starts anywhere
+        assert!(matches(r"users\*\me").contains(&"Me".to_string())); // ends at the end
+        assert!(matches(r"windows\*\me").is_empty());
+        assert_eq!(matches("wfn:me"), vec!["Me"]);
+        assert_eq!(matches("wfn:note"), Vec::<String>::new());
+        assert_eq!(matches(r"wfn:c:\users\me"), vec!["Me"]);
+        assert_eq!(parse("wfn:node_modules").driver(), Some(b"node_modules".to_vec()));
+        let g = |p: &str, s: &str| glob_match(&path_glob(p.as_bytes().to_vec()), s.as_bytes());
+        assert!(g(r"a\*\b", r"x\a\b") && g(r"a\*\b", r"a\1\2\b") && !g(r"a\*\b", r"a\1b") && !g(r"a\*\b", r"a\b\c"));
+        assert!(g(r"a\*\*\b", r"a\b") && g(r"\*\b?", r"c:\b1") && !g(r"\*\b?", r"c:\b"));
+        assert!(g(r"a\*\*b*\*\c", &format!(r"a\{}b\c", r"q\".repeat(200)))); // memoized: no blowup
+        // The literal tail drives the name scan.
+        assert_eq!(parse(r"users\*\*.pdf").driver(), Some(b".pdf".to_vec()));
+        assert_eq!(parse(r"users\*\x\*").driver(), None);
+    }
+
+    /// The per-folder NFA must agree with matching the built path.
+    #[test]
+    fn path_glob_nfa_agrees_with_reference() {
+        let ix = sample();
+        for q in [
+            r"users\*\*.pdf", r"users\*", r"c:\*\notes.txt", r"C:\**\*.exe", r"*\m?\*", r"sers\*\notes.txt", r"users\*\me", r"windows\*\me",
+            r"c:\*", r"*", r"c:\users\me\*.txt", r"\*\*\*\*\r*", r"case:Users\*\R*", r"case:users\*", r"*e*\*e*", r"c:\w*\n?tepad.*",
+        ] {
+            let parsed = parse(q);
+            let nfa = Prep { path_globs: parsed.path_globs.iter().map(|(p, c)| PathGlob::new(p, *c, ix.entries.len())).collect(), ..Default::default() };
+            assert!(nfa.path_globs.iter().all(Option::is_some), "{q}");
+            let a = matches_with(q, &nfa);
+            let b = matches_with(q, &Prep::default());
+            assert_eq!(a, b, "{q}");
+        }
+        let long = "a?".repeat(40);
+        assert!(PathGlob::new(long.as_bytes(), false, 1).is_none());
+    }
+
+    #[test]
+    fn path_glob_nfa_fuzz() {
+        let mut rng = 0x2545F4914F6CDD1Du64;
+        let mut next = |n: u64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+        let alphabet = ['a', 'b', 'å', '\\'];
+        let wild = ['a', 'b', 'å', '\\', '*', '?', '\\', '*'];
+        for _ in 0..20_000 {
+            let path: String = (0..next(12)).map(|_| alphabet[next(4) as usize]).collect();
+            let raw: String = (0..1 + next(7)).map(|_| wild[next(8) as usize]).collect();
+            let pat = path_glob(raw.clone().into_bytes());
+            let g = PathGlob::new(&pat, true, 0).unwrap();
+            let nfa = g.feed(g.start, path.as_bytes()) >> g.toks.len() & 1 == 1;
+            assert_eq!(nfa, glob_match(&pat, path.as_bytes()), "pattern {raw:?} path {path:?}");
+        }
     }
 
     #[test]

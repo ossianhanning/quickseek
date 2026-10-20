@@ -67,8 +67,31 @@ fn main() {
         times.sort_by(f64::total_cmp);
         println!("{q:>24}: {total:>8} hits, min {:.2} ms, median {:.2} ms", times[0], times[times.len() / 2]);
     }
+    for q in [r"users\*\*.txt", r"*\cache*\*.png", r"photo*\*\report*"] {
+        let query = Query::parse(q).unwrap();
+        let t = Instant::now();
+        let h = search(&[&ix], &query, &SearchOptions::default());
+        println!("{q:>24}: {:>8} hits in {:.1} ms", h.total, t.elapsed().as_secs_f64() * 1000.0);
+    }
     use rapidfind_core::index::IndexOptions;
     use rapidfind_core::search::{ResultSet, Extras, SortKey};
+    use rapidfind_core::tree::{NodeRef, Tree, TreeSort};
+    let ix = {
+        let e = rapidfind_core::engine::Engine::from_indexes(vec![ix]);
+        for q in ["", "*.png", "folder: cache*"] {
+            let t = Instant::now();
+            let mut tree = Tree::build(&e, q, Default::default()).unwrap();
+            let built = t.elapsed().as_secs_f64() * 1000.0;
+            let t = Instant::now();
+            let roots = tree.children(&e, &NodeRef::default(), TreeSort::Size, true, 0, 100).unwrap();
+            let r = &roots.rows[0];
+            let l = tree.children(&e, &NodeRef { vol: r.vol.clone(), idx: r.idx, epoch: r.epoch, path: String::new() }, TreeSort::Size, true, 0, 100).unwrap();
+            println!("tree {q:>16?}: built in {built:.0} ms ({:.0} MB), root listing ({} children) {:.1} ms", tree.memory_bytes() as f64 / 1048576.0, l.total, t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let mut v = e.volumes();
+        drop(e);
+        std::sync::Arc::try_unwrap(v.pop().unwrap()).ok().unwrap().index.into_inner()
+    };
     let mut ix = ix;
     for (label, fast) in [("fast sort on ", true), ("fast sort off", false)] {
         ix.set_options(IndexOptions { created: true, fast_sort: [true, fast, fast, fast] });

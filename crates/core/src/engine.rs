@@ -86,6 +86,10 @@ pub struct Volume {
     pub alive: AtomicBool,
     /// Human-readable state: ready, scanning, cached, offline, waiting for credentials.
     pub state: Mutex<String>,
+    /// Folder indexes: keep a copy on disk (off for shares with caching off).
+    pub cache: AtomicBool,
+    /// Folder indexes: walk again soon (e.g. date created was turned on).
+    pub rewalk: AtomicBool,
 }
 
 impl Volume {
@@ -99,6 +103,8 @@ impl Volume {
             unsaved: AtomicU64::new(unsaved),
             alive: AtomicBool::new(true),
             state: Mutex::new(state.to_string()),
+            cache: AtomicBool::new(true),
+            rewalk: AtomicBool::new(false),
         })
     }
 
@@ -399,6 +405,10 @@ impl Engine {
             // Rebuild each volume in the background of the old one: searches
             // keep using the old index until the new one replaces it.
             for old in self.volumes() {
+                // Folder indexes re-walk on their own (`Volume::rewalk`).
+                if old.kind == VolumeKind::Folder {
+                    continue;
+                }
                 let Some(w) = want.iter().find(|w| w.0 == old.key) else { continue };
                 match self.load(&w.0, w.1, w.2, w.3.clone(), &cfg, true) {
                     Ok((v, rep)) => {
@@ -450,7 +460,7 @@ impl Engine {
     fn load(&self, key: &str, letter: char, kind: VolumeKind, fcfg: Option<FolderConfig>, cfg: &Config, force_scan: bool) -> anyhow::Result<(Arc<Volume>, LoadReport)> {
         let fold = cfg.fold_mode();
         let rules = cfg.rules(letter);
-        let opts = cfg.index_options();
+        let opts = cfg.index_options_for(key);
         match kind {
             VolumeKind::Ntfs | VolumeKind::Refs => {
                 let (mut ix, rep, j, applier) = open_journaled(letter, kind, force_scan, opts, &|_, _| {})?;
@@ -475,7 +485,11 @@ impl Engine {
                 // watcher thread walks the folder in the background.
                 let fcfg = fcfg.unwrap_or_default();
                 let t0 = Instant::now();
-                let cached = persist::load(&persist::folder_db_path(key)).ok();
+                let network = win::is_network_path(key);
+                let cache = !network || cfg.share_cache;
+                let cached = if cache { persist::load(&persist::folder_db_path(key)).ok() } else { None };
+                // A cache without date created can't serve an index that wants it.
+                let stale = cached.as_ref().is_some_and(|c| opts.created && c.created.is_empty());
                 let had_cache = cached.is_some();
                 let mut ix = cached.unwrap_or_else(|| folder::empty(key, fold));
                 ix.set_options(opts);
@@ -484,11 +498,14 @@ impl Engine {
                 let rep = LoadReport::Walked { entries: ix.len_live(), ms: t0.elapsed().as_millis() };
                 let missing = ix.ranks_missing();
                 let v = Volume::new(key, letter, kind, ix, Applier::default(), 0, if had_cache { "cached" } else { "scanning" });
+                v.cache.store(cache, Ordering::Relaxed);
                 if missing {
                     rank_in_background(v.clone());
                 }
+                // Shares can trust their cache at startup (until the rescan interval).
+                let walk_now = !had_cache || stale || !network || cfg.share_rewalk_on_start;
                 let (vv, stop, tok) = (v.clone(), self.stop.clone(), self.net_token.clone());
-                std::thread::Builder::new().name(format!("dir-{letter}")).spawn(move || watch_folder(vv, fcfg, stop, tok))?;
+                std::thread::Builder::new().name(format!("dir-{letter}")).spawn(move || watch_folder(vv, fcfg, stop, tok, walk_now))?;
                 Ok((v, rep))
             }
         }
@@ -533,6 +550,14 @@ impl Engine {
         f(&refs)
     }
 
+    /// Like [`Engine::with_indexes`], with each volume's key and kind.
+    pub fn with_volume_indexes<R>(&self, f: impl FnOnce(&[(&str, VolumeKind, &Index)]) -> R) -> R {
+        let vols = self.volumes.read();
+        let guards: Vec<_> = vols.iter().map(|v| v.index.read()).collect();
+        let refs: Vec<(&str, VolumeKind, &Index)> = vols.iter().zip(&guards).map(|(v, g)| (v.key.as_str(), v.kind, &**g)).collect();
+        f(&refs)
+    }
+
     pub fn search(&self, q: &Query, opts: &SearchOptions) -> Hits {
         self.with_indexes(|ixs| search(ixs, q, opts))
     }
@@ -569,14 +594,21 @@ impl Engine {
             c.save(p)?;
         }
         let fold = c.fold_mode();
-        let opts = c.index_options();
-        if opts.created && !self.config.read().index_date_created {
+        let (old_local, old_share) = {
+            let o = self.config.read();
+            (o.index_date_created, o.share_index_date_created)
+        };
+        let any_ntfs = self.volumes.read().iter().any(|v| v.kind != VolumeKind::Folder);
+        if c.index_date_created && !old_local && any_ntfs {
             self.rescan_requested.store(true, Ordering::Relaxed);
         }
         for v in self.volumes.read().iter() {
             let rules = c.rules(v.letter);
+            let opts = c.index_options_for(&v.key);
+            let network = win::is_network_path(&v.key);
             let mut ix = v.index.write();
             let gained_ranks = (1..4).any(|k| opts.fast_sort[k] && !ix.opts.fast_sort[k]);
+            let gained_created = opts.created && !ix.opts.created;
             ix.set_options(opts);
             ix.set_fold_mode(fold);
             if ix.rules != rules {
@@ -585,6 +617,16 @@ impl Engine {
             drop(ix);
             if gained_ranks {
                 rank_in_background(v.clone());
+            }
+            if v.kind == VolumeKind::Folder {
+                // Folder indexes get date created from their next walk.
+                if gained_created && (if network { !old_share } else { !old_local }) {
+                    v.rewalk.store(true, Ordering::Relaxed);
+                }
+                let cache = !network || c.share_cache;
+                if v.cache.swap(cache, Ordering::Relaxed) && !cache {
+                    let _ = std::fs::remove_file(persist::folder_db_path(&v.key));
+                }
             }
         }
         *self.config.write() = c;
@@ -638,7 +680,7 @@ impl Engine {
     pub fn save_all(&self, min_changes: u64) -> anyhow::Result<()> {
         for v in self.volumes.read().iter() {
             let n = v.unsaved.load(Ordering::Relaxed);
-            if n > 0 && n >= min_changes {
+            if n > 0 && n >= min_changes && v.cache.load(Ordering::Relaxed) {
                 let path = if v.kind == VolumeKind::Folder { persist::folder_db_path(&v.key) } else { persist::db_path(v.letter) };
                 let mut ix = v.index.write();
                 persist::save(&mut ix, &path)?;
@@ -792,7 +834,9 @@ fn rescan_folder(v: &Volume, token: Option<Arc<crate::ntfs::win::Token>>) {
     ix.generation = generation + 1;
     ix.epoch = epoch + 1;
     log::info!("{}: walked {} entries in {} ms", v.key, ix.len_live(), t0.elapsed().as_millis());
-    if let Err(e) = persist::save(&mut ix, &persist::folder_db_path(&v.key)) {
+    if v.cache.load(Ordering::Relaxed)
+        && let Err(e) = persist::save(&mut ix, &persist::folder_db_path(&v.key))
+    {
         log::warn!("{}: caching folder index failed: {e}", v.key);
     }
     *v.index.write() = ix;
@@ -809,10 +853,12 @@ fn nap(v: &Volume, stop: &AtomicBool, d: Duration) {
 
 /// Folder index lifecycle: initial walk (in the background), change
 /// watching, periodic rescans, and riding out unreachable network shares.
-fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token: TokenSlot) {
+fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token: TokenSlot, walk_now: bool) {
     let root = PathBuf::from(format!("{}\\", v.key));
     let network = win::is_network_path(&v.key);
-    let mut needs_walk = true;
+    let mut needs_walk = walk_now;
+    // Trusting the cache: start watching without a walk.
+    let mut start_watch = !walk_now && cfg.watch;
     let mut last_scan = Instant::now();
     let mut last_ranks = Instant::now();
     let mut watcher: Option<Watcher> = None;
@@ -825,6 +871,21 @@ fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token:
                 t.impersonate();
             }
             None => crate::ntfs::win::Token::revert(),
+        }
+        needs_walk |= v.rewalk.swap(false, Ordering::Relaxed);
+        if start_watch && !needs_walk {
+            if network && tok.is_none() && std::env::var_os("RAPIDFIND_SERVICE").is_some() {
+                nap(&v, &stop, Duration::from_secs(2)); // no credentials yet
+                continue;
+            }
+            start_watch = false;
+            match Watcher::new(&root) {
+                Ok(w) => {
+                    watcher = Some(w);
+                    v.set_state("ready");
+                }
+                Err(_) => needs_walk = true, // unreachable: the walk path handles offline
+            }
         }
         if needs_walk || (cfg.rescan_minutes > 0 && last_scan.elapsed() > Duration::from_secs(cfg.rescan_minutes as u64 * 60)) {
             if !root.is_dir() {
@@ -1040,6 +1101,78 @@ mod unc_tests {
         println!("SMB change visible after {} ms", t.elapsed().as_millis());
         std::fs::remove_file(&path).ok();
         std::fs::remove_file(persist::folder_db_path(&folder::root_name(&unc))).ok();
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn wait_ready(e: &Engine, secs: u64) {
+        let t = Instant::now();
+        while e.status().first().map(|s| s.state.clone()) != Some("ready".into()) {
+            assert!(t.elapsed() < Duration::from_secs(secs), "{:?}", e.status());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Share caching options: no cache file when off; trusting the cache at
+    /// startup serves it without a walk and still follows changes; date
+    /// created indexed for shares while local volumes don't have it.
+    #[test]
+    #[ignore]
+    fn unc_share_cache_options() {
+        let Ok(unc) = std::env::var("RAPIDFIND_TEST_UNC") else { return };
+        let key = folder::root_name(&unc);
+        let db = persist::folder_db_path(&key);
+        let tmp = std::env::temp_dir().join(format!("rapidfind-unc-opts-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cfg_path = tmp.join("config.json");
+        let base = Config { auto_include_fixed: false, folders: vec![FolderConfig { path: unc.clone(), watch: true, rescan_minutes: 0 }], ..Default::default() };
+        let probe = format!("rapidfind-opts-probe-{}.txt", std::process::id());
+        std::fs::write(format!("{key}\\{probe}"), b"x").unwrap();
+
+        // 1. Cache off: walked, searchable, nothing written.
+        std::fs::remove_file(&db).ok();
+        Config { share_cache: false, ..base.clone() }.save(&cfg_path).unwrap();
+        let e = Engine::new(EngineOptions { config_path: Some(cfg_path.clone()), ..Default::default() });
+        e.sync_volumes();
+        wait_ready(&e, 60);
+        assert_eq!(e.query(&probe, SearchFlags::default(), &SearchOptions::default()).unwrap().total, 1);
+        e.save_all(1).unwrap();
+        assert!(!db.exists(), "share cache off but {db:?} was written");
+        // Date created comes with the walk for shares (local default is off).
+        assert_eq!(e.query(&format!("{probe} dc:today"), SearchFlags::default(), &SearchOptions::default()).unwrap().total, 1);
+        // Turning the cache on writes it after the next walk/save.
+        e.set_config(Config { share_cache: true, ..base.clone() }).unwrap();
+        e.volumes()[0].rewalk.store(true, Ordering::Relaxed);
+        let t = Instant::now();
+        while !db.exists() {
+            assert!(t.elapsed() < Duration::from_secs(60), "cache not written after turning it on");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(e);
+        std::thread::sleep(Duration::from_millis(1500));
+
+        // 2. Trust the cache at startup: ready without walking, and changes still arrive.
+        Config { share_rewalk_on_start: false, ..base.clone() }.save(&cfg_path).unwrap();
+        let e = Engine::new(EngineOptions { config_path: Some(cfg_path.clone()), ..Default::default() });
+        let t = Instant::now();
+        e.sync_volumes();
+        wait_ready(&e, 10);
+        println!("trusted cache ready in {} ms", t.elapsed().as_millis());
+        assert_eq!(e.query(&probe, SearchFlags::default(), &SearchOptions::default()).unwrap().total, 1);
+        let probe2 = format!("rapidfind-opts-probe2-{}.txt", std::process::id());
+        std::fs::write(format!("{key}\\{probe2}"), b"y").unwrap();
+        let t = Instant::now();
+        while e.query(&probe2, SearchFlags::default(), &SearchOptions::default()).unwrap().total == 0 {
+            assert!(t.elapsed() < Duration::from_secs(10), "change not seen with a trusted cache");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Turning caching off deletes the cache file.
+        e.set_config(Config { share_cache: false, ..base.clone() }).unwrap();
+        assert!(!db.exists());
+        drop(e);
+        std::thread::sleep(Duration::from_millis(1500));
+        std::fs::remove_file(format!("{key}\\{probe}")).ok();
+        std::fs::remove_file(format!("{key}\\{probe2}")).ok();
+        std::fs::remove_file(&db).ok();
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

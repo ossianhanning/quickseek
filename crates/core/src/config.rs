@@ -71,6 +71,17 @@ pub struct Config {
     pub fast_sort_size: bool,
     pub fast_sort_modified: bool,
     pub fast_sort_path: bool,
+    /// Network shares (UNC folders) keep their index on disk, so a restart
+    /// serves the last copy instead of an empty share until it's re-walked.
+    pub share_cache: bool,
+    /// Re-walk shares when the service starts even if a cached copy exists
+    /// (off: trust the cache until the rescan interval or a change notice).
+    pub share_rewalk_on_start: bool,
+    /// Date created for shares (separate from local volumes: it comes free
+    /// with the directory listing, but turning it on later re-walks every share).
+    pub share_index_date_created: bool,
+    /// Rescan interval given to newly added shares, in minutes.
+    pub share_rescan_minutes: u32,
 }
 
 impl Default for Config {
@@ -92,6 +103,10 @@ impl Default for Config {
             fast_sort_size: true,
             fast_sort_modified: true,
             fast_sort_path: true,
+            share_cache: true,
+            share_rewalk_on_start: true,
+            share_index_date_created: true,
+            share_rescan_minutes: 60,
         }
     }
 }
@@ -121,6 +136,15 @@ impl Config {
             created: self.index_date_created,
             fast_sort: [true, self.fast_sort_size, self.fast_sort_modified, self.fast_sort_path],
         }
+    }
+
+    /// Options for one volume or folder index (shares have their own date-created switch).
+    pub fn index_options_for(&self, key: &str) -> crate::index::IndexOptions {
+        let mut o = self.index_options();
+        if crate::ntfs::win::is_network_path(key) {
+            o.created = self.share_index_date_created;
+        }
+        o
     }
 
     pub fn fold_mode(&self) -> FoldMode {
@@ -275,6 +299,15 @@ mod tests {
         assert!(!r.excludes(false, 0, b"a.txt", &mut p("x")));
         let hidden = Config { exclude_hidden: true, ..Default::default() }.rules('C');
         assert!(hidden.excludes(false, FILE_ATTRIBUTE_HIDDEN, b"x", &mut p("x")));
+    }
+
+    #[test]
+    fn shares_have_their_own_date_created_switch() {
+        let c = Config { index_date_created: false, share_index_date_created: true, ..Default::default() };
+        assert!(!c.index_options_for("C").created);
+        assert!(!c.index_options_for("G:").created);
+        assert!(c.index_options_for(r"\\nas\media").created);
+        assert!(c.share_cache && c.share_rewalk_on_start && c.share_rescan_minutes == 60);
     }
 
     #[test]

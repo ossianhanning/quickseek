@@ -2,9 +2,11 @@
 # sets a query and/or opens an Options tab, then takes a screenshot.
 #   tools\gui-mock.ps1 -Query "mp3|Documents"
 #   tools\gui-mock.ps1 -OptionsTab 4 -Out target\opt4.png
-param([string]$Query = "", [int]$OptionsTab = -1, [string]$Out = "$PSScriptRoot\..\target\shot.png")
+#   tools\gui-mock.ps1 -Command 403          (a menu command, e.g. 403 = folder size tree)
+param([string]$Query = "", [int]$OptionsTab = -1, [int[]]$Command = @(), [switch]$RestartMock, [string]$Out = "$PSScriptRoot\..\target\shot.png")
 $t = "$PSScriptRoot\..\target"
 Get-Process rapidfind-gui -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*\debug\*" } | Stop-Process -Force
+if ($RestartMock) { Get-Process mock_service -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1 }
 if (-not (Get-Process mock_service -ErrorAction SilentlyContinue)) {
   Start-Process "$t\debug\examples\mock_service.exe" -ArgumentList "--live" -WindowStyle Hidden | Out-Null
   Start-Sleep 3
@@ -24,6 +26,7 @@ public static class RfMock {
 }
 "@
 $h = [RfMock]::FindWindow("rapidfind.main", [IntPtr]::Zero)
+foreach ($c in $Command) { [RfMock]::PostMessage($h, 0x111, [IntPtr]$c, [IntPtr]::Zero) | Out-Null; Start-Sleep 1 }
 [RfMock]::SendMessage([RfMock]::GetDlgItem($h, 100), 0x0C, [IntPtr]::Zero, $Query) | Out-Null
 Start-Sleep 2
 if ($OptionsTab -ge 0) {

@@ -89,6 +89,20 @@ enum Cmd {
         #[arg(long)]
         regex: bool,
     },
+    /// Disk usage: the biggest folders and files under a path (all drives by default).
+    Du {
+        /// Folder to break down, e.g. `C:\Users` (default: every indexed volume).
+        path: Option<String>,
+        /// Count only what matches this query, e.g. `*.mp4` or `folder: ww:node_modules`.
+        #[arg(short, long)]
+        query: Option<String>,
+        /// Levels to expand.
+        #[arg(short, long, default_value_t = 1)]
+        depth: usize,
+        /// Entries per folder.
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Print USN journal records as they happen (debugging).
     Watch,
     /// Time a query repeatedly.
@@ -353,6 +367,49 @@ fn main() -> anyhow::Result<()> {
                 times.len()
             );
             eng.save_all(engine::SAVE_THRESHOLD)?;
+        }
+        Cmd::Du { ref path, ref query, depth, limit } => {
+            use rapidfind_core::tree::{NodeRef, TreeRow, TreeSort};
+            let mut be = open_backend(&cli, false)?;
+            let t = Instant::now();
+            let roots = be.tree(query.as_deref().unwrap_or(""), SearchFlags::default(), TreeSort::Size, true).map_err(anyhow::Error::msg)?;
+            let built = t.elapsed();
+            let (top, total) = match path {
+                Some(p) => {
+                    let l = be.children(&NodeRef { path: p.clone(), ..Default::default() }, TreeSort::Size, true, 0, limit as u32).map_err(anyhow::Error::msg)?;
+                    println!("{:>10}  {:>9} files  {}", fmt::size(l.size), l.files, p);
+                    (l.rows, l.size)
+                }
+                None => {
+                    let total = roots.size;
+                    (roots.rows.into_iter().take(limit).collect(), total)
+                }
+            };
+            fn show(be: &mut dyn Backend, rows: &[TreeRow], parent: u64, level: usize, depth: usize, limit: usize) -> anyhow::Result<()> {
+                for r in rows {
+                    let pct = if parent > 0 { r.size as f64 * 100.0 / parent as f64 } else { 0.0 };
+                    let bar = "█".repeat((pct / 10.0).round() as usize);
+                    let files = if r.is_dir { format!("{:>9} files", r.files) } else { " ".repeat(15) };
+                    let mut free = if r.capacity > 0 { format!("  ({} free of {})", fmt::size(r.free), fmt::size(r.capacity)) } else { String::new() };
+                    if r.cloud > 0 {
+                        free.push_str(&format!("  [+{} online-only]", fmt::size(r.cloud)));
+                    }
+                    if r.hardlink {
+                        free.push_str("  [hard link, counted elsewhere]");
+                    }
+                    println!("{:>10} {:>5.1}% {:<10} {files}  {}{}{}{free}", fmt::size(r.size), pct, bar, "  ".repeat(level), r.name, if r.is_dir { "\\" } else { "" });
+                    if r.is_dir && r.has_children && level + 1 < depth {
+                        let node = NodeRef { vol: r.vol.clone(), idx: r.idx, epoch: r.epoch, path: r.full_path() };
+                        let l = be.children(&node, TreeSort::Size, true, 0, limit as u32).map_err(anyhow::Error::msg)?;
+                        show(be, &l.rows, r.size, level + 1, depth, limit)?;
+                    }
+                }
+                Ok(())
+            }
+            show(&mut *be, &top, total, 0, depth, limit)?;
+            be.tree_close();
+            eprintln!("tree built in {} ms, listed in {} ms via {}", built.as_millis(), (t.elapsed() - built).as_millis(), be.label());
+            be.finish()?;
         }
         Cmd::Watch => {
             require_admin()?;

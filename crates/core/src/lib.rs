@@ -22,3 +22,4 @@ pub mod persist;
 pub mod query;
 pub mod runs;
 pub mod search;
+pub mod tree;

@@ -25,6 +25,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, Ge
 const CMD_CASE: usize = 300;
 const CMD_DIACRITICS: usize = 304;
 const CMD_OPTIONS: usize = 500;
+const CMD_TREE: usize = 403;
+const CMD_EXPAND: usize = 210;
+const CMD_COLLAPSE: usize = 211;
 
 const ID_SEARCH: &str = "100";
 const ID_FILTER: &str = "101";
@@ -120,8 +123,43 @@ impl Gui {
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(self.hwnd, 102) }
     }
 
+    fn tree_hwnd(&self) -> HWND {
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(self.hwnd, 104) }
+    }
+
     fn rows(&self) -> i32 {
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(self.list_hwnd(), 0x1004 /* LVM_GETITEMCOUNT */, 0, 0) as i32 }
+    }
+
+    fn tree_rows(&self) -> i32 {
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(self.tree_hwnd(), 0x1004, 0, 0) as i32 }
+    }
+
+    /// Selects tree row `i` (LVM_SETITEMSTATE across processes needs no
+    /// pointer: we post a keyboard-free selection via UIA instead).
+    fn select_tree_row(&self, name: &str) {
+        let tree = self.by_id("104");
+        let n = name.to_string();
+        let row = self
+            .ua
+            .create_matcher()
+            .from_ref(&tree)
+            .control_type(ControlType::ListItem)
+            .filter_fn(Box::new(move |e: &UIElement| Ok(e.get_name().map(|x| x == n).unwrap_or(false))))
+            .timeout(5000)
+            .find_first()
+            .unwrap_or_else(|e| panic!("tree row {name}: {e}"));
+        row.get_pattern::<UISelectionItemPattern>().unwrap().select().unwrap();
+    }
+
+    /// Tree cell text (columns: Name, Size, % of Parent, Files, Date Modified).
+    fn tree_cell(&self, row: i32, col: i32) -> String {
+        const HEADERS: [&str; 6] = ["Name", "Size", "% of Parent", "Files", "Online-only", "Date Modified"];
+        msaa_cell(self.tree_hwnd(), row, col, &HEADERS)
+    }
+
+    fn tree_names(&self) -> Vec<String> {
+        (0..self.tree_rows()).map(|i| self.tree_cell(i, 0)).collect()
     }
 
     /// Cell text through MSAA: the owner-data list view answers for any row
@@ -129,12 +167,21 @@ impl Gui {
     /// the item name; other columns come from the "Header: value, ..."
     /// description.
     fn cell(&self, row: i32, col: i32) -> String {
+        const HEADERS: [&str; 5] = ["Name", "Path", "Size", "Date Modified", "Type"];
+        msaa_cell(self.list_hwnd(), row, col, &HEADERS)
+    }
+}
+
+/// A list view cell through MSAA (name for column 0, else parsed from the
+/// "Header: value, ..." description).
+fn msaa_cell(list: HWND, row: i32, col: i32, headers: &[&str]) -> String {
+    {
         use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
         use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
         use windows::core::Interface;
         let mut p = std::ptr::null_mut();
         let acc: IAccessible = unsafe {
-            if AccessibleObjectFromWindow(windows::Win32::Foundation::HWND(self.list_hwnd()), 0xFFFF_FFFC /* OBJID_CLIENT */, &IAccessible::IID, &mut p).is_err() || p.is_null() {
+            if AccessibleObjectFromWindow(windows::Win32::Foundation::HWND(list), 0xFFFF_FFFC /* OBJID_CLIENT */, &IAccessible::IID, &mut p).is_err() || p.is_null() {
                 return String::new();
             }
             IAccessible::from_raw(p)
@@ -148,13 +195,15 @@ impl Gui {
             return unsafe { acc.get_accName(&child) }.map(|b| b.to_string()).unwrap_or_default();
         }
         let desc = unsafe { acc.get_accDescription(&child) }.map(|b| b.to_string()).unwrap_or_default();
-        const HEADERS: [&str; 5] = ["Name", "Path", "Size", "Date Modified", "Type"];
-        let key = format!("{}: ", HEADERS[col as usize]);
+        let key = format!("{}: ", headers[col as usize]);
         let Some(start) = desc.find(&key).map(|i| i + key.len()) else { return String::new() };
         let rest = &desc[start..];
-        let end = HEADERS[col as usize + 1..].iter().filter_map(|h| rest.find(&format!(", {h}: "))).min().unwrap_or(rest.len());
+        let end = headers[col as usize + 1..].iter().filter_map(|h| rest.find(&format!(", {h}: "))).min().unwrap_or(rest.len());
         rest[..end].to_string()
     }
+}
+
+impl Gui {
 
     /// Clicks (a real mouse click) until the list shows the expected first
     /// row; a click can be swallowed while the window is being activated.
@@ -351,5 +400,62 @@ fn gui_end_to_end() {
         edit.get_pattern::<UIValuePattern>().unwrap().get_value().unwrap().is_empty().then_some(())
     });
 
+    // 12. Folder size tree: volumes open one level; a folder holding a
+    // single folder opens through to it.
+    g.set_query("");
+    g.command(CMD_TREE);
+    use rapidfind_core::tree::{NodeRef, Tree, TreeSort};
+    let mut t = Tree::build(&engine, "", none).unwrap();
+    let at = |t: &mut Tree, p: &str| t.children(&engine, &NodeRef { path: p.into(), ..Default::default() }, TreeSort::Size, true, 0, 100).unwrap();
+    let c = at(&mut t, "C:");
+    let me = at(&mut t, r"C:\Users\me");
+    let short = || g.tree_names().iter().map(|n| n.split("   ").next().unwrap().to_string()).collect::<Vec<_>>();
+    let wait_rows = |what: &str, want: &[String]| {
+        let t0 = Instant::now();
+        while short() != want {
+            assert!(t0.elapsed() < Duration::from_secs(8), "{what}: want {want:?}, have {:?}", g.tree_names());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let mut want: Vec<String> = vec!["C:".into()];
+    want.extend(c.rows.iter().map(|r| r.name.clone()));
+    wait_rows("volume opened", &want);
+    assert!(g.tree_cell(0, 0).contains("free of") || g.tree_cell(0, 0) == "C:", "root label: {}", g.tree_cell(0, 0));
+    g.select_tree_row("Users");
+    g.command(CMD_EXPAND);
+    let users = want.iter().position(|n| n == "Users").unwrap();
+    want.splice(users + 1..users + 1, std::iter::once("me".to_string()).chain(me.rows.iter().map(|r| r.name.clone())));
+    wait_rows("Users drilled to me", &want);
+    assert_eq!(g.tree_cell(users as i32 + 1, 2), "100.0 %"); // me is all of Users
+    assert_eq!(g.tree_cell(users as i32 + 2, 3), crate_group(me.rows[0].files));
+
+    // 13. Filtered: only *.mkv counts, and the only path opens down to the movie.
+    g.set_query("*.mkv");
+    let mkv: Vec<String> = ["C:", "Users", "me", "Videos", "movie.mkv"].map(String::from).to_vec();
+    wait_rows("filtered tree", &mkv);
+    assert_eq!(g.tree_cell(3, 1), "3.7 GB");
+    assert_eq!(g.tree_cell(4, 2), "100.0 %");
+    g.select_tree_row("Videos");
+    g.command(CMD_COLLAPSE);
+    wait_rows("collapsed", &mkv[..4]);
+    g.command(CMD_EXPAND);
+    wait_rows("expanded again", &mkv);
+
+    // 14. Back to the list.
+    g.command(CMD_TREE);
+    g.wait_for("list again", 1, Some("movie.mkv"));
+
     let _ = TreeScope::Descendants;
+}
+
+fn crate_group(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }

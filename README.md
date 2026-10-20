@@ -9,7 +9,11 @@ keeps everything live.
   a virtual results list over millions of rows, sortable columns, a type
   filter, highlighted matches, the Explorer context menu, drag-out, a tray
   icon and a global hotkey.
+  A **folder size tree** (the Tree button, `Ctrl+T`) shows where disk space
+  goes, optionally only for what matches the search.
 - **`rapidfind`**: the CLI, terminal UI and Windows service.
+- **`rapidfind-mcp`**: an MCP server, so AI assistants can find files and
+  free disk space through the index.
 
 ## Getting started
 
@@ -31,6 +35,8 @@ rapidfind                      # terminal search-as-you-type
 rapidfind search -l -s size -d "ext:mp4 size:>1gb"
 rapidfind search --case --path "Users\me"
 rapidfind status               # service, pipe, volumes (with folder/share states), index files
+rapidfind du C:\Users -d 2       # biggest folders/files, 2 levels (no path: all drives)
+rapidfind du -q "*.mp4|*.mkv"    # only count videos
 rapidfind folders add \\nas\photos --rescan-minutes 60
 rapidfind folders list | remove <path>
 rapidfind config show | set config.json | exclude-folder node_modules | exclude-files "*.tmp"
@@ -52,8 +58,9 @@ rapidfind service update | stop | start | uninstall
 | Context menu | Open, Open Path, Copy Full Path / Name / Path, Properties, followed by the real Explorer menu (7-Zip, Send to, Open with, ...). |
 | Drag and drop | Drag results into Explorer, editors or mail. |
 | Search menu | Match Case, Whole Word, Match Path, Match Diacritics, Regex. |
-| Tools → Options | **General:** hotkey (default `Ctrl+Alt+Space`), run in background, start with Windows, diacritics. **Volumes:** auto-include fixed/removable volumes, per-volume include, "include only" folders. **Folders:** folders and network shares, rescan interval, watching. **Exclude:** hidden/system, folders (paths or name patterns), file patterns, include-only patterns. |
-| Shortcuts | `Ctrl+F`/`Ctrl+L` focus search, `Ctrl+C` copy full paths, `Ctrl+Shift+C` copy names, `Ctrl+A` select all, `F5` refresh, `Ctrl+P` options, `Ctrl+Q` quit. |
+| Tools → Options | **General:** hotkey (default `Ctrl+Alt+Space`), run in background, start with Windows, diacritics. **Volumes:** auto-include fixed/removable volumes, per-volume include, "include only" folders. **Folders:** folders and network shares, rescan interval, watching. **Exclude:** hidden/system, folders (paths or name patterns), file patterns, include-only patterns. **Index:** what the index stores (see below). **Shares:** caching for network shares (see below). |
+| Folder size tree | The **Tree** button left of the search box (or View → Folder Size Tree, `Ctrl+T`) swaps the list for an expandable tree of drives and folders: +/− boxes, Size, a bar with each entry's share of its parent (for a drive, of the disk), file counts, online-only bytes and dates. Folders holding a single folder open through to it. With text in the search box, only matching files count, so `*.mp4` shows where videos are and `folder: wfn:node_modules` where node_modules weigh. `→`/`←` expand and collapse (or go to the parent), double-click or `Enter` opens or closes a folder, and the context menu has Search in This Folder plus the Explorer menu (delete etc.; sizes refresh after it). In the result list, "Show in Folder Size Tree" opens the tree at that item. Column headers sort the tree. Sizes count what's on the disk: online-only cloud files (OneDrive placeholders) are shown in their own column instead, and a file with several hard links counts once. |
+| Shortcuts | `Ctrl+F`/`Ctrl+L` focus search, `Ctrl+C` copy full paths, `Ctrl+Shift+C` copy names, `Ctrl+A` select all, `F5` refresh, `Ctrl+P` options, `Ctrl+T` folder size tree, `Ctrl+Q` quit. |
 | Other | One instance per user (launching again shows the window), tray icon, File → Export Results (CSV), run history (opening a file counts toward `runcount:` and the Run Count sort). |
 
 ## Query syntax
@@ -65,6 +72,8 @@ rapidfind service update | stop | start | uninstall
 | `"a b"` | literal with spaces |
 | `*.rs`, `a?c` | wildcards match the whole name |
 | `users\me`, `users/me` | a path separator matches against the full path |
+| `users\*\*.pdf`, `C:\**\node_modules`, `photo*\*\*.jpg` | in a path, `*` (or `**`) spans any number of folders, and `\*\` also matches none (`a\*\b` finds `a\b`). The pattern may start anywhere in the path but must match through to its end. |
+| `wfn:node_modules` | the whole name exactly (`wfn:C:\Temp` a whole path) |
 | `case:` `nocase:` `ww:` `path:` `regex:` | per-term options (the Search menu sets defaults) |
 | `ext:jpg;png` | extensions |
 | `size:>10mb`, `size:1mb..2mb` | size |
@@ -123,6 +132,18 @@ rest is optional:
 Turning a fast sort back on computes its ranks in the background (a second
 or two per volume); nothing is rescanned.
 
+### Network shares (Options → Shares)
+
+Walking a share over a slow link can take minutes to hours, so shares have
+their own settings:
+
+| Option | Default | Trade-off |
+|---|---|---|
+| Keep a copy of share indexes on disk | on | About 12 bytes per file on disk. Off: after a restart a share is empty until it has been walked again. |
+| Walk shares again when the service starts | on | Off: serve the cached copy and only watch for changes (ready in ~50 ms instead of a full walk). Changes made while the service was stopped show up at the next rescan. |
+| Index date created on shares | on | 8 B/file in memory, no extra traffic (it comes with the listing). Separate from the local switch because turning it on later re-walks every share. |
+| Rescan newly added shares every | 60 min | A periodic walk catches change notifications lost over SMB. |
+
 Configuration is `config.json` next to the index: `%ProgramData%\rapidfind`
 for the service, `%LOCALAPPDATA%\rapidfind` in-process. GUI preferences are
 in `%APPDATA%\rapidfind\gui.json`.
@@ -145,6 +166,29 @@ in `%APPDATA%\rapidfind\gui.json`.
 - For network folders, the service keeps an impersonation token of the last
   connected user and only uses it to read the configured folders.
 
+## MCP server (`rapidfind-mcp`)
+
+`rapidfind-mcp.exe` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio. It talks to the service like the GUI does, so it needs no
+elevation, and anything it deletes, it deletes with the rights of the user who
+started it. To register it with Claude Code:
+
+```
+claude mcp add rapidfind -- S:\path\to\rapidfind-mcp.exe
+```
+
+| Tool | |
+|---|---|
+| `search_files` | The full query language (wildcards across folders, `ext:`, `size:`, `dm:`, `dupe:` ...) plus structured filters (`name`, `path`, `extensions`, `min_size`/`max_size`, `modified_after`/`before`, `type`), sorting and paging. Online-only cloud files are flagged. |
+| `folder_sizes` | Disk-usage breakdown of a path (or of all drives, with capacity and free space), `depth` levels, top `limit` per folder with the rest summarised. With `query`, only matches count. |
+| `disk_overview` | Drives and shares: capacity, free, indexed size, online-only bytes, file count, index state. |
+| `cleanup_candidates` | Reclaimable space by category: Recycle Bin, temp folders, node_modules and other build output, Rust `target` folders, package manager caches, crash dumps, previous Windows installations, big old downloads, huge logs and same-size duplicates. Each category comes with a total and its biggest items. Read-only. |
+| `delete_paths` | Moves to the Recycle Bin by default; `permanent` deletes outright (required on shares); `dry_run` reports sizes only. Refuses volume and share roots, the Windows folder, Program Files, profile roots and system files. |
+| `empty_recycle_bin` | Reports and (unless `dry_run`) empties the Recycle Bin of one drive or all drives. |
+
+On this machine (6.8M files), `cleanup_candidates` answers in 1.6 s,
+`folder_sizes` in about 0.3 s and `search_files` in 10 to 40 ms.
+
 ## How it is fast
 
 | Phase | Technique |
@@ -159,6 +203,8 @@ in `%APPDATA%\rapidfind\gui.json`.
 | Compact memory | 40-byte entries with attributes packed into the flag bits. A name is stored once when it equals its folded form (most names), and fold ownership is a bitset instead of a per-entry column. |
 | Search | All folded names live in one contiguous `\0`-separated byte arena. A substring query is a parallel SIMD `memmem` over it, and matches map back to entries by galloping search. Exclusions are a cache-resident bitset. |
 | Sorting | Per-volume ranks for name, size, date and path (Everything's "fast sort"). The first page is a top-k selection over `(rank << 32 \| index)` integers gathered in parallel. Path order is a depth-first walk with siblings in name order. Entries changed since ranking fall back to exact comparisons that agree with the ranks, and ranks are refreshed in the background. |
+| Path wildcards | A path pattern runs as a bit-parallel automaton (shift-and over at most 62 positions). The state after each folder's path is cached, so an entry only feeds its own name, and a folder that can't lead to a match prunes everything below it. A literal ending such as `.pdf` drives the name scan. |
+| Folder sizes | Per client tree: child lists (CSR) built with parallel atomic passes, then breadth-first levels whose totals are folded up level by level in parallel (~0.3 s for 6.8M entries, ~12 bytes per entry while open). With a query, matches are added up their ancestor chains in parallel. A matched folder counts with its whole contents and is never counted twice. |
 | Paging | A result set is kept per connection. The GUI's virtual list fetches 256-row blocks as you scroll, and the full sort only happens if you scroll past the first page. |
 
 ## Measured (this machine, 6.8M files on C:, F: and S:)
@@ -168,6 +214,8 @@ in `%APPDATA%\rapidfind\gui.json`.
 | Full MFT scan | S: (NVMe, 1.45M records) ~2.6 s · F: (NVMe, via physical disk) 2.7 s · C: (SATA QLC, 4.4M records, 3.7 GiB MFT) ~25 s, bound by the drive |
 | Restart (load + journal replay) | ~0.5–1.5 s per volume; sort ranks follow in the background |
 | Live update visible | 1–10 ms after the change (NTFS journal); immediately for folders and SMB shares (change notifications) |
+| Path wildcards | `users\*\*.pdf` 34 ms · `*\appdata\*\*.log` 34 ms · `C:\**\node_modules` 33 ms · `photo*\*\*.jpg` 23 ms · `windows\system32\` 96 ms |
+| Folder size tree | built in 0.2 to 0.4 s for all three volumes; expanding a folder takes 10 to 30 ms |
 | Queries, all volumes | `txt` 20 ms · `*.dll` 46 ms · `dm:thisweek` 24 ms · `pic: size:>5mb` 26 ms · `a` (4.3M hits) 200 ms · empty query (6.8M) 280 ms |
 | Index on disk | 84 MB for all three volumes (C: 40 MB for 3.27M entries); Everything's db for the same drives is 260 MB. Saving C: takes ~0.5 s. |
 | Memory | Service 676 MB private for 6.8M entries (Everything: ~560 MB). C: is 319 MB: entries 127, names 35, folded names 75, maps 31, sort ranks 51. |
@@ -207,9 +255,11 @@ Also:
 
 - `crates/core`: the library
   - `ntfs/`: `mft.rs` (raw scan), `record.rs` (FILE record parsing), `usn.rs` (records, enum fallback, ReFS), `journal.rs`, `win.rs` (volumes, tokens, UNC)
-  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `ipc.rs` (protocol, sessions, server, client, backends)
+  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `ipc.rs` (protocol, sessions, server, client, backends)
 - `crates/cli`: the `rapidfind` binary: CLI, terminal UI and `service.rs` (the Windows service)
-- `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`; `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
+- `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
+- `crates/mcp`: `rapidfind-mcp`, the MCP server (`tools.rs`)
+- `tools/`: `shot.ps1` (window screenshot), `gui-mock.ps1` (GUI against the mock service)
 
 ## Prior art
 

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use crate::index::{Index, NONE, RankKey};
-use crate::query::{Ctx, Dupe, Prep, Query};
+use crate::query::{Ctx, Dupe, PathGlob, Prep, Query};
 use crate::runs::RunHistory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -78,6 +78,7 @@ pub fn build_prep(ix: &Index, q: &Query, runs: Option<&RunHistory>, need_runs: b
             _ => HashMap::new(),
         },
         recent: if q.uses_recent { ix.recent.clone() } else { HashMap::new() },
+        path_globs: q.path_globs.iter().map(|(p, case)| PathGlob::new(p, *case, ix.entries.len())).collect(),
     }
 }
 
@@ -353,6 +354,11 @@ impl ResultSet {
         let lists: Vec<Vec<Hit>> = (0..self.per_vol.len()).map(|v| self.sorted_volume(ixs, v, None)).collect();
         let full = merge(lists, &self.cmp(ixs));
         self.full = Some(full);
+    }
+
+    /// All (unsorted) matches in volume `v`, if its index still has `epoch`.
+    pub fn volume_hits(&self, v: usize, epoch: u64) -> Option<&[u32]> {
+        (self.epochs.get(v) == Some(&epoch)).then(|| self.per_vol[v].as_slice())
     }
 
     pub fn first_page(&self) -> &[Hit] {

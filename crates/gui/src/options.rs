@@ -51,8 +51,12 @@ pub const ID_SELECT_TAB: i32 = 980;
 pub const ID_IX_SORT_SIZE: i32 = 961;
 pub const ID_IX_SORT_MODIFIED: i32 = 962;
 pub const ID_IX_SORT_PATH: i32 = 963;
+pub const ID_SH_CACHE: i32 = 964;
+pub const ID_SH_REWALK: i32 = 965;
+pub const ID_SH_CREATED: i32 = 966;
+pub const ID_SH_RESCAN: i32 = 967;
 
-const TABS: [&str; 5] = ["General", "Volumes", "Folders", "Exclude", "Index"];
+const TABS: [&str; 6] = ["General", "Volumes", "Folders", "Exclude", "Index", "Shares"];
 
 struct Opt {
     hwnd: HWND,
@@ -212,6 +216,10 @@ fn fill(app: &App) {
         set(ID_IX_SORT_SIZE, c.fast_sort_size);
         set(ID_IX_SORT_MODIFIED, c.fast_sort_modified);
         set(ID_IX_SORT_PATH, c.fast_sort_path);
+        set(ID_SH_CACHE, c.share_cache);
+        set(ID_SH_REWALK, c.share_rewalk_on_start);
+        set(ID_SH_CREATED, c.share_index_date_created);
+        w::set_text(item(o.hwnd, ID_SH_RESCAN), &c.share_rescan_minutes.to_string());
         w::set_text(item(o.hwnd, ID_EX_FILES), &c.exclude_files.join(";"));
         w::set_text(item(o.hwnd, ID_INCLUDE_FILES), &c.include_only_files.join(";"));
         fill_lists(o);
@@ -287,6 +295,10 @@ fn harvest(app: &App) -> Config {
         c.fast_sort_size = chk(ID_IX_SORT_SIZE);
         c.fast_sort_modified = chk(ID_IX_SORT_MODIFIED);
         c.fast_sort_path = chk(ID_IX_SORT_PATH);
+        c.share_cache = chk(ID_SH_CACHE);
+        c.share_rewalk_on_start = chk(ID_SH_REWALK);
+        c.share_index_date_created = chk(ID_SH_CREATED);
+        c.share_rescan_minutes = w::get_text(get(ID_SH_RESCAN)).trim().parse().unwrap_or(c.share_rescan_minutes);
         c.exclude_files = list(ID_EX_FILES);
         c.include_only_files = list(ID_INCLUDE_FILES);
         let lv = get(ID_VOLUMES);
@@ -381,7 +393,7 @@ fn add_folder(path: String) {
             let network = ntwin::is_network_path(&path);
             // Remote shares: also rescan hourly in case change notifications
             // are lost (servers that don't support them, dropped links).
-            o.cfg.folders.push(FolderConfig { path, watch: true, rescan_minutes: if network { 60 } else { 0 } });
+            o.cfg.folders.push(FolderConfig { path, watch: true, rescan_minutes: if network { o.cfg.share_rescan_minutes } else { 0 } });
         }
         fill_lists(o);
         let lb = item(o.hwnd, ID_FOLDERS);
@@ -705,6 +717,21 @@ pub fn open(app: &App) {
         note("4 bytes per file. Same trade-off as size, for the Date Modified column.", y0 + 222);
         add("Button", "Fast path sort", chk, 0, ID_IX_SORT_PATH, Some(4), x0, y0 + 256, full, 22);
         note("4 bytes per file. When off, sorting by Path gets much slower (seconds for millions of results, ~1 s for 250,000).", y0 + 280);
+
+        // Shares
+        let snote = |text: &str, y: i32| {
+            add("Static", text, 0, 0, -1, Some(5), x0 + 24, y, full - 24, 40);
+        };
+        add("Static", "Network shares (\\\\server\\share) are slow to walk, so their index has its own settings. Local folders and drives aren't affected.", 0, 0, -1, Some(5), x0, y0, full, 40);
+        add("Button", "Keep a copy of share indexes on disk", chk, 0, ID_SH_CACHE, Some(5), x0, y0 + 50, full, 22);
+        snote("About 12 bytes per file on disk (120 MB for 10 million files). When off, shares are empty after a restart until they've been walked again, which takes minutes to hours over a slow link.", y0 + 74);
+        add("Button", "Walk shares again when the service starts", chk, 0, ID_SH_REWALK, Some(5), x0, y0 + 124, full, 22);
+        snote("Off: trust the cached copy and only watch for changes, until the rescan interval below. Saves a full walk per restart; changes made while the service was stopped show up at the next rescan.", y0 + 148);
+        add("Button", "Index date created on shares", chk, 0, ID_SH_CREATED, Some(5), x0, y0 + 198, full, 22);
+        snote("8 bytes per file in memory, no extra network traffic (it comes with the listing). Turning it on later re-walks every share, so it's on by default here.", y0 + 222);
+        add("Static", "Rescan newly added shares every (minutes, 0 = never):", 0, 0, -1, Some(5), x0, y0 + 276, 340, 20);
+        add("Edit", "60", edit_style | ES_NUMBER as u32, WS_EX_CLIENTEDGE, ID_SH_RESCAN, Some(5), x0 + 350, y0 + 272, 80, 24);
+        snote("Change notifications over SMB can be lost (dropped links, servers without support); a periodic walk catches what they missed.", y0 + 300);
 
         // Buttons
         let bh = ch * 96 / w::dpi(hwnd);

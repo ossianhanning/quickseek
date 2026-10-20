@@ -24,6 +24,12 @@ pub struct Settings {
     /// x, y, width, height in pixels.
     pub window: Option<(i32, i32, i32, i32)>,
     pub column_widths: Vec<i32>,
+    /// Folder-size tree instead of the result list.
+    pub tree_mode: bool,
+    /// Tree sort: name, size, files, modified.
+    pub tree_sort: String,
+    pub tree_descending: bool,
+    pub tree_column_widths: Vec<i32>,
 }
 
 impl Default for Settings {
@@ -40,6 +46,10 @@ impl Default for Settings {
             filter: 0,
             window: None,
             column_widths: Vec::new(),
+            tree_mode: false,
+            tree_sort: "size".into(),
+            tree_descending: true,
+            tree_column_widths: Vec::new(),
         }
     }
 }
