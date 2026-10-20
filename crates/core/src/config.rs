@@ -64,6 +64,13 @@ pub struct Config {
     /// Size used when rapidfind has to create a USN journal.
     pub journal_max_size_kb: u64,
     pub journal_allocation_delta_kb: u64,
+    /// Store date created (8 bytes per file). Needed for `dc:` and sorting
+    /// by date created. Off by default, like Everything.
+    pub index_date_created: bool,
+    /// Keep a precomputed rank for these sorts (4 bytes per file each).
+    pub fast_sort_size: bool,
+    pub fast_sort_modified: bool,
+    pub fast_sort_path: bool,
 }
 
 impl Default for Config {
@@ -81,6 +88,10 @@ impl Default for Config {
             folders: Vec::new(),
             journal_max_size_kb: 32 * 1024,
             journal_allocation_delta_kb: 8 * 1024,
+            index_date_created: false,
+            fast_sort_size: true,
+            fast_sort_modified: true,
+            fast_sort_path: true,
         }
     }
 }
@@ -103,6 +114,13 @@ impl Config {
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap())?;
         std::fs::rename(tmp, path)
+    }
+
+    pub fn index_options(&self) -> crate::index::IndexOptions {
+        crate::index::IndexOptions {
+            created: self.index_date_created,
+            fast_sort: [true, self.fast_sort_size, self.fast_sort_modified, self.fast_sort_path],
+        }
     }
 
     pub fn fold_mode(&self) -> FoldMode {

@@ -43,7 +43,18 @@ fn main() {
     let t = Instant::now();
     let ix = Index::from_scan('Z', &s);
     drop(s);
-    println!("built {} entries in {} ms ({})", ix.len_live(), t.elapsed().as_millis(), ix.memory_breakdown());
+    println!("built {} entries in {} ms ({}; {:.0} MB total)", ix.len_live(), t.elapsed().as_millis(), ix.memory_breakdown(), ix.memory_bytes() as f64 / 1048576.0);
+    let mut ix = ix;
+    let p = std::env::temp_dir().join("rapidfind-synth.db");
+    let t = Instant::now();
+    rapidfind_core::persist::save(&mut ix, &p).unwrap();
+    let size = std::fs::metadata(&p).unwrap().len();
+    println!("saved {:.1} MB in {} ms", size as f64 / 1048576.0, t.elapsed().as_millis());
+    let t = Instant::now();
+    let back = rapidfind_core::persist::load(&p).unwrap();
+    println!("loaded in {} ms ({:.0} MB before ranks)", t.elapsed().as_millis(), back.memory_bytes() as f64 / 1048576.0);
+    std::fs::remove_file(&p).ok();
+    let ix = ix;
     for q in ["a", "txt", "*.dll", "", "report photo", "ext:png size:>500000", r"users\data"] {
         let query = Query::parse(q).unwrap();
         let mut times = Vec::new();
@@ -56,4 +67,29 @@ fn main() {
         times.sort_by(f64::total_cmp);
         println!("{q:>24}: {total:>8} hits, min {:.2} ms, median {:.2} ms", times[0], times[times.len() / 2]);
     }
+    use rapidfind_core::index::IndexOptions;
+    use rapidfind_core::search::{ResultSet, Extras, SortKey};
+    let mut ix = ix;
+    for (label, fast) in [("fast sort on ", true), ("fast sort off", false)] {
+        ix.set_options(IndexOptions { created: true, fast_sort: [true, fast, fast, fast] });
+        if fast {
+            ix.compute_ranks();
+        }
+        for key in [SortKey::Size, SortKey::Modified, SortKey::Path] {
+            for q in ["", "txt"] {
+                let query = Query::parse(q).unwrap();
+                let t = Instant::now();
+                let mut rs = ResultSet::new(&[&ix], &query, &SearchOptions { sort: key, descending: true, limit: 512 }, Extras::default());
+                let first = t.elapsed().as_secs_f64() * 1000.0;
+                let t = Instant::now();
+                let _ = rs.page(&[&ix], rs.total - 10, 10);
+                let deep = t.elapsed().as_secs_f64() * 1000.0;
+                println!("{label} {key:?} {q:>4?}: first page {first:7.1} ms, scroll to end {deep:8.1} ms ({} hits)", rs.total);
+            }
+        }
+    }
 }
+
+/// Cost of turning off a fast sort: sort times with and without ranks.
+#[allow(dead_code)]
+fn _sort_costs() {}

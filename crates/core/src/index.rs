@@ -30,23 +30,45 @@ pub const F_DELETED: u16 = 2;
 pub const F_EXCLUDED: u16 = 4;
 /// Folder that is only visible because an include-only folder lies below it.
 pub const F_INCLUDE_ANCESTOR: u16 = 8;
+/// The name equals its folded form, so it's stored once (in the folded arena).
+pub const F_NAME_IN_FOLD: u16 = 16;
 
+/// File attributes kept in the spare bits of `flags` (directory = `F_DIR`):
+/// R H S A T P(sparse) L(reparse) C O I(not content indexed) E.
+const ATTR_BITS: [(u32, u16); 11] = [
+    (0x1, 1 << 5),
+    (0x2, 1 << 6),
+    (0x4, 1 << 7),
+    (0x20, 1 << 8),
+    (0x100, 1 << 9),
+    (0x200, 1 << 10),
+    (0x400, 1 << 11),
+    (0x800, 1 << 12),
+    (0x1000, 1 << 13),
+    (0x2000, 1 << 14),
+    (0x4000, 1 << 15),
+];
+const ATTR_MASK: u16 = 0xFFE0;
+
+pub fn pack_attrs(a: u32) -> u16 {
+    ATTR_BITS.iter().filter(|(w, _)| a & w != 0).fold(0, |f, (_, b)| f | b)
+}
+
+/// 40 bytes per file. Optional data (date created) and rare data (extra
+/// hard links) live in side tables so they cost nothing when unused.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
 pub struct Entry {
     /// File size, or total size of everything below a directory.
     pub size: u64,
     pub modified: i64,
-    pub created: i64,
     pub record: u32,
     /// Entry index of the parent directory (`NONE` for the root).
     pub parent: u32,
+    /// Offset in `names` (unused when `F_NAME_IN_FOLD`).
     pub name_off: u32,
-    /// Index into `fold_starts` / `fold_owner`.
+    /// Fold record: index into `fold_starts`.
     pub fold_rec: u32,
-    pub attrs: u32,
-    /// Next entry for the same MFT record (hard links), or `NONE`.
-    pub next_link: u32,
     pub name_len: u16,
     pub flags: u16,
     pub seq: u16,
@@ -54,6 +76,17 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// Win32 file attributes.
+    pub fn attrs(&self) -> u32 {
+        let mut a = ATTR_BITS.iter().filter(|(_, b)| self.flags & b != 0).fold(0, |a, (w, _)| a | w);
+        if self.is_dir() {
+            a |= ntfs::usn::FILE_ATTRIBUTE_DIRECTORY;
+        }
+        a
+    }
+    pub fn set_attrs(&mut self, a: u32) {
+        self.flags = (self.flags & !ATTR_MASK) | pack_attrs(a);
+    }
     pub fn is_dir(&self) -> bool {
         self.flags & F_DIR != 0
     }
@@ -75,6 +108,22 @@ pub enum RankKey {
     Size = 1,
     Modified = 2,
     Path = 3,
+}
+
+/// What an index stores beyond the basics (Everything's "Indexes" options).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexOptions {
+    /// Keep date created (8 bytes per file; needed for `dc:` and that sort).
+    pub created: bool,
+    /// Keep a precomputed rank per sort key (4 bytes per file each). Name
+    /// is always ranked (other ranks tie-break on it).
+    pub fast_sort: [bool; 4],
+}
+
+impl Default for IndexOptions {
+    fn default() -> Self {
+        IndexOptions { created: true, fast_sort: [true; 4] }
+    }
 }
 
 /// Position of each entry in each sort order. `NONE` = changed since the
@@ -107,8 +156,18 @@ pub struct Index {
     /// Folded names, `\0`-terminated, in `fold_starts` order.
     pub fold: Vec<u8>,
     pub fold_starts: Vec<u32>,
-    pub fold_owner: Vec<u32>,
+    /// Fold records below `fold_base` belong to the entry with the same
+    /// index unless marked dead; later ones (renames, additions) are owned
+    /// per `fold_extra`. Saves a 4-byte owner table for the common case.
+    pub fold_base: u32,
+    pub fold_dead: Vec<u64>,
+    pub fold_extra: Vec<u32>,
     pub fold_mode: FoldMode,
+    pub opts: IndexOptions,
+    /// Date created per entry (empty unless `opts.created`).
+    pub created: Vec<i64>,
+    /// Entry → next entry of the same MFT record (extra hard links only).
+    pub more_links: HashMap<u32, u32>,
     /// MFT record → first entry of that record.
     pub rec_map: Vec<u32>,
     /// For volumes with 128-bit file ids (ReFS) or synthetic ones (folder
@@ -143,7 +202,15 @@ impl Index {
 
     /// `root_name` is how the root shows in paths (`C:` or `G:\Photos`).
     pub fn from_scan_named(letter: char, root_name: &str, scan: &Scan, fold_mode: FoldMode) -> Index {
-        let mut ix = Index { letter, has_sizes: scan.has_sizes, root: NONE, fold_mode, ..Default::default() };
+        Self::from_scan_with(letter, root_name, scan, fold_mode, IndexOptions::default())
+    }
+
+    /// `root_name` is how the root shows in paths (`C:` or `G:` plus a folder).
+    pub fn from_scan_with(letter: char, root_name: &str, scan: &Scan, fold_mode: FoldMode, opts: IndexOptions) -> Index {
+        let mut ix = Index { letter, has_sizes: scan.has_sizes, root: NONE, fold_mode, opts, ..Default::default() };
+        if opts.created {
+            ix.created.reserve(scan.names.len() + 1);
+        }
         ix.rec_map = vec![NONE; scan.meta.len()];
         ix.entries.reserve(scan.names.len() + 1);
         ix.names.reserve(scan.strings.len() + 4);
@@ -163,19 +230,23 @@ impl Index {
             ix.entries.push(Entry {
                 size: if m.is_dir { 0 } else { m.size },
                 modified: m.modified,
-                created: m.created,
                 record: n.record,
                 parent: NONE,
                 name_off: ix.names.len() as u32,
                 fold_rec: idx,
-                attrs: m.attrs | if m.is_dir { ntfs::usn::FILE_ATTRIBUTE_DIRECTORY } else { 0 },
-                next_link: ix.rec_map[n.record as usize],
                 name_len: name.len().min(u16::MAX as usize) as u16,
-                flags: if m.is_dir { F_DIR } else { 0 },
+                flags: (if m.is_dir { F_DIR } else { 0 }) | pack_attrs(m.attrs),
                 seq: m.seq,
                 _pad: 0,
             });
+            if opts.created {
+                ix.created.push(m.created);
+            }
             ix.names.extend_from_slice(&name.as_bytes()[..name.len().min(u16::MAX as usize)]);
+            let prev = ix.rec_map[n.record as usize];
+            if prev != NONE {
+                ix.more_links.insert(idx, prev);
+            }
             ix.rec_map[n.record as usize] = idx;
             parent_rec.push(if is_root { NONE } else { n.parent });
             if is_root {
@@ -186,10 +257,13 @@ impl Index {
             // Volume without a visible root (shouldn't happen): synthesize one.
             let idx = ix.entries.len() as u32;
             ix.entries.push(Entry {
-                size: 0, modified: 0, created: 0, record: ntfs::ROOT_RECORD, parent: NONE,
-                name_off: ix.names.len() as u32, fold_rec: idx, attrs: ntfs::usn::FILE_ATTRIBUTE_DIRECTORY,
-                next_link: NONE, name_len: root_name.len() as u16, flags: F_DIR, seq: 0, _pad: 0,
+                size: 0, modified: 0, record: ntfs::ROOT_RECORD, parent: NONE,
+                name_off: ix.names.len() as u32, fold_rec: idx,
+                name_len: root_name.len() as u16, flags: F_DIR, seq: 0, _pad: 0,
             });
+            if opts.created {
+                ix.created.push(0);
+            }
             ix.names.extend_from_slice(root_name.as_bytes());
             if ix.rec_map.len() <= ntfs::ROOT_RECORD as usize {
                 ix.rec_map.resize(ntfs::ROOT_RECORD as usize + 1, NONE);
@@ -230,7 +304,9 @@ impl Index {
         self.names.shrink_to_fit();
         self.fold.shrink_to_fit();
         self.fold_starts.shrink_to_fit();
-        self.fold_owner.shrink_to_fit();
+        self.fold_extra.shrink_to_fit();
+        self.fold_dead.shrink_to_fit();
+        self.created.shrink_to_fit();
         self.rec_map.shrink_to_fit();
         for r in &mut self.ranks.by {
             r.shrink_to_fit();
@@ -239,42 +315,112 @@ impl Index {
 
     // ---- folding -------------------------------------------------------------
 
-    /// Rebuilds the folded-name arena from scratch (in parallel), one fold
-    /// record per entry in entry order.
+    /// Rebuilds both name arenas from the current names (in parallel): one
+    /// fold record per entry in entry order, and the original name stored
+    /// separately only when it differs from the folded one.
     pub fn rebuild_fold(&mut self) {
         const CHUNK: usize = 1 << 15;
-        let names = &self.names;
         let mode = self.fold_mode;
-        let parts: Vec<(Vec<u8>, Vec<u32>)> = self
-            .entries
-            .par_chunks(CHUNK)
-            .map(|chunk| {
-                let mut buf = Vec::with_capacity(chunk.len() * 16);
-                let mut starts = Vec::with_capacity(chunk.len());
-                for e in chunk {
-                    starts.push(buf.len() as u32);
-                    let s = unsafe {
-                        std::str::from_utf8_unchecked(&names[e.name_off as usize..e.name_off as usize + e.name_len as usize])
-                    };
-                    fold_into_mode(s, &mut buf, mode);
-                    buf.push(0);
+        let me = &*self;
+        // Per chunk: folded bytes, fold starts, differing names, per-entry name offset (NONE = in fold).
+        type Part = (Vec<u8>, Vec<u32>, Vec<u8>, Vec<u32>);
+        let parts: Vec<Part> = (0..me.entries.len().div_ceil(CHUNK))
+            .into_par_iter()
+            .map(|c| {
+                let range = c * CHUNK..((c + 1) * CHUNK).min(me.entries.len());
+                let mut fold = Vec::with_capacity(range.len() * 16);
+                let mut starts = Vec::with_capacity(range.len());
+                let mut names = Vec::new();
+                let mut offs = Vec::with_capacity(range.len());
+                for i in range {
+                    let s = me.name(i as u32);
+                    let at = fold.len();
+                    starts.push(at as u32);
+                    fold_into_mode(s, &mut fold, mode);
+                    if &fold[at..] == s.as_bytes() {
+                        offs.push(NONE);
+                    } else {
+                        offs.push(names.len() as u32);
+                        names.extend_from_slice(s.as_bytes());
+                    }
+                    fold.push(0);
                 }
-                (buf, starts)
+                (fold, starts, names, offs)
             })
             .collect();
-        self.fold.clear();
-        self.fold_starts.clear();
-        for (buf, starts) in parts {
-            let base = self.fold.len() as u32;
-            self.fold_starts.extend(starts.into_iter().map(|s| s + base));
-            self.fold.extend_from_slice(&buf);
+        let (mut fold, mut fold_starts, mut names) = (Vec::new(), Vec::with_capacity(self.entries.len()), Vec::new());
+        fold.reserve(parts.iter().map(|p| p.0.len()).sum());
+        names.reserve(parts.iter().map(|p| p.2.len()).sum());
+        let mut i = 0usize;
+        for (f, st, nm, offs) in parts {
+            let (fb, nb) = (fold.len() as u32, names.len() as u32);
+            fold_starts.extend(st.into_iter().map(|s| s + fb));
+            fold.extend_from_slice(&f);
+            names.extend_from_slice(&nm);
+            for o in offs {
+                let e = &mut self.entries[i];
+                e.fold_rec = i as u32;
+                if o == NONE {
+                    e.flags |= F_NAME_IN_FOLD;
+                    e.name_off = 0;
+                } else {
+                    e.flags &= !F_NAME_IN_FOLD;
+                    e.name_off = o + nb;
+                }
+                i += 1;
+            }
         }
-        self.fold_owner = (0..self.entries.len() as u32)
-            .map(|i| if self.entries[i as usize].is_deleted() { NONE } else { i })
-            .collect();
-        for (i, e) in self.entries.iter_mut().enumerate() {
-            e.fold_rec = i as u32;
+        self.fold = fold;
+        self.fold_starts = fold_starts;
+        self.names = names;
+        self.fold_base = self.entries.len() as u32;
+        self.fold_extra = Vec::new();
+        let mut dead = vec![0u64; self.entries.len().div_ceil(64)];
+        for (i, e) in self.entries.iter().enumerate() {
+            if e.is_deleted() {
+                dead[i / 64] |= 1 << (i % 64);
+            }
         }
+        self.fold_dead = dead;
+    }
+
+    /// Entry owning fold record `rec` (`NONE` if dead).
+    #[inline]
+    pub fn fold_owner(&self, rec: usize) -> u32 {
+        if rec < self.fold_base as usize {
+            if self.fold_dead.get(rec / 64).is_some_and(|w| w >> (rec % 64) & 1 == 1) { NONE } else { rec as u32 }
+        } else {
+            self.fold_extra.get(rec - self.fold_base as usize).copied().unwrap_or(NONE)
+        }
+    }
+
+    fn kill_fold_rec(&mut self, rec: usize) {
+        if rec < self.fold_base as usize {
+            if let Some(w) = self.fold_dead.get_mut(rec / 64) {
+                *w |= 1 << (rec % 64);
+            }
+        } else if let Some(o) = self.fold_extra.get_mut(rec - self.fold_base as usize) {
+            *o = NONE;
+        }
+    }
+
+    /// Changes what's stored. Turning date created on needs the data from a
+    /// rescan (the caller does that); turning things off frees memory now.
+    pub fn set_options(&mut self, opts: IndexOptions) {
+        if !opts.created {
+            self.created = Vec::new();
+        }
+        for k in 1..4 {
+            if !opts.fast_sort[k] {
+                self.ranks.by[k] = Vec::new();
+            }
+        }
+        self.opts = opts;
+        self.generation += 1;
+    }
+
+    pub fn created(&self, i: u32) -> Option<i64> {
+        self.created.get(i as usize).copied()
     }
 
     /// Switches diacritic handling; refolds names and recomputes ranks.
@@ -315,8 +461,12 @@ impl Index {
         drop(keys);
         let name = to_rank(&order);
 
+        let on = self.opts.fast_sort;
         let (size, (modified, path)) = rayon::join(
             || {
+                if !on[RankKey::Size as usize] {
+                    return Vec::new();
+                }
                 let mut o = live.clone();
                 o.par_sort_unstable_by_key(|&i| (self.entries[i as usize].size, name[i as usize]));
                 to_rank(&o)
@@ -324,11 +474,14 @@ impl Index {
             || {
                 rayon::join(
                     || {
+                        if !on[RankKey::Modified as usize] {
+                            return Vec::new();
+                        }
                         let mut o = live.clone();
                         o.par_sort_unstable_by_key(|&i| (self.entries[i as usize].modified, name[i as usize]));
                         to_rank(&o)
                     },
-                    || self.path_rank(&live, &name),
+                    || if on[RankKey::Path as usize] { self.path_rank(&live, &name) } else { Vec::new() },
                 )
             },
         );
@@ -462,7 +615,13 @@ impl Index {
     #[inline]
     pub fn name(&self, i: u32) -> &str {
         let e = &self.entries[i as usize];
-        unsafe { std::str::from_utf8_unchecked(&self.names[e.name_off as usize..e.name_off as usize + e.name_len as usize]) }
+        let bytes = if e.flags & F_NAME_IN_FOLD != 0 {
+            let s = self.fold_starts[e.fold_rec as usize] as usize;
+            &self.fold[s..s + e.name_len as usize]
+        } else {
+            &self.names[e.name_off as usize..e.name_off as usize + e.name_len as usize]
+        };
+        unsafe { std::str::from_utf8_unchecked(bytes) }
     }
 
     #[inline]
@@ -591,7 +750,7 @@ impl Index {
                     }
                     let hi = (lo + step + 1).min(starts.len());
                     rec = lo + starts[lo..hi].partition_point(|&s| s as usize <= at) - 1;
-                    let owner = self.fold_owner[rec];
+                    let owner = self.fold_owner(rec);
                     if owner != NONE {
                         out.push(owner);
                     }
@@ -711,7 +870,7 @@ impl Index {
         if e.parent == NONE {
             return own; // the root itself is never excluded by name rules
         }
-        if r.excludes(e.is_dir(), e.attrs, self.fold_name(i), &mut || self.fold_path(i)) {
+        if r.excludes(e.is_dir(), e.attrs(), self.fold_name(i), &mut || self.fold_path(i)) {
             return F_EXCLUDED;
         }
         own
@@ -765,7 +924,7 @@ impl Index {
                 return None;
             }
             let c = cur;
-            cur = self.entries[c as usize].next_link;
+            cur = self.more_links.get(&c).copied().unwrap_or(NONE);
             Some(c)
         })
     }
@@ -801,26 +960,41 @@ impl Index {
         }
     }
 
-    fn push_name(&mut self, name: &str) -> (u32, u16, u32) {
-        Self::headroom(&mut self.names, name.len());
+    /// Appends a name; returns (name_off, name_len, fold_rec, stored_in_fold).
+    /// The new fold record is owned by `owner`.
+    fn push_name(&mut self, name: &str, owner: u32) -> (u32, u16, u32, bool) {
+        let len = name.len().min(u16::MAX as usize);
+        let name = &name[..name.floor_char_boundary(len)];
         Self::headroom(&mut self.fold, name.len() * 3 + 1);
         Self::headroom(&mut self.fold_starts, 1);
-        Self::headroom(&mut self.fold_owner, 1);
-        let off = self.names.len() as u32;
-        let len = name.len().min(u16::MAX as usize);
-        self.names.extend_from_slice(&name.as_bytes()[..len]);
+        Self::headroom(&mut self.fold_extra, 1);
         let fold_rec = self.fold_starts.len() as u32;
-        self.fold_starts.push(self.fold.len() as u32);
+        let at = self.fold.len();
+        self.fold_starts.push(at as u32);
         fold_into_mode(name, &mut self.fold, self.fold_mode);
+        let in_fold = &self.fold[at..] == name.as_bytes();
         self.fold.push(0);
-        (off, len as u16, fold_rec)
+        // Records appended past the base are owned per `fold_extra`.
+        while self.fold_extra.len() + (self.fold_base as usize) < fold_rec as usize {
+            self.fold_extra.push(NONE);
+        }
+        self.fold_extra.push(owner);
+        let off = if in_fold {
+            0
+        } else {
+            Self::headroom(&mut self.names, name.len());
+            let o = self.names.len() as u32;
+            self.names.extend_from_slice(name.as_bytes());
+            o
+        };
+        (off, name.len() as u16, fold_rec, in_fold)
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn add_link(&mut self, record: u32, seq: u16, parent: u32, name: &str, attrs: u32, size: u64, modified: i64, created: i64) -> u32 {
         let is_dir = attrs & ntfs::usn::FILE_ATTRIBUTE_DIRECTORY != 0;
-        let (name_off, name_len, fold_rec) = self.push_name(name);
         let idx = self.entries.len() as u32;
+        let (name_off, name_len, fold_rec, in_fold) = self.push_name(name, idx);
         Self::headroom(&mut self.entries, 1);
         for r in &mut self.ranks.by {
             // Only extend rank arrays that are in step with the entries
@@ -837,19 +1011,23 @@ impl Index {
         self.entries.push(Entry {
             size: if is_dir { 0 } else { size },
             modified,
-            created,
             record,
             parent,
             name_off,
             fold_rec,
-            attrs,
-            next_link: self.rec_map[record as usize],
             name_len,
-            flags: if is_dir { F_DIR } else { 0 },
+            flags: (if is_dir { F_DIR } else { 0 }) | (if in_fold { F_NAME_IN_FOLD } else { 0 }) | pack_attrs(attrs),
             seq,
             _pad: 0,
         });
-        self.fold_owner.push(idx);
+        if self.opts.created && self.created.len() == idx as usize {
+            Self::headroom(&mut self.created, 1);
+            self.created.push(created);
+        }
+        let prev = self.rec_map[record as usize];
+        if prev != NONE {
+            self.more_links.insert(idx, prev);
+        }
         self.rec_map[record as usize] = idx;
         if !is_dir {
             self.add_size_up(parent, size as i64);
@@ -864,27 +1042,26 @@ impl Index {
         if e.is_deleted() {
             return;
         }
-        // Unlink from the record chain.
+        // Unlink from the record's chain of hard links.
         let rec = e.record as usize;
+        let next = self.more_links.remove(&i).unwrap_or(NONE);
         if self.rec_map[rec] == i {
-            self.rec_map[rec] = e.next_link;
+            self.rec_map[rec] = next;
         } else {
-            let mut cur = self.rec_map[rec];
-            while cur != NONE {
-                let next = self.entries[cur as usize].next_link;
-                if next == i {
-                    self.entries[cur as usize].next_link = e.next_link;
-                    break;
+            let prev = self.more_links.iter().find(|&(_, &n)| n == i).map(|(&p, _)| p);
+            if let Some(p) = prev {
+                if next == NONE {
+                    self.more_links.remove(&p);
+                } else {
+                    self.more_links.insert(p, next);
                 }
-                cur = next;
             }
         }
         self.add_size_up(e.parent, -(e.size as i64));
-        self.fold_owner[e.fold_rec as usize] = NONE;
+        self.kill_fold_rec(e.fold_rec as usize);
         self.recent.remove(&i);
         let m = &mut self.entries[i as usize];
         m.flags |= F_DELETED;
-        m.next_link = NONE;
         self.garbage += 1;
         self.generation += 1;
     }
@@ -932,13 +1109,13 @@ impl Index {
             self.add_size_up(new_parent, e.size as i64);
         }
         if self.name(i) != name {
-            self.fold_owner[e.fold_rec as usize] = NONE;
-            let (off, len, fold_rec) = self.push_name(name);
-            self.fold_owner.push(i);
+            self.kill_fold_rec(e.fold_rec as usize);
+            let (off, len, fold_rec, in_fold) = self.push_name(name, i);
             let m = &mut self.entries[i as usize];
             m.name_off = off;
             m.name_len = len;
             m.fold_rec = fold_rec;
+            m.flags = if in_fold { m.flags | F_NAME_IN_FOLD } else { m.flags & !F_NAME_IN_FOLD };
         }
         self.unrank(i, &[RankKey::Name, RankKey::Size, RankKey::Modified, RankKey::Path]);
         self.entries[i as usize].parent = new_parent;
@@ -968,8 +1145,10 @@ impl Index {
             let m = &mut self.entries[l as usize];
             m.size = size;
             m.modified = modified;
-            if created != 0 {
-                m.created = created;
+            if created != 0
+                && let Some(c) = self.created.get_mut(l as usize)
+            {
+                *c = created;
             }
         }
         self.generation += 1;
@@ -1004,31 +1183,33 @@ impl Index {
         }
         let mut remap = vec![NONE; n];
         let mut new_entries = Vec::with_capacity(n - self.garbage.min(n));
-        let mut new_names = Vec::with_capacity(self.names.len());
+        let mut new_created = Vec::new();
         for i in 0..n {
             if alive[i] != 1 {
                 continue;
             }
             remap[i] = new_entries.len() as u32;
-            let mut e = self.entries[i];
-            let (o, l) = (e.name_off as usize, e.name_len as usize);
-            e.name_off = new_names.len() as u32;
-            new_names.extend_from_slice(&self.names[o..o + l]);
-            new_entries.push(e);
+            // Names stay where they are for now; rebuild_fold below repacks them.
+            new_entries.push(self.entries[i]);
+            if let Some(c) = self.created.get(i) {
+                new_created.push(*c);
+            }
         }
         for e in &mut new_entries {
             if e.parent != NONE {
                 e.parent = remap[e.parent as usize];
             }
-            e.next_link = NONE;
         }
         self.rec_map.fill(NONE);
-        for (i, e) in new_entries.iter_mut().enumerate() {
+        self.more_links.clear();
+        for (i, e) in new_entries.iter().enumerate() {
             let r = e.record as usize;
             if r >= self.rec_map.len() {
                 self.rec_map.resize(r + 1, NONE);
             }
-            e.next_link = self.rec_map[r];
+            if self.rec_map[r] != NONE {
+                self.more_links.insert(i as u32, self.rec_map[r]);
+            }
             self.rec_map[r] = i as u32;
         }
         self.recent = self
@@ -1037,8 +1218,10 @@ impl Index {
             .filter(|&(i, _t)| remap[i as usize] != NONE).map(|(i, t)| (remap[i as usize], t))
             .collect();
         self.root = if self.root == NONE { NONE } else { remap[self.root as usize] };
+        // The name arenas still hold the old layout, which name() reads by
+        // the (copied) per-entry offsets; rebuild_fold repacks them.
         self.entries = new_entries;
-        self.names = new_names;
+        self.created = new_created;
         self.garbage = 0;
         self.rebuild_excl();
         self.rebuild_fold();
@@ -1048,22 +1231,31 @@ impl Index {
         self.generation += 1;
     }
 
+    fn map_bytes(&self) -> usize {
+        (self.fold_starts.capacity() + self.fold_extra.capacity() + self.rec_map.capacity()) * 4
+            + self.fold_dead.capacity() * 8
+            + self.excl.capacity() * 8
+            + self.more_links.capacity() * 12
+    }
+
     pub fn memory_bytes(&self) -> usize {
         self.entries.capacity() * size_of::<Entry>()
             + self.names.capacity()
             + self.fold.capacity()
-            + (self.fold_starts.capacity() + self.fold_owner.capacity() + self.rec_map.capacity()) * 4
+            + self.created.capacity() * 8
+            + self.map_bytes()
             + self.ranks.by.iter().map(|r| r.capacity() * 4).sum::<usize>()
     }
 
     pub fn memory_breakdown(&self) -> String {
         let mb = |b: usize| format!("{:.0}", b as f64 / 1048576.0);
         format!(
-            "entries {} MB, names {} MB, folded {} MB, maps {} MB, ranks {} MB",
+            "entries {} MB, names {} MB, folded {} MB, created {} MB, maps {} MB, ranks {} MB",
             mb(self.entries.capacity() * size_of::<Entry>()),
             mb(self.names.capacity()),
             mb(self.fold.capacity()),
-            mb((self.fold_starts.capacity() + self.fold_owner.capacity() + self.rec_map.capacity()) * 4),
+            mb(self.created.capacity() * 8),
+            mb(self.map_bytes()),
             mb(self.ranks.by.iter().map(|r| r.capacity() * 4).sum::<usize>()),
         )
     }

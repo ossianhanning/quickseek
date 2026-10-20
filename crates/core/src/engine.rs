@@ -11,7 +11,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::config::{Config, FolderConfig};
 use crate::folder::{self, WatchEvent, Watcher};
-use crate::index::Index;
+use crate::index::{Index, IndexOptions};
 use crate::live::{Applier, file_info_by_id};
 use crate::ntfs::journal::{self, Journal, JournalError};
 use crate::ntfs::{mft, usn, win};
@@ -102,6 +102,13 @@ impl Volume {
         })
     }
 
+    /// Counts `n` more unsaved changes; saturates so a never-saved volume
+    /// (`u64::MAX`) stays that way. Returns the new count.
+    fn add_unsaved(&self, n: u64) -> u64 {
+        let old = self.unsaved.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| Some(u.saturating_add(n))).unwrap();
+        old.saturating_add(n)
+    }
+
     fn set_state(&self, s: &str) {
         let mut st = self.state.lock();
         if *st != s {
@@ -147,6 +154,8 @@ pub struct Engine {
     opts: EngineOptions,
     stop: Arc<AtomicBool>,
     net_token: TokenSlot,
+    /// Index options changed in a way that needs fresh data (date created on).
+    rescan_requested: AtomicBool,
 }
 
 // ---- loading single volumes ------------------------------------------------------
@@ -177,10 +186,12 @@ fn serial_of(letter: char) -> u32 {
 }
 
 pub fn scan_volume(letter: char, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
-    scan_journaled(letter, VolumeKind::Ntfs, progress)
+    scan_journaled(letter, VolumeKind::Ntfs, IndexOptions::default(), progress)
 }
 
-fn scan_journaled(letter: char, kind: VolumeKind, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
+fn scan_journaled(letter: char, kind: VolumeKind, opts: IndexOptions, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
+    let root_name = format!("{letter}:");
+    let fold = crate::fold::FoldMode::Lower;
     let t0 = Instant::now();
     let serial = serial_of(letter);
     // Note the journal position *before* scanning so changes made during the
@@ -192,18 +203,18 @@ fn scan_journaled(letter: char, kind: VolumeKind, progress: &(dyn Fn(u64, u64) +
         VolumeKind::Refs => {
             let root = win::root_file_id(letter)?;
             let (scan, map) = usn::scan_enum_v3(&h, root)?;
-            let mut ix = Index::from_scan(letter, &scan);
+            let mut ix = Index::from_scan_with(letter, &root_name, &scan, fold, opts);
             ix.id_map = Some(map);
             (ix, "FSCTL_ENUM_USN_DATA v3 (ReFS)", None)
         }
         _ => {
             drop(h);
             match mft::scan(letter, progress) {
-                Ok((s, st)) => (Index::from_scan(letter, &s), "raw MFT", Some(st)),
+                Ok((s, st)) => (Index::from_scan_with(letter, &root_name, &s, fold, opts), "raw MFT", Some(st)),
                 Err(e) => {
                     log::warn!("{letter}: raw MFT scan failed ({e}); falling back to FSCTL_ENUM_USN_DATA");
                     let h = win::open_volume(letter, 0)?;
-                    (Index::from_scan(letter, &usn::scan_enum(&h)?), "FSCTL_ENUM_USN_DATA", None)
+                    (Index::from_scan_with(letter, &root_name, &usn::scan_enum(&h)?, fold, opts), "FSCTL_ENUM_USN_DATA", None)
                 }
             }
         }
@@ -222,14 +233,19 @@ fn scan_journaled(letter: char, kind: VolumeKind, progress: &(dyn Fn(u64, u64) +
 
 /// Loads the saved index for `letter` and replays the journal, or scans.
 pub fn open_volume(letter: char, force_scan: bool, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
-    open_journaled(letter, VolumeKind::Ntfs, force_scan, progress)
+    open_journaled(letter, VolumeKind::Ntfs, force_scan, IndexOptions::default(), progress)
 }
 
-fn open_journaled(letter: char, kind: VolumeKind, force_scan: bool, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
+fn open_journaled(letter: char, kind: VolumeKind, force_scan: bool, opts: IndexOptions, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
     let t0 = Instant::now();
     if !force_scan {
         let serial = serial_of(letter);
         match persist::load(&persist::db_path(letter)) {
+            // A saved index without date created can't serve an index that wants it: rescan.
+            Ok(ix) if opts.created && ix.created.is_empty() => {
+                log::info!("{letter}: date created now indexed; rescanning");
+                drop(ix);
+            }
             Ok(mut ix) if ix.letter == letter && ix.volume_serial == serial && (kind == VolumeKind::Refs) == ix.id_map.is_some() => {
                 match Journal::open(letter, Some(ix.journal_id), Some(ix.next_usn)) {
                     Ok(mut j) => {
@@ -250,7 +266,7 @@ fn open_journaled(letter: char, kind: VolumeKind, force_scan: bool, progress: &(
             Err(e) => log::warn!("{letter}: can't load saved index ({e}); rescanning"),
         }
     }
-    scan_journaled(letter, kind, progress)
+    scan_journaled(letter, kind, opts, progress)
 }
 
 // ---- the engine ------------------------------------------------------------------
@@ -308,6 +324,7 @@ impl Engine {
             opts,
             stop: Arc::new(AtomicBool::new(false)),
             net_token: Arc::new(RwLock::new(None)),
+            rescan_requested: AtomicBool::new(false),
         }
     }
 
@@ -378,6 +395,25 @@ impl Engine {
     pub fn sync_volumes(&self) {
         let cfg = self.config.read().clone();
         let want = desired(&cfg, &self.opts.only);
+        if self.rescan_requested.swap(false, Ordering::Relaxed) {
+            // Rebuild each volume in the background of the old one: searches
+            // keep using the old index until the new one replaces it.
+            for old in self.volumes() {
+                let Some(w) = want.iter().find(|w| w.0 == old.key) else { continue };
+                match self.load(&w.0, w.1, w.2, w.3.clone(), &cfg, true) {
+                    Ok((v, rep)) => {
+                        self.report(&w.0, &Ok(rep));
+                        let mut vols = self.volumes.write();
+                        if let Some(slot) = vols.iter_mut().find(|x| x.key == old.key) {
+                            *slot = v;
+                        }
+                        old.alive.store(false, Ordering::Relaxed);
+                        self.set_version.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) => self.report(&w.0, &Err(e)),
+                }
+            }
+        }
         {
             let mut vols = self.volumes.write();
             let before = vols.len();
@@ -398,7 +434,7 @@ impl Engine {
                 continue;
             }
             self.loading.lock().push(key.clone());
-            let res = self.load(&key, letter, kind, fcfg, &cfg);
+            let res = self.load(&key, letter, kind, fcfg, &cfg, self.opts.force_scan);
             self.loading.lock().retain(|k| *k != key);
             match res {
                 Ok((v, rep)) => {
@@ -411,12 +447,14 @@ impl Engine {
         }
     }
 
-    fn load(&self, key: &str, letter: char, kind: VolumeKind, fcfg: Option<FolderConfig>, cfg: &Config) -> anyhow::Result<(Arc<Volume>, LoadReport)> {
+    fn load(&self, key: &str, letter: char, kind: VolumeKind, fcfg: Option<FolderConfig>, cfg: &Config, force_scan: bool) -> anyhow::Result<(Arc<Volume>, LoadReport)> {
         let fold = cfg.fold_mode();
         let rules = cfg.rules(letter);
+        let opts = cfg.index_options();
         match kind {
             VolumeKind::Ntfs | VolumeKind::Refs => {
-                let (mut ix, rep, j, applier) = open_journaled(letter, kind, self.opts.force_scan, &|_, _| {})?;
+                let (mut ix, rep, j, applier) = open_journaled(letter, kind, force_scan, opts, &|_, _| {})?;
+                ix.set_options(opts);
                 ix.set_fold_mode(fold);
                 ix.apply_rules(rules);
                 let unsaved = match rep {
@@ -440,6 +478,7 @@ impl Engine {
                 let cached = persist::load(&persist::folder_db_path(key)).ok();
                 let had_cache = cached.is_some();
                 let mut ix = cached.unwrap_or_else(|| folder::empty(key, fold));
+                ix.set_options(opts);
                 ix.set_fold_mode(fold);
                 ix.apply_rules(rules);
                 let rep = LoadReport::Walked { entries: ix.len_live(), ms: t0.elapsed().as_millis() };
@@ -500,8 +539,15 @@ impl Engine {
 
     /// Parses and runs a query into a pageable result set.
     pub fn query(&self, text: &str, flags: SearchFlags, opts: &SearchOptions) -> Result<ResultSet, String> {
-        let fold = self.config.read().fold_mode();
+        let (fold, created) = {
+            let c = self.config.read();
+            (c.fold_mode(), c.index_date_created)
+        };
         let q = Query::parse_with(text, flags, fold, &crate::date::DateEnv::system())?;
+        let have_created = created || self.with_indexes(|ixs| ixs.iter().any(|i| !i.created.is_empty()));
+        if (q.uses_created || opts.sort == crate::search::SortKey::Created) && !have_created {
+            return Err("Date created isn't indexed. Turn on Options → Index → \"Index date created\" (rescans once).".into());
+        }
         let runs = self.runs.read();
         Ok(self.with_indexes(|ixs| ResultSet::new(ixs, &q, opts, Extras { runs: Some(&runs) })))
     }
@@ -523,12 +569,22 @@ impl Engine {
             c.save(p)?;
         }
         let fold = c.fold_mode();
+        let opts = c.index_options();
+        if opts.created && !self.config.read().index_date_created {
+            self.rescan_requested.store(true, Ordering::Relaxed);
+        }
         for v in self.volumes.read().iter() {
             let rules = c.rules(v.letter);
             let mut ix = v.index.write();
+            let gained_ranks = (1..4).any(|k| opts.fast_sort[k] && !ix.opts.fast_sort[k]);
+            ix.set_options(opts);
             ix.set_fold_mode(fold);
             if ix.rules != rules {
                 ix.apply_rules(rules);
+            }
+            drop(ix);
+            if gained_ranks {
+                rank_in_background(v.clone());
             }
         }
         *self.config.write() = c;
@@ -659,7 +715,8 @@ fn watch_journal(v: Arc<Volume>, mut j: Journal, stop: Arc<AtomicBool>) {
             }
             Err(JournalError::Gap) => {
                 log::warn!("{}: journal gap; rescanning", v.key);
-                match scan_journaled(v.letter, v.kind, &|_, _| {}) {
+                let opts = v.index.read().opts;
+                match scan_journaled(v.letter, v.kind, opts, &|_, _| {}) {
                     Ok((mut ix, _, nj, applier)) => {
                         let (fold, rules) = {
                             let old = v.index.read();
@@ -709,7 +766,7 @@ fn watch_journal(v: Arc<Volume>, mut j: Journal, stop: Arc<AtomicBool>) {
         };
         refresh(v.letter, refs, &v.index, &list);
         maintain(&v, &mut last_ranks);
-        let unsaved = v.unsaved.fetch_add(batch.len() as u64, Ordering::Relaxed).saturating_add(batch.len() as u64);
+        let unsaved = v.add_unsaved(batch.len() as u64);
         if unsaved >= SAVE_THRESHOLD && last_save.elapsed() > Duration::from_secs(300) {
             let mut ix = v.index.write();
             if let Err(e) = persist::save(&mut ix, &persist::db_path(v.letter)) {
@@ -728,7 +785,8 @@ fn rescan_folder(v: &Volume, token: Option<Arc<crate::ntfs::win::Token>>) {
         (ix.fold_mode, ix.rules.clone(), ix.volume_serial, ix.generation, ix.epoch)
     };
     let t0 = Instant::now();
-    let mut ix = folder::build_as(&v.key, fold, token);
+    let opts = v.index.read().opts;
+    let mut ix = folder::build_as(&v.key, fold, token, opts);
     ix.volume_serial = serial;
     ix.apply_rules(rules);
     ix.generation = generation + 1;
@@ -808,7 +866,7 @@ fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token:
                         ok &= folder::apply_change(&mut ix, &root, *a, rel, &mut pending_old, now_ft);
                     }
                 }
-                v.unsaved.fetch_add(changes.len() as u64, Ordering::Relaxed);
+                v.add_unsaved(changes.len() as u64);
                 if !ok {
                     needs_walk = true;
                 }
@@ -853,6 +911,26 @@ mod tests {
         let c = Config { match_diacritics: false, ..Default::default() };
         e.set_config(c).unwrap();
         assert_eq!(e.query("note", SearchFlags::default(), &SearchOptions::default()).unwrap().total, 2);
+    }
+
+    #[test]
+    fn date_created_option() {
+        let mut ix = sample();
+        ix.set_options(IndexOptions { created: false, ..Default::default() });
+        assert!(ix.created.is_empty());
+        let e = Engine::from_indexes(vec![ix]);
+        let err = e.query("dc:2026", SearchFlags::default(), &SearchOptions::default()).err().unwrap();
+        assert!(err.contains("isn't indexed"), "{err}");
+        let sorted = SearchOptions { sort: crate::search::SortKey::Created, ..Default::default() };
+        assert!(e.query("", SearchFlags::default(), &sorted).is_err());
+        // Fast sorts off: same order, computed without ranks.
+        let c = Config { fast_sort_size: false, fast_sort_modified: false, ..Default::default() };
+        e.set_config(c).unwrap();
+        let by_size = SearchOptions { sort: crate::search::SortKey::Size, descending: true, limit: 2 };
+        let rs = e.query("file:", SearchFlags::default(), &by_size).unwrap();
+        let names: Vec<String> = e.with_indexes(|ixs| rs.first_page().iter().map(|h| ixs[0].name(h.idx).to_string()).collect());
+        assert_eq!(names, ["Report.PDF", "notepad.exe"]);
+        assert!(e.with_indexes(|ixs| ixs[0].ranks.by[1].is_empty()));
     }
 
     #[test]

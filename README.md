@@ -108,6 +108,21 @@ diacritics" (Search → Match Diacritics off) to make `Angstrom` find
 - **Excludes** (Options → Exclude, or `config.json`) are applied as flags,
   not by re-indexing, so changing them takes effect immediately.
 
+### Index options (Options → Index, or `rapidfind config index-created|fast-sort`)
+
+Names, parents, sizes, dates modified and attributes are always kept. The
+rest is optional:
+
+| Option | Default | Cost | When off |
+|---|---|---|---|
+| Index date created | off | 8 B/file in memory (~55 MB for 7M files) plus one more compressed column on disk | `dc:` and sorting by Date Created report that it isn't indexed. Turning it on rescans each volume once (C: ~30 s); the old index keeps serving meanwhile. |
+| Fast size sort | on | 4 B/file | First page of a multi-million-hit size sort takes ~150 ms instead of ~70 ms; normal result sets are unaffected. |
+| Fast date modified sort | on | 4 B/file | Same as size (~120 ms instead of ~40 ms at 3.3M hits). |
+| Fast path sort | on | 4 B/file | Path sorts compare full paths: ~0.75 s for 250k hits, several seconds for millions. |
+
+Turning a fast sort back on computes its ranks in the background (a second
+or two per volume); nothing is rescanned.
+
 Configuration is `config.json` next to the index: `%ProgramData%\rapidfind`
 for the service, `%LOCALAPPDATA%\rapidfind` in-process. GUI preferences are
 in `%APPDATA%\rapidfind\gui.json`.
@@ -140,7 +155,8 @@ in `%APPDATA%\rapidfind\gui.json`.
 | | If a volume filter driver rejects raw volume reads (e.g. `gameflt` on Xbox/Store game drives), the same bytes are read from `\\.\PhysicalDriveN` at the volume's disk offset. |
 | | Raw records give names, parent, size and timestamps in one pass. `FSCTL_ENUM_USN_DATA` is the fallback (no sizes or dates). |
 | Staying current | `FSCTL_READ_USN_JOURNAL` with `BytesToWaitFor = 1` blocks in the kernel until something changes. Records are applied through an MFT-record → entry map, so there are no per-change path lookups. Only files whose data changed get a batched `OpenFileById` size refresh. Directory renames keep their entry, so children follow for free. |
-| Restart | The index is saved as raw arrays plus the journal id and next USN. On startup it's loaded with a few large reads and only the journal records since the last run are replayed. Derived data (folded names, sort ranks) is rebuilt in parallel, the ranks in the background. |
+| Restart | The index is saved column by column (names, parents as distance to the entry, records and dates as deltas, all varints) in 4 MiB zstd blocks compressed and decompressed in parallel, plus the journal id and next USN. On startup only the journal records since the last run are replayed. Derived data (folded names, record map, sort ranks) isn't stored: it's rebuilt in parallel, the ranks in the background. |
+| Compact memory | 40-byte entries with attributes packed into the flag bits. A name is stored once when it equals its folded form (most names), and fold ownership is a bitset instead of a per-entry column. |
 | Search | All folded names live in one contiguous `\0`-separated byte arena. A substring query is a parallel SIMD `memmem` over it, and matches map back to entries by galloping search. Exclusions are a cache-resident bitset. |
 | Sorting | Per-volume ranks for name, size, date and path (Everything's "fast sort"). The first page is a top-k selection over `(rank << 32 \| index)` integers gathered in parallel. Path order is a depth-first walk with siblings in name order. Entries changed since ranking fall back to exact comparisons that agree with the ranks, and ranks are refreshed in the background. |
 | Paging | A result set is kept per connection. The GUI's virtual list fetches 256-row blocks as you scroll, and the full sort only happens if you scroll past the first page. |
@@ -153,7 +169,8 @@ in `%APPDATA%\rapidfind\gui.json`.
 | Restart (load + journal replay) | ~0.5–1.5 s per volume; sort ranks follow in the background |
 | Live update visible | 1–10 ms after the change (NTFS journal); immediately for folders and SMB shares (change notifications) |
 | Queries, all volumes | `txt` 20 ms · `*.dll` 46 ms · `dm:thisweek` 24 ms · `pic: size:>5mb` 26 ms · `a` (4.3M hits) 200 ms · empty query (6.8M) 280 ms |
-| Memory | C: 3.27M entries in 418 MB (including 51 MB of sort ranks) |
+| Index on disk | 84 MB for all three volumes (C: 40 MB for 3.27M entries); Everything's db for the same drives is 260 MB. Saving C: takes ~0.5 s. |
+| Memory | Service 676 MB private for 6.8M entries (Everything: ~560 MB). C: is 319 MB: entries 127, names 35, folded names 75, maps 31, sort ranks 51. |
 | Correctness | `selftest`: 3,002 random entries checked against the filesystem: 0 missing, 0 size mismatches |
 
 ## Testing

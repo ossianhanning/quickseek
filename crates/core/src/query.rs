@@ -119,6 +119,7 @@ pub struct Query {
     pub uses_child_counts: bool,
     pub uses_runs: bool,
     pub uses_recent: bool,
+    pub uses_created: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -342,8 +343,7 @@ impl Parser<'_> {
         }
         let mut filters: Vec<Node> = Vec::new();
         let leaf = |l: Leaf| Node::Leaf(l);
-        loop {
-            let Some((key, rest)) = s.split_once(':') else { break };
+        while let Some((key, rest)) = s.split_once(':') {
             if key.starts_with('"') || key.is_empty() {
                 break;
             }
@@ -434,6 +434,9 @@ impl Parser<'_> {
                     if field == DateField::RecentChange {
                         self.q.uses_recent = true;
                     }
+                    if field == DateField::Created {
+                        self.q.uses_created = true;
+                    }
                     let (lo, hi) = if value.is_empty() && field == DateField::RecentChange {
                         (i64::MIN, i64::MAX)
                     } else {
@@ -505,6 +508,7 @@ impl Query {
                 uses_child_counts: false,
                 uses_runs: false,
                 uses_recent: false,
+                uses_created: false,
             },
         };
         let mut items = Vec::new();
@@ -709,7 +713,10 @@ impl Leaf {
             Leaf::Date { field, lo, hi } => {
                 let t = match field {
                     DateField::Modified => e.modified,
-                    DateField::Created => e.created,
+                    DateField::Created => match c.ix.created(c.i) {
+                        Some(t) => t,
+                        None => return false,
+                    },
                     DateField::RecentChange => match c.prep.recent.get(&c.i) {
                         Some(&t) => t,
                         None => return false,
@@ -723,7 +730,7 @@ impl Leaf {
                 d >= *lo && d <= *hi
             }
             Leaf::Empty => e.is_dir() && c.prep.child_counts.as_ref().is_some_and(|cc| cc[c.i as usize] == 0),
-            Leaf::Attrib(m) => e.attrs & m == *m,
+            Leaf::Attrib(m) => e.attrs() & m == *m,
             Leaf::RunCount { lo, hi } => {
                 let n = c.prep.runs.get(&c.i).copied().unwrap_or(0) as u64;
                 n >= *lo && n <= *hi

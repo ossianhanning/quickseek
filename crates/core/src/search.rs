@@ -166,7 +166,10 @@ impl Cmp<'_> {
                 .ranked(RankKey::Modified, a, b)
                 .unwrap_or_else(|| e(a).modified.cmp(&e(b).modified).then_with(|| self.by_name(a, b))),
             SortKey::Path => self.ranked(RankKey::Path, a, b).unwrap_or_else(|| self.by_path(a, b)),
-            SortKey::Created => e(a).created.cmp(&e(b).created).then_with(|| self.by_name(a, b)),
+            SortKey::Created => {
+                let c = |h: Hit| self.ixs[h.vol as usize].created(h.idx).unwrap_or(0);
+                c(a).cmp(&c(b)).then_with(|| self.by_name(a, b))
+            }
             SortKey::RunCount => {
                 let rc = |h: Hit| self.runs.get(h.vol as usize).and_then(|m| m.get(&h.idx)).copied().unwrap_or(0);
                 rc(a).cmp(&rc(b)).then_with(|| self.by_name(a, b))
@@ -276,6 +279,42 @@ impl ResultSet {
                     (r != NONE).then(|| {
                         let r = if desc { u32::MAX - r } else { r };
                         (r as u64) << 32 | i as u64
+                    })
+                })
+                .collect();
+            if let Some(mut keys) = keys {
+                if let Some(k) = k
+                    && k < keys.len()
+                {
+                    keys.select_nth_unstable(k);
+                    keys.truncate(k);
+                }
+                keys.par_sort_unstable();
+                return keys.into_iter().map(|x| Hit { vol, idx: x as u32 }).collect();
+            }
+        }
+        // No rank for this key (fast sort off, created, run count): the
+        // order is (value, name order), and the name rank always exists, so
+        // gather (value, name rank, index) as one integer and select on that
+        // instead of calling the comparator millions of times.
+        let value: Option<Box<dyn Fn(u32) -> u64 + Sync>> = match self.opts.sort {
+            SortKey::Size => Some(Box::new(|i| ix.entries[i as usize].size)),
+            SortKey::Modified => Some(Box::new(|i| (ix.entries[i as usize].modified as u64) ^ (1 << 63))),
+            SortKey::Created if !ix.created.is_empty() => Some(Box::new(|i| (ix.created(i).unwrap_or(0) as u64) ^ (1 << 63))),
+            SortKey::RunCount => {
+                let runs = &self.runs[v];
+                Some(Box::new(move |i| runs.get(&i).copied().unwrap_or(0) as u64))
+            }
+            _ => None,
+        };
+        if let Some(value) = value {
+            let keys: Option<Vec<u128>> = ids
+                .par_iter()
+                .map(|&i| {
+                    let r = ix.ranks.get(RankKey::Name, i);
+                    (r != NONE).then(|| {
+                        let (val, r) = if desc { (u64::MAX - value(i), u32::MAX - r) } else { (value(i), r) };
+                        (val as u128) << 64 | (r as u128) << 32 | i as u128
                     })
                 })
                 .collect();

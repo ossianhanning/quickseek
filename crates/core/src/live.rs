@@ -139,7 +139,7 @@ impl Applier {
         };
 
         let e = &mut ix.entries[entry as usize];
-        e.attrs = r.attrs;
+        e.set_attrs(r.attrs);
         if reason & DATA_CHANGE != 0 {
             e.modified = r.timestamp.max(e.modified);
             if !is_dir {

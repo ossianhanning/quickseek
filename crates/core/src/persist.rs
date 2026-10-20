@@ -1,17 +1,29 @@
-//! On-disk index: raw dumps of the index arrays plus the journal cursor.
-//! Loading is a few large reads (no parsing), then the journal is replayed
-//! from the saved USN, which is how a restart avoids rescanning the MFT.
+//! On-disk index, plus the journal cursor so a restart only replays the
+//! changes since the last save.
+//!
+//! Format v5 is columnar and compressed: each field of every entry is its own
+//! stream, transformed so neighbours look alike (record numbers and
+//! timestamps as zigzag-varint deltas, parents relative to the entry, sizes
+//! as varints), then cut into 4 MB blocks and zstd-compressed in parallel.
+//! Names are stored once, in entry order. Anything derivable (folded names,
+//! sort ranks, hard-link chains, exclusion flags, arena offsets) is rebuilt
+//! on load. Loading reads a fraction of the bytes of a raw dump, which on a
+//! slow disk makes it faster, not slower.
 
-use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use bytemuck::Pod;
+use rayon::prelude::*;
 
 use crate::fold::FoldMode;
-use crate::index::{Entry, Index, NONE};
+use crate::index::{Entry, F_DELETED, F_EXCLUDED, F_INCLUDE_ANCESTOR, F_NAME_IN_FOLD, Index, IndexOptions, NONE};
 
-const MAGIC: &[u8; 8] = b"RAPIDFD\x04";
+const MAGIC: &[u8; 8] = b"RAPIDFD\x05";
+const BLOCK: usize = 4 << 20;
+const LEVEL: i32 = 3;
+/// Flag bits rebuilt on load rather than stored.
+const DERIVED_FLAGS: u16 = F_EXCLUDED | F_INCLUDE_ANCESTOR | F_NAME_IN_FOLD;
+const STREAMS: usize = 11;
 
 static DB_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -41,30 +53,139 @@ pub fn db_path(letter: char) -> PathBuf {
     db_dir().join(format!("{letter}.db"))
 }
 
-fn write_vec<T: Pod, W: Write>(w: &mut W, v: &[T]) -> io::Result<()> {
-    w.write_all(&(v.len() as u64).to_le_bytes())?;
-    w.write_all(bytemuck::cast_slice(v))
+fn bad() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "corrupt index file")
 }
 
-fn read_u64<R: Read>(r: &mut R) -> io::Result<u64> {
-    let mut b = [0u8; 8];
-    r.read_exact(&mut b)?;
-    Ok(u64::from_le_bytes(b))
-}
+// ---- varints ---------------------------------------------------------------------
 
-fn read_vec<T: Pod, R: Read>(r: &mut R, max: u64) -> io::Result<Vec<T>> {
-    let n = read_u64(r)?;
-    if n > max {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "corrupt index file"));
+fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push(v as u8 | 0x80);
+        v >>= 7;
     }
-    let mut v: Vec<T> = vec![T::zeroed(); n as usize];
-    r.read_exact(bytemuck::cast_slice_mut(&mut v))?;
+    out.push(v as u8);
+}
+
+fn zigzag(v: i64) -> u64 {
+    ((v << 1) ^ (v >> 63)) as u64
+}
+
+fn unzigzag(v: u64) -> i64 {
+    (v >> 1) as i64 ^ -((v & 1) as i64)
+}
+
+struct Varints<'a> {
+    b: &'a [u8],
+    p: usize,
+}
+
+impl Varints<'_> {
+    fn next(&mut self) -> io::Result<u64> {
+        let mut v = 0u64;
+        let mut shift = 0;
+        loop {
+            let byte = *self.b.get(self.p).ok_or_else(bad)?;
+            self.p += 1;
+            v |= ((byte & 0x7F) as u64) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(v);
+            }
+            shift += 7;
+            if shift > 63 {
+                return Err(bad());
+            }
+        }
+    }
+}
+
+// ---- compressed streams -----------------------------------------------------------
+
+/// Compresses `data` in independent blocks (in parallel).
+fn write_stream(w: &mut impl Write, data: &[u8]) -> io::Result<()> {
+    let blocks: Vec<io::Result<Vec<u8>>> = data.par_chunks(BLOCK).map(|c| zstd::bulk::compress(c, LEVEL)).collect();
+    w.write_all(&(data.len() as u64).to_le_bytes())?;
+    w.write_all(&(blocks.len() as u64).to_le_bytes())?;
+    for b in blocks {
+        let b = b?;
+        w.write_all(&(b.len() as u64).to_le_bytes())?;
+        w.write_all(&b)?;
+    }
+    Ok(())
+}
+
+fn read_u64(r: &mut &[u8]) -> io::Result<u64> {
+    if r.len() < 8 {
+        return Err(bad());
+    }
+    let v = u64::from_le_bytes(r[..8].try_into().unwrap());
+    *r = &r[8..];
     Ok(v)
 }
 
-/// Saves `ix` atomically. Arrays are written as they are (deleted entries
-/// included), so saving is just sequential writes; compaction only happens
-/// once garbage passes 20%.
+fn read_u32(r: &mut &[u8]) -> io::Result<u32> {
+    if r.len() < 4 {
+        return Err(bad());
+    }
+    let v = u32::from_le_bytes(r[..4].try_into().unwrap());
+    *r = &r[4..];
+    Ok(v)
+}
+
+/// Locates the blocks of one stream (no decompression yet).
+fn take_stream<'a>(r: &mut &'a [u8]) -> io::Result<(usize, Vec<&'a [u8]>)> {
+    let raw = read_u64(r)? as usize;
+    let n = read_u64(r)? as usize;
+    if raw > (1usize << 40) || n != raw.div_ceil(BLOCK) {
+        return Err(bad());
+    }
+    let mut blocks = Vec::with_capacity(n);
+    for _ in 0..n {
+        let len = read_u64(r)? as usize;
+        if len > r.len() {
+            return Err(bad());
+        }
+        blocks.push(&r[..len]);
+        *r = &r[len..];
+    }
+    Ok((raw, blocks))
+}
+
+fn decompress(raw: usize, blocks: &[&[u8]]) -> io::Result<Vec<u8>> {
+    let parts: Vec<io::Result<Vec<u8>>> = blocks
+        .par_iter()
+        .enumerate()
+        .map(|(k, b)| zstd::bulk::decompress(b, BLOCK.min(raw - k * BLOCK)))
+        .collect();
+    let mut out = Vec::with_capacity(raw);
+    for p in parts {
+        out.extend_from_slice(&p?);
+    }
+    if out.len() != raw {
+        return Err(bad());
+    }
+    Ok(out)
+}
+
+// ---- save / load ------------------------------------------------------------------
+
+/// Builds one column stream from every entry (chunks in parallel).
+fn column(n: usize, f: impl Fn(usize, &mut Vec<u8>) + Sync) -> Vec<u8> {
+    const CHUNK: usize = 1 << 16;
+    let parts: Vec<Vec<u8>> = (0..n.div_ceil(CHUNK))
+        .into_par_iter()
+        .map(|c| {
+            let mut out = Vec::with_capacity(CHUNK * 3);
+            for i in c * CHUNK..((c + 1) * CHUNK).min(n) {
+                f(i, &mut out);
+            }
+            out
+        })
+        .collect();
+    parts.concat()
+}
+
+/// Saves `ix` atomically (compacting first once garbage passes 20%).
 pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
     if ix.garbage * 5 > ix.entries.len() {
         ix.compact();
@@ -72,73 +193,160 @@ pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
+    let ix = &*ix;
+    let n = ix.entries.len();
+    let e = &ix.entries;
+    let prev = |i: usize| if i == 0 { None } else { Some(&e[i - 1]) };
+    let with_created = ix.created.len() == n;
+
+    let names = column(n, |i, o| o.extend_from_slice(ix.name(i as u32).as_bytes()));
+    let name_lens = column(n, |i, o| put_varint(o, e[i].name_len as u64));
+    let records = column(n, |i, o| put_varint(o, zigzag(e[i].record as i64 - prev(i).map_or(0, |p| p.record as i64))));
+    let parents = column(n, |i, o| put_varint(o, if e[i].parent == NONE { 0 } else { zigzag(i as i64 - e[i].parent as i64) + 1 }));
+    let sizes = column(n, |i, o| put_varint(o, e[i].size));
+    let modified = column(n, |i, o| put_varint(o, zigzag(e[i].modified.wrapping_sub(prev(i).map_or(0, |p| p.modified)))));
+    let created = if with_created {
+        column(n, |i, o| put_varint(o, zigzag(ix.created[i].wrapping_sub(if i == 0 { 0 } else { ix.created[i - 1] }))))
+    } else {
+        Vec::new()
+    };
+    let flags = column(n, |i, o| o.extend_from_slice(&(e[i].flags & !DERIVED_FLAGS).to_le_bytes()));
+    let seqs = column(n, |i, o| put_varint(o, e[i].seq as u64));
+    let mut recent = Vec::new();
+    for (&i, &t) in &ix.recent {
+        put_varint(&mut recent, i as u64);
+        put_varint(&mut recent, zigzag(t));
+    }
+    let mut ids = Vec::new();
+    for (&k, &v) in ix.id_map.iter().flatten() {
+        ids.extend_from_slice(&k.to_le_bytes());
+        ids.extend_from_slice(&v.to_le_bytes());
+    }
+
     let tmp = path.with_extension("tmp");
     {
-        let mut w = BufWriter::with_capacity(1 << 20, File::create(&tmp)?);
+        let mut w = io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
         w.write_all(MAGIC)?;
         w.write_all(&(ix.letter as u32).to_le_bytes())?;
         w.write_all(&ix.volume_serial.to_le_bytes())?;
         w.write_all(&ix.journal_id.to_le_bytes())?;
         w.write_all(&ix.next_usn.to_le_bytes())?;
         w.write_all(&ix.root.to_le_bytes())?;
-        w.write_all(&[ix.has_sizes as u8, (ix.fold_mode == FoldMode::StripDiacritics) as u8])?;
-        // The folded arena and sort ranks are derived data: rebuilt in
-        // parallel on load, which is faster than reading them from disk.
-        write_vec(&mut w, &ix.entries)?;
-        write_vec(&mut w, &ix.names)?;
-        let (ri, rt): (Vec<u32>, Vec<i64>) = ix.recent.iter().map(|(&i, &t)| (i, t)).unzip();
-        write_vec(&mut w, &ri)?;
-        write_vec(&mut w, &rt)?;
-        let (ids, recs): (Vec<u128>, Vec<u32>) = ix.id_map.iter().flatten().map(|(&k, &v)| (k, v)).unzip();
-        write_vec(&mut w, &ids)?;
-        write_vec(&mut w, &recs)?;
+        w.write_all(&[ix.has_sizes as u8, (ix.fold_mode == FoldMode::StripDiacritics) as u8, with_created as u8, 0])?;
+        w.write_all(&(n as u64).to_le_bytes())?;
         w.write_all(&(ix.rec_map.len() as u64).to_le_bytes())?;
+        let all: [&Vec<u8>; STREAMS] = [&names, &name_lens, &records, &parents, &sizes, &modified, &created, &flags, &seqs, &recent, &ids];
+        for s in all {
+            write_stream(&mut w, s)?;
+        }
         w.flush()?;
     }
     std::fs::rename(&tmp, path)
 }
 
 pub fn load(path: &Path) -> io::Result<Index> {
-    let mut r = BufReader::with_capacity(1 << 20, File::open(path)?);
-    let mut magic = [0u8; 8];
-    r.read_exact(&mut magic)?;
-    if &magic != MAGIC {
+    let data = std::fs::read(path)?;
+    let mut r: &[u8] = &data;
+    if r.len() < 8 || &r[..8] != MAGIC {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a rapidfind index (or old version)"));
     }
-    let mut b4 = [0u8; 4];
-    r.read_exact(&mut b4)?;
-    let letter = char::from_u32(u32::from_le_bytes(b4)).unwrap_or('?');
-    r.read_exact(&mut b4)?;
-    let volume_serial = u32::from_le_bytes(b4);
+    r = &r[8..];
+    let letter = char::from_u32(read_u32(&mut r)?).unwrap_or('?');
+    let volume_serial = read_u32(&mut r)?;
     let journal_id = read_u64(&mut r)?;
     let next_usn = read_u64(&mut r)? as i64;
-    r.read_exact(&mut b4)?;
-    let root = u32::from_le_bytes(b4);
-    let mut b1 = [0u8; 2];
-    r.read_exact(&mut b1)?;
-    const MAX: u64 = 1 << 32;
-    let mut entries: Vec<Entry> = read_vec(&mut r, MAX)?;
-    let names: Vec<u8> = read_vec(&mut r, MAX)?;
-    let ri: Vec<u32> = read_vec(&mut r, MAX)?;
-    let rt: Vec<i64> = read_vec(&mut r, MAX)?;
-    let ids: Vec<u128> = read_vec(&mut r, MAX)?;
-    let recs: Vec<u32> = read_vec(&mut r, MAX)?;
+    let root = read_u32(&mut r)?;
+    let hdr = read_u32(&mut r)?.to_le_bytes();
+    let n = read_u64(&mut r)? as usize;
     let rec_len = read_u64(&mut r)? as usize;
-    let bad = ri.len() != rt.len()
-        || ids.len() != recs.len()
-        || ri.iter().any(|&i| i as usize >= entries.len())
-        || root as usize >= entries.len().max(1)
-        || entries.iter().any(|e| e.name_off as usize + e.name_len as usize > names.len());
-    if bad {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "corrupt index file"));
+    if n > u32::MAX as usize || root as usize >= n.max(1) || rec_len > u32::MAX as usize {
+        return Err(bad());
+    }
+    let mut located = Vec::with_capacity(STREAMS);
+    for _ in 0..STREAMS {
+        located.push(take_stream(&mut r)?);
+    }
+    let streams: Vec<Vec<u8>> = located.par_iter().map(|(raw, b)| decompress(*raw, b)).collect::<io::Result<_>>()?;
+    let [names, name_lens, records, parents, sizes, modified, created, flags, seqs, recent, ids]: [Vec<u8>; STREAMS] =
+        streams.try_into().map_err(|_| bad())?;
+    if flags.len() != n * 2 {
+        return Err(bad());
     }
 
-    // Rebuild the record map (hard-link chains) from live entries.
+    // Decode the varint columns in parallel (each one is sequential).
+    let col = |b: &[u8], delta: bool| -> io::Result<Vec<i64>> {
+        let mut out = Vec::with_capacity(n);
+        let mut acc = 0i64;
+        let mut v = Varints { b, p: 0 };
+        for _ in 0..n {
+            let x = v.next()?;
+            if delta {
+                acc = acc.wrapping_add(unzigzag(x));
+                out.push(acc);
+            } else {
+                out.push(x as i64);
+            }
+        }
+        Ok(out)
+    };
+    let has_created = hdr[2] != 0;
+    let ((lens, recs), ((pars, szs), ((mods, cre), sq))) = rayon::join(
+        || rayon::join(|| col(&name_lens, false), || col(&records, true)),
+        || {
+            rayon::join(
+                || rayon::join(|| col(&parents, false), || col(&sizes, false)),
+                || {
+                    rayon::join(
+                        || rayon::join(|| col(&modified, true), || if has_created { col(&created, true) } else { Ok(Vec::new()) }),
+                        || col(&seqs, false),
+                    )
+                },
+            )
+        },
+    );
+    let (lens, recs, pars, szs, mods, cre, sq) = (lens?, recs?, pars?, szs?, mods?, cre?, sq?);
+
+    let mut entries = Vec::with_capacity(n);
+    let mut off = 0usize;
+    for i in 0..n {
+        let len = lens[i] as usize;
+        if len > u16::MAX as usize || off + len > names.len() {
+            return Err(bad());
+        }
+        let parent = match pars[i] as u64 {
+            0 => NONE,
+            z => {
+                let p = i as i64 - unzigzag(z - 1);
+                if p < 0 || p as usize >= n {
+                    return Err(bad());
+                }
+                p as u32
+            }
+        };
+        let fl = u16::from_le_bytes([flags[2 * i], flags[2 * i + 1]]);
+        entries.push(Entry {
+            size: szs[i] as u64,
+            modified: mods[i],
+            record: recs[i] as u32,
+            parent,
+            name_off: off as u32,
+            fold_rec: i as u32,
+            name_len: len as u16,
+            flags: fl & !DERIVED_FLAGS,
+            seq: sq[i] as u16,
+            _pad: 0,
+        });
+        off += len;
+    }
+    if off != names.len() || std::str::from_utf8(&names).is_err() {
+        return Err(bad());
+    }
+
     let mut rec_map = vec![NONE; rec_len];
+    let mut more_links = std::collections::HashMap::new();
     let mut garbage = 0;
-    for (i, e) in entries.iter_mut().enumerate() {
-        e.next_link = NONE;
-        if e.is_deleted() {
+    for (i, e) in entries.iter().enumerate() {
+        if e.flags & F_DELETED != 0 {
             garbage += 1;
             continue;
         }
@@ -146,28 +354,49 @@ pub fn load(path: &Path) -> io::Result<Index> {
         if r >= rec_map.len() {
             rec_map.resize(r + 1, NONE);
         }
-        e.next_link = rec_map[r];
+        if rec_map[r] != NONE {
+            more_links.insert(i as u32, rec_map[r]);
+        }
         rec_map[r] = i as u32;
     }
+    let mut recent_map = std::collections::HashMap::new();
+    let mut v = Varints { b: &recent, p: 0 };
+    while v.p < recent.len() {
+        let i = v.next()? as u32;
+        let t = unzigzag(v.next()?);
+        if (i as usize) < n {
+            recent_map.insert(i, t);
+        }
+    }
+    if ids.len() % 20 != 0 {
+        return Err(bad());
+    }
+    let id_map = (!ids.is_empty()).then(|| {
+        ids.chunks_exact(20)
+            .map(|c| (u128::from_le_bytes(c[..16].try_into().unwrap()), u32::from_le_bytes(c[16..].try_into().unwrap())))
+            .collect()
+    });
     let mut ix = Index {
         letter,
         entries,
         names,
         rec_map,
-        recent: ri.into_iter().zip(rt).collect(),
-        id_map: (!ids.is_empty()).then(|| ids.into_iter().zip(recs).collect()),
-        fold_mode: if b1[1] != 0 { FoldMode::StripDiacritics } else { FoldMode::Lower },
+        more_links,
+        recent: recent_map,
+        id_map,
+        created: cre,
+        opts: IndexOptions { created: has_created, ..IndexOptions::default() },
+        fold_mode: if hdr[1] != 0 { FoldMode::StripDiacritics } else { FoldMode::Lower },
         root,
-        has_sizes: b1[0] != 0,
+        has_sizes: hdr[0] != 0,
         garbage,
-        generation: 0,
         journal_id,
         next_usn,
         volume_serial,
         ..Default::default()
     };
-    // Sort ranks are computed in the background by the engine (sorting
-    // falls back to exact comparisons until then), so loading stays fast.
+    // The folded arena and single-copy name packing are derived; sort ranks
+    // follow in the background (engine::rank_in_background).
     ix.rebuild_fold();
     ix.shrink();
     Ok(ix)
@@ -176,46 +405,82 @@ pub fn load(path: &Path) -> io::Result<Index> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::tests::sample;
+    use crate::index::tests::{by_name, sample};
+
+    #[test]
+    fn varints_roundtrip() {
+        let mut b = Vec::new();
+        let vals = [0u64, 1, 127, 128, 300, u32::MAX as u64, u64::MAX];
+        for v in vals {
+            put_varint(&mut b, v);
+        }
+        let mut r = Varints { b: &b, p: 0 };
+        for v in vals {
+            assert_eq!(r.next().unwrap(), v);
+        }
+        for v in [0i64, -1, 1, i64::MIN, i64::MAX] {
+            assert_eq!(unzigzag(zigzag(v)), v);
+        }
+    }
 
     #[test]
     fn roundtrip() {
         let mut ix = sample();
         ix.journal_id = 77;
         ix.next_usn = 1234;
+        ix.note_recent(by_name(&ix, "notes.txt"), -5);
         let p = std::env::temp_dir().join(format!("rapidfind-test-{}.db", std::process::id()));
         save(&mut ix, &p).unwrap();
-        let back = load(&p).unwrap();
+        let mut back = load(&p).unwrap();
         std::fs::remove_file(&p).ok();
         assert_eq!((back.journal_id, back.next_usn, back.letter), (77, 1234, 'C'));
         assert_eq!(back.entries.len(), ix.entries.len());
         for i in 0..ix.entries.len() as u32 {
             assert_eq!(back.path(i), ix.path(i));
             assert_eq!(back.fold_name(i), ix.fold_name(i));
+            assert_eq!(back.entries[i as usize].size, ix.entries[i as usize].size);
+            assert_eq!(back.entries[i as usize].modified, ix.entries[i as usize].modified);
+            assert_eq!(back.created(i), ix.created(i));
+            assert_eq!(back.entries[i as usize].attrs(), ix.entries[i as usize].attrs());
         }
         assert_eq!(back.links(35).count(), 1);
+        assert_eq!(back.recent.get(&by_name(&back, "notes.txt")), Some(&-5));
         assert!(back.ranks_missing(), "ranks are rebuilt after load");
-        let mut back = back;
         back.compute_ranks();
         assert_eq!(back.ranks.by, ix.ranks.by);
     }
 
     #[test]
-    fn roundtrip_with_garbage_and_renames() {
+    fn roundtrip_with_garbage_renames_and_no_created() {
         let mut ix = sample();
-        let r = (0..ix.entries.len() as u32).find(|&i| ix.name(i) == "notes.txt").unwrap();
+        ix.set_options(IndexOptions { created: false, ..Default::default() });
+        let r = by_name(&ix, "notes.txt");
         let p = ix.entries[r as usize].parent;
-        ix.rename_entry(r, p, "renamed.txt");
+        ix.rename_entry(r, p, "Renamed.TXT");
         ix.remove_record(35);
         let path = std::env::temp_dir().join(format!("rapidfind-test2-{}.db", std::process::id()));
         save(&mut ix, &path).unwrap();
         let back = load(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert_eq!(back.garbage, ix.garbage);
+        assert_eq!(back.name(r), "Renamed.TXT");
         assert_eq!(back.fold_name(r), b"renamed.txt");
         assert_eq!(back.links(35).count(), 0);
+        assert!(back.created.is_empty() && !back.opts.created);
         let q = crate::query::Query::parse("note").unwrap();
-        let h = crate::search::search(&[&back], &q, &Default::default());
-        assert_eq!(h.total, 0);
+        assert_eq!(crate::search::search(&[&back], &q, &Default::default()).total, 0);
+    }
+
+    #[test]
+    fn rejects_truncated_files() {
+        let mut ix = sample();
+        let p = std::env::temp_dir().join(format!("rapidfind-test3-{}.db", std::process::id()));
+        save(&mut ix, &p).unwrap();
+        let data = std::fs::read(&p).unwrap();
+        for cut in [9, data.len() / 2, data.len() - 1] {
+            std::fs::write(&p, &data[..cut]).unwrap();
+            assert!(load(&p).is_err(), "cut at {cut}");
+        }
+        std::fs::remove_file(&p).ok();
     }
 }

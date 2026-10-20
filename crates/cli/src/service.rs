@@ -76,7 +76,16 @@ pub fn update() -> anyhow::Result<()> {
     if was_running {
         stop()?;
     }
-    std::fs::copy(std::env::current_exe()?, installed_exe()).context("copying binary")?;
+    // SERVICE_STOPPED is reported before the process has exited, so the old
+    // binary can stay locked for a moment.
+    let mut tries = 0;
+    while let Err(e) = std::fs::copy(std::env::current_exe()?, installed_exe()) {
+        tries += 1;
+        if tries > 100 || e.raw_os_error() != Some(32) {
+            return Err(e).context("copying binary");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
     println!("updated {}", installed_exe().display());
     if was_running {
         start()?;
@@ -219,6 +228,10 @@ fn run_service() -> anyhow::Result<()> {
         loop {
             std::thread::sleep(Duration::from_secs(3));
             eng.sync_if_changed();
+            // Volumes rebuilt by that sync (u64::MAX = never saved) get saved right away.
+            if let Err(err) = eng.save_all(u64::MAX) {
+                log::error!("save failed: {err:#}");
+            }
         }
     })?;
 

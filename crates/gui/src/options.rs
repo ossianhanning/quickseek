@@ -45,8 +45,14 @@ pub const ID_EX_REMOVE: i32 = 946;
 pub const ID_EX_FILES: i32 = 947;
 pub const ID_INCLUDE_FILES: i32 = 948;
 pub const ID_APPLY: i32 = 950;
+pub const ID_IX_CREATED: i32 = 960;
+/// WM_COMMAND ids 980.. select an options page.
+pub const ID_SELECT_TAB: i32 = 980;
+pub const ID_IX_SORT_SIZE: i32 = 961;
+pub const ID_IX_SORT_MODIFIED: i32 = 962;
+pub const ID_IX_SORT_PATH: i32 = 963;
 
-const TABS: [&str; 4] = ["General", "Volumes", "Folders", "Exclude"];
+const TABS: [&str; 5] = ["General", "Volumes", "Folders", "Exclude", "Index"];
 
 struct Opt {
     hwnd: HWND,
@@ -202,6 +208,10 @@ fn fill(app: &App) {
         set(ID_AUTO_REMOVABLE, c.auto_include_removable);
         set(ID_EX_HIDDEN, c.exclude_hidden);
         set(ID_EX_SYSTEM, c.exclude_system);
+        set(ID_IX_CREATED, c.index_date_created);
+        set(ID_IX_SORT_SIZE, c.fast_sort_size);
+        set(ID_IX_SORT_MODIFIED, c.fast_sort_modified);
+        set(ID_IX_SORT_PATH, c.fast_sort_path);
         w::set_text(item(o.hwnd, ID_EX_FILES), &c.exclude_files.join(";"));
         w::set_text(item(o.hwnd, ID_INCLUDE_FILES), &c.include_only_files.join(";"));
         fill_lists(o);
@@ -273,6 +283,10 @@ fn harvest(app: &App) -> Config {
         c.auto_include_removable = chk(ID_AUTO_REMOVABLE);
         c.exclude_hidden = chk(ID_EX_HIDDEN);
         c.exclude_system = chk(ID_EX_SYSTEM);
+        c.index_date_created = chk(ID_IX_CREATED);
+        c.fast_sort_size = chk(ID_IX_SORT_SIZE);
+        c.fast_sort_modified = chk(ID_IX_SORT_MODIFIED);
+        c.fast_sort_path = chk(ID_IX_SORT_PATH);
         c.exclude_files = list(ID_EX_FILES);
         c.include_only_files = list(ID_INCLUDE_FILES);
         let lv = get(ID_VOLUMES);
@@ -423,6 +437,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 },
                 ID_APPLY => {
                     apply(app);
+                }
+                // Select page N (scripting/screenshot hook; no keystrokes needed).
+                id if (ID_SELECT_TAB..ID_SELECT_TAB + TABS.len() as i32).contains(&id) => {
+                    let t = (id - ID_SELECT_TAB) as usize;
+                    send(ctl(ID_TABS), TCM_SETCURSEL, t, 0);
+                    show_tab(t);
                 }
                 ID_FOLDERS if code == LBN_SELCHANGE => on_folder_select(),
                 ID_VOL_INCLUDE if code == EN_CHANGE && !filling => OPT.with(|o| {
@@ -671,6 +691,20 @@ pub fn open(app: &App) {
         add("Edit", "", edit_style, WS_EX_CLIENTEDGE, ID_EX_FILES, Some(3), x0, y0 + 298, full, 24);
         add("Static", "Include only files (empty = all):", 0, 0, -1, Some(3), x0, y0 + 332, full, 20);
         add("Edit", "", edit_style, WS_EX_CLIENTEDGE, ID_INCLUDE_FILES, Some(3), x0, y0 + 354, full, 24);
+
+        // Index
+        let note = |text: &str, y: i32| {
+            add("Static", text, 0, 0, -1, Some(4), x0 + 24, y, full - 24, 40);
+        };
+        add("Static", "What the index keeps besides names, sizes and dates modified. Each option trades memory and disk space for features or sort speed.", 0, 0, -1, Some(4), x0, y0, full, 40);
+        add("Button", "Index date created", chk, 0, ID_IX_CREATED, Some(4), x0, y0 + 50, full, 22);
+        note("8 bytes per file (about 55 MB for 7 million files). Needed for dc: and sorting by Date Created. Turning it on rescans each volume once (C: ~30 s); searching keeps working meanwhile.", y0 + 74);
+        add("Button", "Fast size sort", chk, 0, ID_IX_SORT_SIZE, Some(4), x0, y0 + 124, full, 22);
+        note("4 bytes per file. When off, sorting millions of results by size takes about twice as long (~150 ms instead of ~70 ms); normal result sets are unaffected.", y0 + 148);
+        add("Button", "Fast date modified sort", chk, 0, ID_IX_SORT_MODIFIED, Some(4), x0, y0 + 198, full, 22);
+        note("4 bytes per file. Same trade-off as size, for the Date Modified column.", y0 + 222);
+        add("Button", "Fast path sort", chk, 0, ID_IX_SORT_PATH, Some(4), x0, y0 + 256, full, 22);
+        note("4 bytes per file. When off, sorting by Path gets much slower (seconds for millions of results, ~1 s for 250,000).", y0 + 280);
 
         // Buttons
         let bh = ch * 96 / w::dpi(hwnd);

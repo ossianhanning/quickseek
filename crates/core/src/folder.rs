@@ -78,12 +78,12 @@ pub fn walk(root: &Path) -> Scan {
 }
 
 pub fn build(root: &str, fold: FoldMode) -> Index {
-    build_as(root, fold, None)
+    build_as(root, fold, None, crate::index::IndexOptions::default())
 }
 
 /// Walks with `token`'s identity (network shares reached by the service).
 /// Every walker thread impersonates, since impersonation is per thread.
-pub fn build_as(root: &str, fold: FoldMode, token: Option<Arc<Token>>) -> Index {
+pub fn build_as(root: &str, fold: FoldMode, token: Option<Arc<Token>>, opts: crate::index::IndexOptions) -> Index {
     let letter = root.chars().next().unwrap_or('?').to_ascii_uppercase();
     let dir = PathBuf::from(format!("{}\\", root_name(root)));
     let scan = match token {
@@ -102,7 +102,7 @@ pub fn build_as(root: &str, fold: FoldMode, token: Option<Arc<Token>>) -> Index 
         }
         None => walk(&dir),
     };
-    let mut ix = Index::from_scan_named(letter, &root_name(root), &scan, fold);
+    let mut ix = Index::from_scan_with(letter, &root_name(root), &scan, fold, opts);
     ix.id_map = None;
     ix
 }

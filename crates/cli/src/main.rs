@@ -163,6 +163,18 @@ enum ConfigCmd {
     ExcludeFolder { pattern: String },
     /// Exclude files matching a wildcard pattern.
     ExcludeFiles { pattern: String },
+    /// Store date created (8 bytes/file; `dc:` and that sort). Turning it on rescans once.
+    IndexCreated {
+        #[arg(action = clap::ArgAction::Set)]
+        on: bool,
+    },
+    /// Keep a precomputed rank for a sort key (4 bytes/file).
+    FastSort {
+        #[arg(value_parser = ["size", "modified", "path"])]
+        key: String,
+        #[arg(action = clap::ArgAction::Set)]
+        on: bool,
+    },
 }
 
 fn open_engine(volumes: &[char], force: bool, verbose: bool) -> Engine {
@@ -406,6 +418,18 @@ fn main() -> anyhow::Result<()> {
             })?,
             ConfigCmd::ExcludeFiles { pattern } => edit_config(&cli, |c| {
                 c.exclude_files.push(pattern.clone());
+                Ok(())
+            })?,
+            ConfigCmd::IndexCreated { on } => edit_config(&cli, |c| {
+                c.index_date_created = *on;
+                Ok(())
+            })?,
+            ConfigCmd::FastSort { key, on } => edit_config(&cli, |c| {
+                match key.as_str() {
+                    "size" => c.fast_sort_size = *on,
+                    "modified" => c.fast_sort_modified = *on,
+                    _ => c.fast_sort_path = *on,
+                }
                 Ok(())
             })?,
         },
