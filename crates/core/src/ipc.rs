@@ -391,7 +391,7 @@ fn rows(eng: &Engine, hits: &[Hit]) -> Vec<Row> {
                     modified: e.modified,
                     created: ix.created(h.idx).unwrap_or(0),
                     attrs: e.attrs(),
-                    run_count: runs.get(ix.volume_serial, e.record).map_or(0, |r| r.count),
+                    run_count: runs.get(ix.volume_serial, ix.record(h.idx)).map_or(0, |r| r.count),
                     is_dir: e.is_dir(),
                     has_size: ix.has_sizes,
                 }

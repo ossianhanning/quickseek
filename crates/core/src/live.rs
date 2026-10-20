@@ -1,7 +1,7 @@
 //! Applying USN journal records to an [`Index`].
 //!
 //! Records carry the file reference, parent reference, name and attributes,
-//! which together with `Index::rec_map` is enough to update the index without
+//! which together with `Index::links` is enough to update the index without
 //! touching the disk. The only thing a journal record lacks is the new file
 //! size; files whose data changed are collected and refreshed in a batch with
 //! `OpenFileById` + `GetFileInformationByHandleEx` (outside the index lock).
@@ -102,7 +102,7 @@ impl Applier {
         let links: Vec<u32> = ix.links(rec).collect();
         if reason & USN_REASON_FILE_CREATE != 0
             && let Some(&first) = links.first()
-            && ix.entries[first as usize].seq != r.seq()
+            && ix.seq(first) != r.seq()
         {
             ix.remove_record(rec);
         }

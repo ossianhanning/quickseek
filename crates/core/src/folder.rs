@@ -167,7 +167,7 @@ pub fn apply_change(ix: &mut Index, root: &Path, action: Action, rel: &str, pend
             let Ok(m) = std::fs::symlink_metadata(&full) else { return true }; // already gone
             let meta = meta_of(&m);
             if let Some(existing) = ix.find_child(parent, name) {
-                let rec = ix.entries[existing as usize].record;
+                let rec = ix.record(existing);
                 ix.set_file_info(rec, meta.size, meta.modified, meta.created);
                 return true;
             }
@@ -189,7 +189,7 @@ pub fn apply_change(ix: &mut Index, root: &Path, action: Action, rel: &str, pend
                 && let Ok(m) = std::fs::symlink_metadata(root.join(rel))
             {
                 let meta = meta_of(&m);
-                let rec = ix.entries[i as usize].record;
+                let rec = ix.record(i);
                 ix.set_file_info(rec, meta.size, meta.modified, meta.created);
                 ix.note_recent(i, now);
             }
@@ -214,7 +214,7 @@ pub fn apply_change(ix: &mut Index, root: &Path, action: Action, rel: &str, pend
 }
 
 fn add(ix: &mut Index, parent: u32, name: &str, m: &Meta) -> u32 {
-    let rec = ix.rec_map.len().max(ntfs::FIRST_USER_RECORD as usize) as u32;
+    let rec = ix.rec_count.max(ntfs::FIRST_USER_RECORD);
     ix.add_link(rec, 0, parent, name, m.attrs | if m.is_dir { FILE_ATTRIBUTE_DIRECTORY } else { 0 }, m.size, m.modified, m.created)
 }
 
@@ -379,8 +379,8 @@ mod tests {
         let root = root_name(&d.to_string_lossy());
         assert_eq!(names(&ix, "c.md"), vec![format!("{root}\\sub\\deep\\c.md")]);
         let a = resolve(&ix, "a.txt").unwrap();
-        assert_eq!(ix.entries[a as usize].size, 5);
-        assert!(ix.entries[resolve(&ix, "sub").unwrap() as usize].size >= 12);
+        assert_eq!({ ix.entries[a as usize].size }, 5);
+        assert!({ ix.entries[resolve(&ix, "sub").unwrap() as usize].size } >= 12);
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -400,7 +400,7 @@ mod tests {
         assert!(names(&ix, "moved.txt")[0].ends_with("sub\\moved.txt"));
         std::fs::write(d.join("sub").join("moved.txt"), b"longer content").unwrap();
         apply_change(&mut ix, &d, Action::Modified, "sub\\moved.txt", &mut old, 3);
-        assert_eq!(ix.entries[resolve(&ix, "sub\\moved.txt").unwrap() as usize].size, 14);
+        assert_eq!({ ix.entries[resolve(&ix, "sub\\moved.txt").unwrap() as usize].size }, 14);
         apply_change(&mut ix, &d, Action::Removed, "sub", &mut old, 4);
         assert!(names(&ix, "b.rs").is_empty() && names(&ix, "moved.txt").is_empty());
         std::fs::remove_dir_all(&d).ok();
