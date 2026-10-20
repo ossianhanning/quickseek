@@ -150,11 +150,11 @@ fn bit(v: &[u64], i: u32) -> bool {
 const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
 
 /// What a file adds to its folders: (bytes on the volume, cloud bytes,
-/// counts). Extra hard links add nothing (the record's head link counts),
-/// online-only placeholders only cloud bytes.
+/// counts). Extra hard links add nothing (the record's first listed link
+/// counts), online-only placeholders only cloud bytes.
 fn contribution(ix: &Index, i: u32) -> (u64, u64, bool) {
     let e = &ix.entries[i as usize];
-    if ix.rec_map.get(e.record as usize).is_some_and(|&head| head != i && head != NONE) {
+    if ix.links(ix.record(i)).next().is_some_and(|head| head != i) {
         return (0, 0, false);
     }
     if e.attrs() & FILE_ATTRIBUTE_OFFLINE != 0 { (0, e.size, true) } else { (e.size, 0, true) }
