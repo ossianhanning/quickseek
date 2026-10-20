@@ -15,6 +15,7 @@ pub mod engine;
 pub mod fmt;
 pub mod fold;
 pub mod folder;
+pub mod history;
 pub mod ifilter;
 pub mod index;
 pub mod ipc;

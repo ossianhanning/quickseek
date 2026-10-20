@@ -21,6 +21,10 @@ fn main() {
         ixs.push(rapidfind_core::folder::build(dir, rapidfind_core::fold::FoldMode::Lower));
     }
     let engine = Arc::new(Engine::from_indexes(ixs));
+    let history = std::env::temp_dir().join("rapidfind-mock-history");
+    let _ = std::fs::remove_dir_all(&history);
+    engine.enable_history(history);
+    common::seed_history(&engine);
     common::serve(&pipe, engine.clone());
     println!("serving {} entries on {pipe}", filler + filler / 4);
     let live = args.iter().any(|a| a == "--live");

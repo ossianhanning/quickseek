@@ -30,6 +30,9 @@ const CMD_EXPAND: usize = 210;
 const CMD_COLLAPSE: usize = 211;
 const CMD_STOP: usize = 305;
 const CMD_PREVIEW: usize = 404;
+const CMD_COMPARE_DAY: usize = 410;
+const CMD_COMPARE_MONTH: usize = 412;
+const CMD_STOP_COMPARE: usize = 414;
 
 const ID_SEARCH: &str = "100";
 const ID_FILTER: &str = "101";
@@ -157,9 +160,10 @@ impl Gui {
         row.get_pattern::<UISelectionItemPattern>().unwrap().select().unwrap();
     }
 
-    /// Tree cell text (columns: Name, Size, % of Parent, Files, Date Modified).
+    /// Tree cell text (columns: Name, Size, % of Parent, Files, Online-only,
+    /// Date Modified, Change, Trend).
     fn tree_cell(&self, row: i32, col: i32) -> String {
-        const HEADERS: [&str; 6] = ["Name", "Size", "% of Parent", "Files", "Online-only", "Date Modified"];
+        const HEADERS: [&str; 8] = ["Name", "Size", "% of Parent", "Files", "Online-only", "Date Modified", "Change", "Trend"];
         msaa_cell(self.tree_hwnd(), row, col, &HEADERS)
     }
 
@@ -231,7 +235,8 @@ fn msaa_cell(list: HWND, row: i32, col: i32, headers: &[&str]) -> String {
         let key = format!("{}: ", headers[col as usize]);
         let Some(start) = desc.find(&key).map(|i| i + key.len()) else { return String::new() };
         let rest = &desc[start..];
-        let end = headers[col as usize + 1..].iter().filter_map(|h| rest.find(&format!(", {h}: "))).min().unwrap_or(rest.len());
+        // Columns can be shown in another order than their index: any header ends the value.
+    let end = headers.iter().enumerate().filter(|&(i, _)| i != col as usize).map(|(_, h)| h).filter_map(|h| rest.find(&format!(", {h}: "))).min().unwrap_or(rest.len());
         rest[..end].to_string()
     }
 }
@@ -479,6 +484,33 @@ fn gui_end_to_end() {
     g.wait_for("list again", 1, Some("movie.mkv"));
 
     let _ = TreeScope::Descendants;
+}
+
+/// Comparing with history: yesterday's growth opens down to the folder that
+/// grew, with the change in its own column; a month back shows the cleanup.
+#[test]
+fn gui_growth_compare() {
+    let engine = Arc::new(Engine::from_indexes(vec![common::sample_index('C', 2_000)]));
+    let hist = std::env::temp_dir().join(format!("rapidfind-uitest-history-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&hist);
+    engine.enable_history(hist.clone());
+    common::seed_history(&engine);
+    let g = Gui::launch(engine);
+    g.command(CMD_TREE);
+    eventually("tree", Duration::from_secs(8), || (g.tree_rows() > 1).then_some(()));
+    g.command(CMD_COMPARE_DAY);
+    let row = |name: &str| g.tree_names().iter().position(|n| n.split("   ").next() == Some(name)).map(|i| i as i32);
+    let videos = eventually("drilled to Videos", Duration::from_secs(8), || row("Videos").filter(|&i| g.tree_cell(i, 6).starts_with('+')));
+    let change = g.tree_cell(videos, 6);
+    assert!(change.ends_with("MB"), "Videos grew about 117 MB since yesterday: {change}");
+    assert_eq!(g.tree_cell(0, 6), change, "all of C:'s growth is in Videos");
+    assert!(g.status().contains("Compared with"), "{}", g.status());
+    // A month back: Downloads shrank by 2e9 bytes in the cleanup.
+    g.command(CMD_COMPARE_MONTH);
+    eventually("Downloads shrank", Duration::from_secs(8), || row("Downloads").filter(|&i| g.tree_cell(i, 6) == "\u{2212}1.9 GB"));
+    g.command(CMD_STOP_COMPARE);
+    eventually("comparing stopped", Duration::from_secs(8), || (!g.status().contains("Compared with")).then_some(()));
+    let _ = std::fs::remove_dir_all(&hist);
 }
 
 /// Content search over a real folder: name matches come first, rows whose

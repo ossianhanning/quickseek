@@ -209,6 +209,7 @@ fn run_service() -> anyhow::Result<()> {
         runs_path: Some(home().join("runs.json")),
         ..Default::default()
     }));
+    engine.enable_history(home().join("history"));
     let slot: Arc<OnceLock<Arc<Engine>>> = Arc::new(OnceLock::new());
     let _ = slot.set(engine.clone());
     let server = std::thread::Builder::new().name("pipe".into()).spawn(move || {
@@ -228,6 +229,7 @@ fn run_service() -> anyhow::Result<()> {
         loop {
             std::thread::sleep(Duration::from_secs(3));
             eng.sync_if_changed();
+            eng.maybe_snapshot();
             // Volumes rebuilt by that sync (u64::MAX = never saved) get saved right away.
             if let Err(err) = eng.save_all(u64::MAX) {
                 log::error!("save failed: {err:#}");

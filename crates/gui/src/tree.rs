@@ -16,13 +16,41 @@ use windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
 use crate::shell;
 use crate::w::{self, px, send};
 
-pub const COLUMNS: [(&str, i32, bool); 6] = [("Name", 380, false), ("Size", 110, true), ("% of Parent", 170, false), ("Files", 100, true), ("Online-only", 110, true), ("Date Modified", 140, false)];
+pub const COLUMNS: [(&str, i32, bool); 8] = [
+    ("Name", 380, false),
+    ("Size", 110, true),
+    ("% of Parent", 170, false),
+    ("Files", 100, true),
+    ("Online-only", 110, true),
+    ("Date Modified", 140, false),
+    ("Change", 110, true),
+    ("Trend", 110, false),
+];
+/// Display order: Change and Trend sit next to Size and the bar.
+pub const COLUMN_ORDER: [i32; 8] = [0, 1, 6, 2, 7, 3, 4, 5];
+pub const COL_CHANGE: i32 = 6;
+pub const COL_TREND: i32 = 7;
+
+/// Growth (red) and shrinkage (blue), as COLORREF (0x00BBGGRR).
+pub const GROW: COLORREF = 0x004A_4BE2;
+pub const SHRINK: COLORREF = 0x00DD_8A37;
+const GHOST: COLORREF = 0x0080_8788;
+
+/// `+1.2 GB` / `−300.0 MB` / `0 B`.
+pub fn signed_size(d: i64) -> String {
+    match d {
+        0 => "0 B".into(),
+        d if d > 0 => format!("+{}", fmt::size(d as u64)),
+        d => format!("\u{2212}{}", fmt::size(d.unsigned_abs())),
+    }
+}
 
 pub fn sort_from(s: &str) -> TreeSort {
     match s {
         "name" => TreeSort::Name,
         "files" => TreeSort::Files,
         "modified" => TreeSort::Modified,
+        "change" => TreeSort::Change,
         _ => TreeSort::Size,
     }
 }
@@ -33,6 +61,7 @@ pub fn sort_name(s: TreeSort) -> &'static str {
         TreeSort::Size => "size",
         TreeSort::Files => "files",
         TreeSort::Modified => "modified",
+        TreeSort::Change => "change",
     }
 }
 
@@ -42,6 +71,7 @@ pub fn column_sort(col: i32) -> Option<TreeSort> {
         1 | 2 => Some(TreeSort::Size),
         3 => Some(TreeSort::Files),
         5 => Some(TreeSort::Modified),
+        6 | 7 => Some(TreeSort::Change),
         _ => None,
     }
 }
@@ -70,6 +100,11 @@ impl Node {
 
     pub fn path(&self) -> String {
         self.row.full_path()
+    }
+
+    /// The bar's "then" share of the parent (now), when comparing.
+    pub fn before_fraction(&self) -> Option<f64> {
+        (self.row.has_before && self.parent_size > 0).then(|| (self.row.before as f64 / self.parent_size as f64).clamp(0.0, 1.0))
     }
 }
 
@@ -148,6 +183,8 @@ pub fn cell_text(n: &Node, col: i32) -> String {
         3 if r.cloud > 0 && r.size == 0 => "online-only".into(),
         4 if r.cloud > 0 => fmt::size(r.cloud),
         5 if r.modified != 0 => fmt::time(r.modified),
+        6 if r.has_before && r.changed => format!("{} new or changed", signed_size(r.change())),
+        6 if r.has_before => signed_size(r.change()),
         _ => String::new(),
     }
 }
@@ -264,11 +301,42 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
         let text_w = px(list, 52);
         let track = RECT { left: rc.left + pad * 2, top: rc.top + pad, right: (rc.right - text_w).max(rc.left + pad * 2), bottom: rc.bottom - pad };
         fill(p.hdc, &track, 0x00EC_E8E4);
-        let w = ((track.right - track.left) as f64 * n.fraction()).round() as i32;
-        if w > 0 {
-            // Folders in a stronger blue than files; roots (share of the disk) in teal.
-            let c: COLORREF = if n.row.capacity > 0 { 0x0098_8A00 } else if n.row.is_dir { 0x00D7_7800 } else { 0x00F0_B060 };
-            fill(p.hdc, &RECT { right: track.left + w, ..track }, c);
+        let span = (track.right - track.left) as f64;
+        let w = (span * n.fraction()).round() as i32;
+        // Folders in a stronger blue than files; roots (share of the disk) in teal.
+        let c: COLORREF = if n.row.capacity > 0 { 0x0098_8A00 } else if n.row.is_dir { 0x00D7_7800 } else { 0x00F0_B060 };
+        match n.before_fraction() {
+            // Comparing: solid bar up to the smaller of then and now, the
+            // growth in red, and a dashed outline where shrunk space was.
+            Some(bf) => {
+                let bw = (span * bf).round() as i32;
+                let common = w.min(bw);
+                if common > 0 {
+                    fill(p.hdc, &RECT { right: track.left + common, ..track }, c);
+                }
+                if w > bw {
+                    fill(p.hdc, &RECT { left: track.left + bw, right: track.left + w, ..track }, GROW);
+                } else if bw > w {
+                    let pen = CreatePen(PS_DOT, 1, SHRINK);
+                    let old_pen = SelectObject(p.hdc, pen as _);
+                    let old_brush = SelectObject(p.hdc, GetStockObject(NULL_BRUSH));
+                    Rectangle(p.hdc, track.left + w, track.top, track.left + bw, track.bottom);
+                    SelectObject(p.hdc, old_pen);
+                    SelectObject(p.hdc, old_brush);
+                    DeleteObject(pen as _);
+                }
+                // The "then" edge as a thin mark.
+                if bw > 0 && bw != w {
+                    let pen = CreatePen(PS_SOLID, 1, GHOST);
+                    let old_pen = SelectObject(p.hdc, pen as _);
+                    MoveToEx(p.hdc, track.left + bw, track.top - 1, null_mut());
+                    LineTo(p.hdc, track.left + bw, track.bottom + 1);
+                    SelectObject(p.hdc, old_pen);
+                    DeleteObject(pen as _);
+                }
+            }
+            None if w > 0 => fill(p.hdc, &RECT { right: track.left + w, ..track }, c),
+            None => {}
         }
         SetBkMode(p.hdc, TRANSPARENT as i32);
         SetTextColor(p.hdc, fg);
@@ -279,7 +347,62 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
     }
 }
 
+/// "Change" cell: the signed change, red for growth, blue for shrinkage.
+pub fn draw_change(list: HWND, p: &Paint, n: &Node, rc: RECT) {
+    let (bg, fg) = colors(p);
+    unsafe {
+        if !p.selected || p.classic_sel {
+            fill(p.hdc, &rc, bg);
+        }
+        if !n.row.has_before {
+            return;
+        }
+        let d = n.row.change();
+        SetBkMode(p.hdc, TRANSPARENT as i32);
+        SetTextColor(p.hdc, if p.classic_sel { fg } else if d > 0 { GROW } else if d < 0 { SHRINK } else { 0x0080_8080 });
+        let old = SelectObject(p.hdc, if d.unsigned_abs() >= 1 << 30 { p.bold } else { p.font } as _);
+        let pad = px(list, 6);
+        let text = if n.row.changed { format!("{} new", signed_size(d)) } else { signed_size(d) };
+        text_at(p.hdc, &text, 0, &RECT { right: rc.right - pad, ..rc }, true);
+        SelectObject(p.hdc, old);
+    }
+}
+
+/// "Trend" cell: a sparkline of the size in every snapshot, then now.
+/// `series` holds `u64::MAX` where a snapshot didn't record the folder.
+pub fn draw_trend(list: HWND, p: &Paint, n: &Node, rc: RECT, series: Option<&[u64]>) {
+    let (bg, _) = colors(p);
+    unsafe {
+        if !p.selected || p.classic_sel {
+            fill(p.hdc, &rc, bg);
+        }
+        let Some(series) = series else { return };
+        let mut v: Vec<u64> = series.iter().map(|&x| if x == u64::MAX { 0 } else { x }).collect();
+        v.push(n.row.size);
+        if v.len() < 2 {
+            return;
+        }
+        let (lo, hi) = (*v.iter().min().unwrap(), *v.iter().max().unwrap());
+        let pad = px(list, 4);
+        let (x0, x1, y0, y1) = (rc.left + pad, rc.right - pad, rc.top + pad, rc.bottom - pad);
+        let span = (hi - lo).max(1) as f64;
+        let pts: Vec<POINT> = v
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| POINT { x: x0 + ((x1 - x0) as f64 * i as f64 / (v.len() - 1) as f64) as i32, y: y1 - (((x - lo) as f64 / span) * (y1 - y0) as f64) as i32 })
+            .collect();
+        let rising = v.last() > v.first();
+        let flat = hi - lo < (hi / 100).max(1 << 20);
+        let pen = CreatePen(PS_SOLID, px(list, 2).max(1), if flat { 0x0080_8780 } else if rising { GROW } else { SHRINK });
+        let old = SelectObject(p.hdc, pen as _);
+        Polyline(p.hdc, pts.as_ptr(), pts.len() as i32);
+        SelectObject(p.hdc, old);
+        DeleteObject(pen as _);
+    }
+}
+
 use std::ptr::null_mut;
+use windows_sys::Win32::Foundation::POINT;
 
 #[cfg(test)]
 mod tests {
@@ -311,5 +434,10 @@ mod tests {
         assert_eq!(cell_text(&m.nodes[0], 2), "25.0 %");
         assert_eq!(column_sort(3), Some(TreeSort::Files));
         assert_eq!(sort_from(sort_name(TreeSort::Modified)), TreeSort::Modified);
+        assert_eq!(sort_from(sort_name(TreeSort::Change)), TreeSort::Change);
+        assert_eq!((signed_size(5 << 30), signed_size(-(3 << 20)), signed_size(0)), ("+5.0 GB".into(), "\u{2212}3.0 MB".into(), "0 B".into()));
+        m.nodes[0].row = TreeRow { has_before: true, before: 200, ..m.nodes[0].row.clone() };
+        assert_eq!(m.nodes[0].before_fraction(), Some(0.5));
+        assert_eq!(cell_text(&m.nodes[0], 6), "\u{2212}100 B");
     }
 }

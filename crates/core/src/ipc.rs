@@ -38,14 +38,16 @@ use crate::engine::Engine;
 use crate::ntfs::win::wide;
 use crate::query::SearchFlags;
 use crate::search::{Hit, ResultSet, SearchOptions, SortKey};
+use crate::history::SnapInfo;
 use crate::tree::{NodeRef, Tree, TreeLevel, TreeRow, TreeSort};
 
 pub const PIPE_NAME: &str = r"\\.\pipe\rapidfind";
 const MAX_FRAME: u32 = 64 << 20;
-const PROTOCOL: u8 = 3;
+const PROTOCOL: u8 = 4;
 /// Error text for a fetch from a result set the index has outgrown.
 pub const STALE: &str = "stale result set";
 pub const LOADING: &str = "index is still loading";
+pub const NO_HISTORY: &str = "folder-size history isn't kept here";
 
 /// Pipe DACL: full access for SYSTEM, Administrators and the pipe owner (the
 /// service); interactive users get
@@ -78,6 +80,30 @@ pub enum Request {
     /// Removes snapshot positions from the result set; answers with its
     /// first `page` rows.
     DropRows { positions: Vec<u32>, page: u32 },
+    /// Folder-size snapshots, oldest first.
+    History,
+    /// Takes a snapshot now, named (a save point).
+    SavePoint { name: String },
+    /// Compare the open tree (and later ones) with snapshot `id`; empty = stop.
+    Compare { id: String },
+    /// Sizes of these folders in every snapshot.
+    Series { paths: Vec<String> },
+}
+
+/// One folder's size in every snapshot (aligned with [`SeriesReply::snaps`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SeriesRow {
+    pub path: String,
+    /// `u64::MAX` where the snapshot doesn't have it (smaller than its threshold).
+    pub sizes: Vec<u64>,
+    /// Volume roots: free bytes then (`u64::MAX` = unknown).
+    pub free: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SeriesReply {
+    pub snaps: Vec<SnapInfo>,
+    pub rows: Vec<SeriesRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -140,6 +166,8 @@ pub enum Response {
     Ok,
     Error(String),
     Tree(TreeLevel),
+    Snapshots(Vec<SnapInfo>),
+    Series(SeriesReply),
 }
 
 // ---- encoding ---------------------------------------------------------------
@@ -261,6 +289,22 @@ impl Request {
                 w.u32(*count);
             }
             Request::TreeClose => w.u8(9),
+            Request::History => w.u8(12),
+            Request::SavePoint { name } => {
+                w.u8(13);
+                w.str(name);
+            }
+            Request::Compare { id } => {
+                w.u8(14);
+                w.str(id);
+            }
+            Request::Series { paths } => {
+                w.u8(15);
+                w.u32(paths.len() as u32);
+                for p in paths {
+                    w.str(p);
+                }
+            }
             Request::Snapshot { offset, count } => {
                 w.u8(10);
                 w.u64(*offset);
@@ -309,6 +353,16 @@ impl Request {
             }
             9 => Request::TreeClose,
             10 => Request::Snapshot { offset: r.u64()?, count: r.u32()? },
+            12 => Request::History,
+            13 => Request::SavePoint { name: r.str()? },
+            14 => Request::Compare { id: r.str()? },
+            15 => {
+                let n = r.u32()? as usize;
+                if n > r.0.len() / 4 {
+                    return Err(bad("truncated"));
+                }
+                Request::Series { paths: (0..n).map(|_| r.str()).collect::<io::Result<_>>()? }
+            }
             11 => {
                 let page = r.u32()?;
                 let n = r.u32()? as usize;
@@ -377,6 +431,8 @@ impl Response {
                 w.u64(l.cloud);
                 w.u64(l.files);
                 w.u64(l.total);
+                w.u64(l.before);
+                w.u8(l.has_before as u8);
                 w.u32(l.rows.len() as u32);
                 for r in &l.rows {
                     w.str(&r.name);
@@ -385,12 +441,34 @@ impl Response {
                     w.u64(r.cloud);
                     w.u64(r.files);
                     w.u64(r.modified as u64);
-                    w.u8(r.is_dir as u8 | (r.has_children as u8) << 1 | (r.has_size as u8) << 2 | (r.matched as u8) << 3 | (r.hardlink as u8) << 4);
+                    w.u8(r.is_dir as u8 | (r.has_children as u8) << 1 | (r.has_size as u8) << 2 | (r.matched as u8) << 3 | (r.hardlink as u8) << 4 | (r.has_before as u8) << 5 | (r.changed as u8) << 6);
+                    w.u64(r.before);
+                    w.u64(r.free_before);
                     w.str(&r.vol);
                     w.u32(r.idx);
                     w.u64(r.epoch);
                     w.u64(r.capacity);
                     w.u64(r.free);
+                }
+            }
+            Response::Snapshots(list) => {
+                w.u8(8);
+                snaps_out(&mut w, list);
+            }
+            Response::Series(s) => {
+                w.u8(9);
+                snaps_out(&mut w, &s.snaps);
+                w.u32(s.rows.len() as u32);
+                for row in &s.rows {
+                    w.str(&row.path);
+                    w.u32(row.sizes.len() as u32);
+                    for &v in &row.sizes {
+                        w.u64(v);
+                    }
+                    w.u32(row.free.len() as u32);
+                    for &v in &row.free {
+                        w.u64(v);
+                    }
                 }
             }
         }
@@ -430,13 +508,18 @@ impl Response {
             5 => Response::Count(r.u32()?),
             6 => Response::Ok,
             7 => {
-                let mut l = TreeLevel { size: r.u64()?, cloud: r.u64()?, files: r.u64()?, total: r.u64()?, rows: Vec::new() };
+                let mut l = TreeLevel { size: r.u64()?, cloud: r.u64()?, files: r.u64()?, total: r.u64()?, before: r.u64()?, has_before: r.u8()? != 0, rows: Vec::new() };
                 let n = r.u32()? as usize;
                 l.rows.reserve(n.min(1 << 16));
                 for _ in 0..n {
                     let (name, dir) = (r.str()?, r.str()?);
                     let (size, cloud, files, modified, f) = (r.u64()?, r.u64()?, r.u64()?, r.u64()? as i64, r.u8()?);
+                    let (before, free_before) = (r.u64()?, r.u64()?);
                     l.rows.push(TreeRow {
+                        before,
+                        free_before,
+                        has_before: f & 32 != 0,
+                        changed: f & 64 != 0,
                         name,
                         dir,
                         size,
@@ -457,9 +540,48 @@ impl Response {
                 }
                 Response::Tree(l)
             }
+            8 => Response::Snapshots(snaps_in(&mut r)?),
+            9 => {
+                let snaps = snaps_in(&mut r)?;
+                let n = r.u32()? as usize;
+                let mut rows = Vec::with_capacity(n.min(4096));
+                let vec_u64 = |r: &mut R| -> io::Result<Vec<u64>> {
+                    let n = r.u32()? as usize;
+                    if n > r.0.len() / 8 {
+                        return Err(bad("truncated"));
+                    }
+                    (0..n).map(|_| r.u64()).collect()
+                };
+                for _ in 0..n {
+                    let path = r.str()?;
+                    let sizes = vec_u64(&mut r)?;
+                    let free = vec_u64(&mut r)?;
+                    rows.push(SeriesRow { path, sizes, free });
+                }
+                Response::Series(SeriesReply { snaps, rows })
+            }
             _ => return Err(bad("response kind")),
         })
     }
+}
+
+fn snaps_out(w: &mut W, list: &[SnapInfo]) {
+    w.u32(list.len() as u32);
+    for s in list {
+        w.str(&s.id);
+        w.u64(s.time as u64);
+        w.str(&s.name);
+        w.u64(s.folders);
+        w.u64(s.bytes);
+    }
+}
+
+fn snaps_in(r: &mut R) -> io::Result<Vec<SnapInfo>> {
+    let n = r.u32()? as usize;
+    if n > r.0.len() / 12 {
+        return Err(bad("truncated"));
+    }
+    (0..n).map(|_| Ok(SnapInfo { id: r.str()?, time: r.u64()? as i64, name: r.str()?, folders: r.u64()?, bytes: r.u64()? })).collect()
 }
 
 pub fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
@@ -495,6 +617,8 @@ pub struct Session {
     rs: Option<ResultSet>,
     generation: u64,
     tree: Option<Tree>,
+    /// Snapshot the tree is compared with.
+    compare: Option<Arc<crate::history::PathMap>>,
 }
 
 fn rows(eng: &Engine, hits: &[Hit]) -> Vec<Row> {
@@ -624,7 +748,14 @@ impl Session {
                     Ok((t, roots))
                 });
                 match tree {
-                    Ok((t, roots)) => {
+                    Ok((mut t, mut roots)) => {
+                        if self.compare.is_some() {
+                            t.base = self.compare.clone();
+                            match t.children(eng, &NodeRef::default(), *sort, *descending, 0, usize::MAX) {
+                                Ok(r) => roots = r,
+                                Err(e) => return Response::Error(e),
+                            }
+                        }
                         self.tree = Some(t);
                         Response::Tree(roots)
                     }
@@ -642,6 +773,33 @@ impl Session {
                 self.tree = None;
                 Response::Ok
             }
+            Request::History => match eng.history() {
+                Some(h) => Response::Snapshots(h.list()),
+                None => Response::Error(NO_HISTORY.into()),
+            },
+            Request::SavePoint { name } => match eng.take_snapshot(if name.trim().is_empty() { "save point" } else { name.trim() }) {
+                Ok(info) => Response::Snapshots(vec![info]),
+                Err(e) => Response::Error(e),
+            },
+            Request::Compare { id } => {
+                if id.is_empty() {
+                    self.compare = None;
+                } else {
+                    let Some(h) = eng.history() else { return Response::Error(NO_HISTORY.into()) };
+                    match h.paths(id) {
+                        Ok(m) => self.compare = Some(m),
+                        Err(e) => return Response::Error(format!("snapshot {id}: {e}")),
+                    }
+                }
+                if let Some(t) = self.tree.as_mut() {
+                    t.base = self.compare.clone();
+                }
+                Response::Ok
+            }
+            Request::Series { paths } => match eng.series(paths) {
+                Ok(s) => Response::Series(s),
+                Err(e) => Response::Error(e),
+            },
         }
     }
 }
@@ -889,11 +1047,47 @@ pub trait Backend: Send {
     fn tree_close(&mut self) {
         let _ = self.call(&Request::TreeClose);
     }
+
+    fn history(&mut self) -> Result<Vec<SnapInfo>, String> {
+        snaps_reply(self.call(&Request::History))
+    }
+
+    fn save_point(&mut self, name: &str) -> Result<SnapInfo, String> {
+        snaps_reply(self.call(&Request::SavePoint { name: name.into() }))?.pop().ok_or_else(|| "no snapshot".into())
+    }
+
+    /// Compare the tree with snapshot `id` (empty: stop comparing).
+    fn compare(&mut self, id: &str) -> Result<(), String> {
+        match self.call(&Request::Compare { id: id.into() }) {
+            Ok(Response::Ok) => Ok(()),
+            Ok(Response::Error(e)) => Err(e),
+            Ok(_) => Err("unexpected response".into()),
+            Err(e) => Err(format!("service connection: {e}")),
+        }
+    }
+
+    fn series(&mut self, paths: &[String]) -> Result<SeriesReply, String> {
+        match self.call(&Request::Series { paths: paths.to_vec() }) {
+            Ok(Response::Series(s)) => Ok(s),
+            Ok(Response::Error(e)) => Err(e),
+            Ok(_) => Err("unexpected response".into()),
+            Err(e) => Err(format!("service connection: {e}")),
+        }
+    }
 }
 
 fn page_reply(r: io::Result<Response>) -> Result<Page, String> {
     match r {
         Ok(Response::Page(p)) => Ok(p),
+        Ok(Response::Error(e)) => Err(e),
+        Ok(_) => Err("unexpected response".into()),
+        Err(e) => Err(format!("service connection: {e}")),
+    }
+}
+
+fn snaps_reply(r: io::Result<Response>) -> Result<Vec<SnapInfo>, String> {
+    match r {
+        Ok(Response::Snapshots(l)) => Ok(l),
         Ok(Response::Error(e)) => Err(e),
         Ok(_) => Err("unexpected response".into()),
         Err(e) => Err(format!("service connection: {e}")),
@@ -976,6 +1170,10 @@ mod tests {
             Request::Snapshot { offset: 5, count: 4096 },
             Request::DropRows { positions: vec![0, 7, u32::MAX], page: 512 },
             Request::DropRows { positions: Vec::new(), page: 0 },
+            Request::History,
+            Request::SavePoint { name: "before cleanup".into() },
+            Request::Compare { id: "1760000000-a".into() },
+            Request::Series { paths: vec![r"C:\Users".into(), "D:".into()] },
         ] {
             assert_eq!(Request::decode(&req.encode()).unwrap(), req);
         }
@@ -1003,12 +1201,19 @@ mod tests {
             cloud: 77,
             files: 12,
             total: 2,
+            before: 3,
+            has_before: true,
             rows: vec![
-                TreeRow { name: "C:".into(), size: 5, files: 2, is_dir: true, has_children: true, has_size: true, vol: "C".into(), idx: 9, epoch: 1, capacity: 100, free: 40, ..Default::default() },
+                TreeRow { name: "C:".into(), size: 5, files: 2, is_dir: true, has_children: true, has_size: true, vol: "C".into(), idx: 9, epoch: 1, capacity: 100, free: 40, before: 4, has_before: true, free_before: 50, ..Default::default() },
                 TreeRow { name: "a.mp4".into(), dir: r"C:\v".into(), size: 3, files: 1, modified: -5, matched: true, cloud: 9, hardlink: true, ..Default::default() },
             ],
         });
-        let all = [page, status, Response::Error("bad size: x".into()), Response::Config("{}".into()), Response::Count(4), Response::Ok, tree];
+        let snaps = Response::Snapshots(vec![SnapInfo { id: "1760000000-s".into(), time: 1_760_000_000, name: "before cleanup".into(), folders: 12, bytes: 3456 }]);
+        let series = Response::Series(SeriesReply {
+            snaps: vec![SnapInfo { id: "1-a".into(), time: 1, ..Default::default() }],
+            rows: vec![SeriesRow { path: r"C:\x".into(), sizes: vec![5, u64::MAX], free: vec![] }],
+        });
+        let all = [page, status, Response::Error("bad size: x".into()), Response::Config("{}".into()), Response::Count(4), Response::Ok, tree, snaps, series];
         let mut wire = Vec::new();
         for r in &all {
             write_frame(&mut wire, &r.encode()).unwrap();
@@ -1057,6 +1262,53 @@ mod tests {
         assert_eq!(be.search("notepad", SearchFlags::default(), SortKey::Name, false, 10).unwrap().total, 0);
         assert!(be.search("size:x", SearchFlags::default(), SortKey::Name, false, 10).is_err());
         assert!(be.generation().is_some());
+    }
+
+    /// Snapshots, comparing the tree with one, and size series.
+    #[test]
+    fn session_history_compare_series() {
+        use crate::index::tests::by_name;
+        let dir = std::env::temp_dir().join(format!("rapidfind-ipc-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let eng = Arc::new(Engine::from_indexes(vec![sample()]));
+        let mut be = Local::new(eng.clone());
+        assert_eq!(be.history().unwrap_err(), NO_HISTORY);
+        eng.enable_history(dir.clone());
+        assert!(be.history().unwrap().is_empty());
+        // sample() folders are tiny: the threshold would drop them, so snapshot with none.
+        let mut t = Tree::build(&eng, "", SearchFlags::default()).unwrap();
+        let s = t.snapshot(&eng, "before", 0, 100).unwrap();
+        let paths: Vec<String> = s.paths().get(r"C:\Users\Me").map(|x| x.to_string()).into_iter().collect();
+        assert_eq!(paths, ["1024"]);
+        let saved = eng.history().unwrap().save(&s).unwrap();
+        assert_eq!(be.history().unwrap(), std::slice::from_ref(&saved));
+        // The folder grows by 5000 bytes after the snapshot.
+        {
+            let v = &eng.volumes()[0];
+            let mut ix = v.index.write();
+            let me = by_name(&ix, "Me");
+            ix.add_link(90, 0, me, "big.bin", 0x20, 5000, i64::MAX / 2, 0);
+        }
+        be.compare(&saved.id).unwrap();
+        let roots = be.tree("", SearchFlags::default(), TreeSort::Change, true).unwrap();
+        let c = &roots.rows[0];
+        assert!(c.has_before && c.change() == 5000, "{c:?}");
+        let l = be.children(&NodeRef { path: r"C:\Users\Me".into(), ..Default::default() }, TreeSort::Change, true, 0, 10).unwrap();
+        assert_eq!(l.rows[0].name, "big.bin");
+        assert!(l.rows[0].changed && l.rows[0].change() == 5000);
+        assert_eq!((l.before, l.has_before), (1024, true));
+        let notes = l.rows.iter().find(|r| r.name == "notes.txt").unwrap();
+        assert_eq!(notes.change(), 0);
+        let series = be.series(&[r"C:\Users\Me".into(), r"C:\Nope".into()]).unwrap();
+        assert_eq!(series.snaps.len(), 1);
+        assert_eq!((series.rows[0].sizes[0], series.rows[1].sizes[0]), (1024, u64::MAX));
+        be.compare("").unwrap();
+        let plain = be.tree("", SearchFlags::default(), TreeSort::Size, true).unwrap();
+        assert!(!plain.rows[0].has_before);
+        assert!(be.compare("123-a").is_err());
+        let sp = be.save_point("after").unwrap();
+        assert!(sp.is_save_point() && sp.name == "after");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

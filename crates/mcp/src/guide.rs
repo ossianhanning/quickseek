@@ -13,9 +13,10 @@ Use these tools WHENEVER a request involves files on this computer, instead of s
 Select-String over folders, du, scripts) or the Glob/Grep tools outside the current project, which walk the disk slowly. For example: \
 \"where is my tax return pdf\", \"find the file called ...\", \"find all .psd files\", \"files I changed today\", \"which files mention X\" \
 (content search), \"find duplicates\", \"largest files\", \"what's in my Downloads\", \"what has eaten my disk on D:\", \"free up space on C:\", \
-\"my drive is full\", \"delete node_modules / temp files\". \
+\"my drive is full\", \"why is my disk filling up\", \"what grew this week\", \"delete node_modules / temp files\". \
 Finding: search_files (name, path wildcards like users\\*\\*.pdf where * spans folders, ext, size, dates, dupes, `content` for text inside files). \
-Disk space: disk_overview, then folder_sizes (path like \"D:\\\", depth 1-2, drill into the biggest folders) and cleanup_candidates. \
+Disk space: disk_overview, then folder_sizes (path like \"D:\\\", depth 1-2, drill into the biggest folders) and cleanup_candidates; \
+what grew or shrank since yesterday, last week, a date or a save point: folder_growth (daily snapshots). \
 Before delete_paths, show what would go with sizes and get a yes; it recycles by default, so space is freed only after \
 empty_recycle_bin (ask first) or permanent: true. Online-only OneDrive files are reported apart (they take no disk space).";
 
@@ -25,7 +26,7 @@ pub const SKILL_NAME: &str = "rapidfind";
 /// The skill: its description is what Claude matches requests against.
 pub const SKILL_MD: &str = r#"---
 name: rapidfind
-description: Find files and folders on this Windows PC and work out what uses disk space, instantly, with the rapidfind MCP tools (a live index of every file on all drives and network shares). Use whenever a request involves files on this computer outside the current project, for example finding a file by name, part of a name, extension, folder or wildcard path; files changed recently or not for a long time; the largest, oldest or duplicate files; files containing some text; what is in a folder; what is eating or filling a drive (C:, D:, ...); a full disk; cleaning up or freeing space; deleting node_modules, build output, caches or temp files.
+description: Find files and folders on this Windows PC and work out what uses disk space, instantly, with the rapidfind MCP tools (a live index of every file on all drives and network shares). Use whenever a request involves files on this computer outside the current project, for example finding a file by name, part of a name, extension, folder or wildcard path; files changed recently or not for a long time; the largest, oldest or duplicate files; files containing some text; what is in a folder; what is eating or filling a drive (C:, D:, ...); a full disk; what grew or changed in size recently or since a date; cleaning up or freeing space; deleting node_modules, build output, caches or temp files.
 ---
 
 # rapidfind: files and disk space on this PC
@@ -58,6 +59,15 @@ Show paths as links or a short table, and say how many matched in total.
    of the parent; drill into the largest with further calls. `query` restricts it, e.g. `*.mp4`
    shows where videos take space, `folder: wfn:node_modules` where node_modules folders are.
 3. Summarise the biggest items in plain words: size, what they probably are.
+
+## What grew: `folder_growth`
+
+For "why is my disk filling up", "what got bigger this week", "where did 20 GB go", "did the
+cleanup help": `folder_growth` compares folder sizes now with a daily snapshot (`days`, default 7)
+or a save point / date (`since`; `list_snapshots: true` lists them). It lists what grew or shrank
+most under `path`, biggest change first, with sizes then and now and each drive's free space then
+and now; `depth` 2-3 follows the biggest changes down. Snapshots keep folders of 10 MB or more, so
+a smaller folder then shows as new.
 
 ## Freeing space: `cleanup_candidates`, then `delete_paths`
 
@@ -92,6 +102,15 @@ pub fn prompts_list() -> Value {
             "title": "What's using space?",
             "description": "Break down which folders and files take the most space on a drive or folder.",
             "arguments": [{ "name": "path", "description": "Drive or folder, e.g. D: or C:\\Users (default: all drives)", "required": false }]
+        },
+        {
+            "name": "whats_growing",
+            "title": "What's growing?",
+            "description": "Show which folders grew or shrank most over the last days (or since a date or save point).",
+            "arguments": [
+                { "name": "path", "description": "Drive or folder, e.g. C: (default: all drives)", "required": false },
+                { "name": "days", "description": "How many days back (default 7)", "required": false }
+            ]
         },
         {
             "name": "find_files",
@@ -129,6 +148,11 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             let path = arg("path").map(String::from).unwrap_or_else(|| "my drives".into());
             ("What's using space?", format!("What is using the space on {path}? Use rapidfind's folder_sizes (start at depth 2, then drill into the biggest folders) and summarise the biggest items, what they probably are, and which could be cleaned up."))
         }
+        "whats_growing" => {
+            let path = arg("path").map(|p| format!(" on {p}")).unwrap_or_default();
+            let days = arg("days").unwrap_or("7");
+            ("What's growing?", format!("What has grown or shrunk{path} over the last {days} days? Use rapidfind's folder_growth (depth 3) and explain the biggest changes in plain words: what the folders probably are, whether the growth looks normal, and what could be cleaned up."))
+        }
         "find_files" => {
             let what = arg("what").ok_or("say what to look for")?;
             ("Find files", format!("Find this on my computer with rapidfind's search_files: {what}. Try a few searches (name parts, likely extensions and folders, dates, and content search if the name doesn't help), then list the best matches with their paths, sizes and dates."))
@@ -163,7 +187,7 @@ mod tests {
         for word in ["find", "disk", "duplicate", "containing"] {
             assert!(desc.contains(word), "{word}");
         }
-        for tool in ["search_files", "folder_sizes", "disk_overview", "cleanup_candidates", "delete_paths", "empty_recycle_bin"] {
+        for tool in ["search_files", "folder_sizes", "folder_growth", "disk_overview", "cleanup_candidates", "delete_paths", "empty_recycle_bin"] {
             assert!(rest.contains(tool) && INSTRUCTIONS.contains(&tool[..6]), "{tool}");
         }
     }

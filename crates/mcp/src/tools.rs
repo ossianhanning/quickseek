@@ -84,6 +84,26 @@ a matched folder counts with everything inside it. {SYNTAX}"),
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
+            "name": "folder_growth",
+            "title": "Folder growth",
+            "description": "What changed / grew: answers \"why is my disk filling up\", \"what got bigger this week\", \"where did 20 GB go since yesterday\", \"did the cleanup work\". \
+Compares folder sizes now with a daily snapshot (kept for 31 days daily, then weekly and monthly) or a named save point, and lists the folders and files under `path` \
+by how much they grew or shrank, with sizes then and now and each drive's free space then and now. `depth` follows the biggest changes further down. \
+Snapshots only hold folders of 10 MB or more, so smaller folders show up as new. With `list_snapshots: true` it only lists the snapshots there are.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Folder to look in, e.g. `D:\\` or `C:\\Users\\me`. Default: all drives." },
+                    "days": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 7, "description": "Compare with the snapshot closest to this many days ago." },
+                    "since": { "type": "string", "description": "Instead of `days`: a date (`2026-10-01`), or a save point's name or id from `list_snapshots`." },
+                    "depth": { "type": "integer", "minimum": 1, "maximum": 4, "default": 2, "description": "Levels listed; below the first, only folders that changed are opened." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "Entries listed per folder, biggest change first." },
+                    "list_snapshots": { "type": "boolean", "default": false }
+                }
+            },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
             "name": "disk_overview",
             "title": "Disk overview",
             "description": "How full each drive is (start here for disk-space questions): every indexed drive and network share with capacity, free space, space taken by indexed files, file count and index state.",
@@ -143,6 +163,7 @@ pub fn call(be: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Str
     match name {
         "search_files" => search_files(be, args),
         "folder_sizes" => folder_sizes(be, args),
+        "folder_growth" => folder_growth(be, args),
         "disk_overview" => disk_overview(be),
         "cleanup_candidates" => cleanup_candidates(be, args),
         "delete_paths" => delete_paths(be, args),
@@ -468,6 +489,137 @@ fn folder_sizes(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
         v["note"] = json!("`size` is what files take on this disk by their length: online-only cloud placeholders (OneDrive etc.) are reported separately as `online_only`, and a file with several hard links counts once. Compressed/sparse files count at their full length.");
         v
     })
+}
+
+fn unix_time(t: i64) -> String {
+    fmt::time((t + 11_644_473_600) * 10_000_000)
+}
+
+fn signed(d: i64) -> String {
+    if d < 0 { format!("-{}", fmt::size(d.unsigned_abs())) } else { format!("+{}", fmt::size(d as u64)) }
+}
+
+/// `YYYY-MM-DD` as unix seconds at local-ish midnight (UTC; snapshots are a day apart, so close enough).
+fn parse_date(s: &str) -> Option<i64> {
+    let mut it = s.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (it.next()??, it.next()??, it.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || it.next().is_some() {
+        return None;
+    }
+    // Days from civil (Howard Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86_400)
+}
+
+struct Growth {
+    depth: u64,
+    limit: u64,
+}
+
+impl Growth {
+    fn rows(&self, be: &mut dyn Backend, level: &TreeLevel, depth: u64) -> Result<Value, String> {
+        let mut out = Vec::new();
+        let mut listed = 0i64;
+        let changed: Vec<&TreeRow> = level.rows.iter().filter(|r| r.change() != 0).collect();
+        for r in changed.iter().take(self.limit as usize) {
+            listed += r.change();
+            let mut o = json!({
+                "name": r.name,
+                "path": r.full_path(),
+                "type": if r.is_dir { "folder" } else { "file" },
+                "change": r.change(),
+                "change_human": signed(r.change()),
+                "size_then": r.before,
+                "size_now": r.size,
+                "then_human": fmt::size(r.before),
+                "now_human": fmt::size(r.size),
+            });
+            if r.changed {
+                o["note"] = json!("new or modified since then");
+            } else if r.is_dir && r.before == 0 {
+                o["note"] = json!("new, or under 10 MB then");
+            }
+            if r.capacity > 0 {
+                o["free_then"] = json!(fmt::size(r.free_before));
+                o["free_now"] = json!(fmt::size(r.free));
+                o["capacity"] = json!(fmt::size(r.capacity));
+            }
+            if r.is_dir && r.has_children && depth + 1 < self.depth {
+                let l = be.children(&node_ref(r), TreeSort::Change, true, 0, 100_000)?;
+                o["children"] = self.rows(be, &l, depth + 1)?;
+            }
+            out.push(o);
+        }
+        let rest = (level.size as i64 - level.before as i64) - listed;
+        if changed.len() as u64 > self.limit && rest != 0 {
+            out.push(json!({
+                "name": format!("({} more changed)", changed.len() as u64 - self.limit),
+                "change": rest,
+                "change_human": signed(rest),
+            }));
+        }
+        Ok(Value::Array(out))
+    }
+}
+
+fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
+    let list = be.history()?;
+    let snap = |s: &rapidfind_core::history::SnapInfo| {
+        let mut o = json!({ "id": s.id, "time": unix_time(s.time), "folders": s.folders });
+        if s.is_save_point() {
+            o["save_point"] = json!(if s.name.is_empty() { "(unnamed)" } else { &s.name });
+        }
+        o
+    };
+    if b(a, "list_snapshots").unwrap_or(false) {
+        return Ok(json!({ "snapshots": list.iter().rev().map(snap).collect::<Vec<_>>() }));
+    }
+    if list.is_empty() {
+        return Err("no snapshots yet: the service takes one a day, the first soon after it starts".into());
+    }
+    let now = rapidfind_core::history::now_unix();
+    let base = match s(a, "since") {
+        Some(w) => match list.iter().find(|s| s.id == w || (!s.name.is_empty() && s.name.eq_ignore_ascii_case(w))) {
+            Some(s) => s,
+            None => {
+                let t = parse_date(w).ok_or_else(|| format!("`since`: no save point called \"{w}\" and not a date like 2026-10-01"))?;
+                // The first snapshot of that day, else the closest.
+                list.iter().filter(|s| s.time >= t && s.time < t + 86_400).min_by_key(|s| s.time).or_else(|| list.iter().min_by_key(|s| (s.time - t).abs())).unwrap()
+            }
+        },
+        None => {
+            let target = now - n(a, "days", 7, 1000).max(1) as i64 * 86_400;
+            list.iter().min_by_key(|s| (s.time - target).abs()).unwrap()
+        }
+    };
+    let g = Growth { depth: n(a, "depth", 2, 4).max(1), limit: n(a, "limit", 10, 100).max(1) };
+    be.compare(&base.id)?;
+    let res = (|| {
+        let roots = be.tree("", SearchFlags::default(), TreeSort::Change, true)?;
+        let (path, level) = match s(a, "path") {
+            Some(p) => (p.to_string(), be.children(&NodeRef { path: p.to_string(), ..Default::default() }, TreeSort::Change, true, 0, 100_000)?),
+            None => ("(all drives)".to_string(), roots),
+        };
+        let change = level.size as i64 - level.before as i64;
+        Ok::<_, String>(json!({
+            "path": path,
+            "compared_with": snap(base),
+            "days_ago": ((now - base.time) as f64 / 86_400.0 * 10.0).round() / 10.0,
+            "size_then": fmt::size(level.before),
+            "size_now": fmt::size(level.size),
+            "change": change,
+            "change_human": signed(change),
+            "children": g.rows(be, &level, 0)?,
+            "note": "Sizes come from the index now and from the snapshot then; folders under 10 MB aren't in snapshots. Free space can also change from things outside the index (shadow copies, page file, other drives' data).",
+        }))
+    })();
+    let _ = be.compare("");
+    be.tree_close();
+    res
 }
 
 fn disk_overview(be: &mut dyn Backend) -> Result<Value, String> {
@@ -905,6 +1057,49 @@ mod tests {
         let v = call(&mut be, "search_files", &json!({ "content": "ne+dle", "content_regex": true, "limit": 1 })).unwrap();
         assert_eq!((paths(&v), v["has_more"].clone()), (vec!["a.txt".to_string()], json!(true)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn growth_since_a_snapshot() {
+        use rapidfind_core::engine::Engine;
+        use rapidfind_core::tree::Tree;
+        let root = std::env::temp_dir().join(format!("rapidfind-mcp-growth-{}", std::process::id()));
+        let (dir, hist) = (root.join("data"), root.join("history"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(dir.join("grows")).unwrap();
+        std::fs::create_dir_all(dir.join("same")).unwrap();
+        std::fs::write(dir.join("grows").join("a.bin"), vec![1u8; 1000]).unwrap();
+        std::fs::write(dir.join("same").join("b.bin"), vec![1u8; 500]).unwrap();
+        let engine = |d: &std::path::Path| {
+            let e = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(&d.to_string_lossy(), rapidfind_core::fold::FoldMode::Lower)]));
+            e.enable_history(hist.clone());
+            e
+        };
+        let eng = engine(&dir);
+        let mut be = rapidfind_core::ipc::Local::new(eng.clone());
+        assert!(call(&mut be, "folder_growth", &json!({})).unwrap_err().contains("no snapshots"));
+        let mut t = Tree::build(&eng, "", SearchFlags::default()).unwrap();
+        let mut s = t.snapshot(&eng, "before", 0, 100).unwrap();
+        s.time -= 3 * 86_400;
+        eng.history().unwrap().save(&s).unwrap();
+        std::fs::write(dir.join("grows").join("c.bin"), vec![1u8; 4000]).unwrap();
+        let eng = engine(&dir);
+        let mut be = rapidfind_core::ipc::Local::new(eng);
+        let v = call(&mut be, "folder_growth", &json!({ "list_snapshots": true })).unwrap();
+        assert_eq!(v["snapshots"][0]["save_point"], json!("before"), "{v}");
+        let p = dir.to_string_lossy().to_string();
+        for args in [json!({ "path": p, "days": 3 }), json!({ "path": p, "since": "before" })] {
+            let v = call(&mut be, "folder_growth", &args).unwrap();
+            assert_eq!(v["change"], json!(4000), "{v}");
+            let kids = v["children"].as_array().unwrap();
+            assert_eq!(kids.len(), 1, "unchanged folders are left out: {v}");
+            assert_eq!((kids[0]["name"].as_str(), kids[0]["change"].as_i64()), (Some("grows"), Some(4000)));
+            assert_eq!(kids[0]["children"][0]["name"], json!("c.bin"));
+        }
+        assert!(call(&mut be, "folder_growth", &json!({ "since": "nonsense" })).is_err());
+        assert_eq!(parse_date("1970-01-02"), Some(86_400));
+        assert_eq!(parse_date("2026-10-20"), Some(1_792_454_400));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

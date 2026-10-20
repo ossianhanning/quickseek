@@ -9,6 +9,7 @@
 
 mod app;
 mod connect;
+mod growth;
 mod highlight;
 mod options;
 mod preview;
@@ -70,12 +71,14 @@ fn connect(local: bool) -> Result<Box<dyn Backend>, String> {
         runs_path: Some(persist::db_dir().join("runs.json")),
         ..Default::default()
     }));
+    engine.enable_history(persist::db_dir().join("history"));
     let e = engine.clone();
     std::thread::spawn(move || {
         e.sync_volumes();
         loop {
             std::thread::sleep(Duration::from_secs(3));
             e.sync_if_changed();
+            e.maybe_snapshot();
         }
     });
     Ok(Box::new(ipc::Local::new(engine)))

@@ -168,12 +168,12 @@ mod tests {
         assert!(s.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).is_none());
         let list = s.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["search_files", "folder_sizes", "disk_overview", "cleanup_candidates", "delete_paths", "empty_recycle_bin"]);
+        assert_eq!(names, ["search_files", "folder_sizes", "folder_growth", "disk_overview", "cleanup_candidates", "delete_paths", "empty_recycle_bin"]);
         assert!(init["result"]["capabilities"]["prompts"].is_object());
         assert!(init["result"]["instructions"].as_str().unwrap().contains("search_files"));
         let prompts = s.handle(&json!({ "jsonrpc": "2.0", "id": 5, "method": "prompts/list" })).unwrap();
         let names: Vec<&str> = prompts["result"]["prompts"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["free_disk_space", "whats_using_space", "find_files", "find_large_files"]);
+        assert_eq!(names, ["free_disk_space", "whats_using_space", "whats_growing", "find_files", "find_large_files"]);
         let got = s.handle(&json!({ "jsonrpc": "2.0", "id": 6, "method": "prompts/get", "params": { "name": "free_disk_space", "arguments": { "drive": "D:" } } })).unwrap();
         let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap();
         assert!(text.contains(r"D:\") && text.contains("cleanup_candidates"), "{text}");

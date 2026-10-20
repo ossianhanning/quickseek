@@ -14,6 +14,7 @@ use rapidfind_core::fold::FoldMode;
 use rapidfind_core::ipc::{Backend, Page, Row, StatusInfo};
 use rapidfind_core::query::{FILTERS, Query, SearchFlags};
 use rapidfind_core::search::SortKey;
+use rapidfind_core::history::SnapInfo;
 use rapidfind_core::tree::{TreeLevel, TreeSort};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -49,6 +50,7 @@ pub const WM_APP_TREE: u32 = WM_APP + 5;
 pub const WM_APP_CONTENT: u32 = WM_APP + 6;
 const TIMER_POLL: usize = 1;
 const TIMER_PREVIEW: usize = 2;
+const TIMER_GROWTH: usize = 3;
 const HOTKEY_ID: i32 = 1;
 
 // Menu command ids (< 0x1000; shell menu items use the range above).
@@ -79,6 +81,11 @@ const CMD_OPTIONS: u32 = 500;
 const CMD_LOGIN: u32 = 501;
 const CMD_BACKGROUND: u32 = 502;
 pub const CMD_CONNECT_AI: u32 = 503;
+pub const CMD_COMPARE_DAY: u32 = 410;
+pub const CMD_COMPARE_WEEK: u32 = 411;
+pub const CMD_COMPARE_MONTH: u32 = 412;
+pub const CMD_SAVE_POINT: u32 = 413;
+pub const CMD_STOP_COMPARE: u32 = 414;
 const CMD_SYNTAX: u32 = 600;
 const CMD_ABOUT: u32 = 601;
 const CMD_SHOW: u32 = 700;
@@ -207,6 +214,10 @@ pub struct App {
     reveal: RefCell<Option<String>>,
     /// When the last click toggled a +/− box (so the double-click that may follow doesn't toggle back).
     glyph_click: Cell<u32>,
+    /// Comparing with a snapshot, the timeline strip and the details pane.
+    pub growth: RefCell<crate::growth::Growth>,
+    strip: Cell<HWND>,
+    gpane: Cell<HWND>,
     pub preview: Preview,
     pub preview_btn: Cell<HWND>,
     progress: Cell<HWND>,
@@ -545,6 +556,7 @@ impl App {
                     m.query = self.query_text();
                 }
                 let restore = std::mem::take(&mut *self.restore.borrow_mut());
+                self.refresh_history();
                 if restore.is_empty() {
                     // Open the volumes (when there are only a few) one level.
                     let n = self.tree.borrow().nodes.len();
@@ -552,6 +564,9 @@ impl App {
                         for i in (0..n).rev() {
                             self.expand(i);
                         }
+                    }
+                    if self.comparing() {
+                        self.drill_growth();
                     }
                 } else {
                     for p in &restore {
@@ -565,8 +580,12 @@ impl App {
                 if let Some(p) = self.reveal.borrow_mut().take() {
                     self.reveal_path(&p);
                 }
+                if self.comparing() {
+                    self.load_tree_series();
+                }
                 unsafe { InvalidateRect(list, null(), 0) };
                 self.update_status();
+                self.growth_soon();
             }
             Err(e) => {
                 self.tree.borrow_mut().nodes.clear();
@@ -593,6 +612,9 @@ impl App {
                 self.tree.borrow_mut().expand(i, level.rows);
                 if drill {
                     self.expand(i + 1);
+                }
+                if self.comparing() {
+                    self.load_tree_series();
                 }
             }
             Err(e) if e == "no tree open" => self.build_tree(true), // service restarted
@@ -663,6 +685,20 @@ impl App {
             ShowWindow(self.tree_list.get(), if on { SW_SHOW } else { SW_HIDE });
             ShowWindow(self.list.get(), if on { SW_HIDE } else { SW_SHOW });
         }
+        if !on && self.comparing() {
+            // Leaving the tree stops comparing (without rebuilding it).
+            if let Some(mut c) = self.conn.try_lock_for(Duration::from_secs(2)) {
+                let _ = c.be.compare("");
+            }
+            let prev = self.growth.borrow_mut().prev_sort.take();
+            self.growth.borrow_mut().base = None;
+            if let Some((k, d)) = prev {
+                let mut s = self.settings.borrow_mut();
+                (s.tree_sort, s.tree_descending) = (k, d);
+            }
+            self.show_growth_columns(false);
+        }
+        self.layout();
         if on {
             self.search(false);
         } else {
@@ -699,6 +735,7 @@ impl App {
             TreeSort::Size => 1,
             TreeSort::Files => 3,
             TreeSort::Modified => 5,
+            TreeSort::Change => 6,
         };
         for c in 0..tv::COLUMNS.len() as i32 {
             let mut hd: HDITEMW = unsafe { std::mem::zeroed() };
@@ -718,6 +755,18 @@ impl App {
         let what = if m.query.trim().is_empty() { "indexed".to_string() } else { format!("matching \"{}\"", m.query.trim()) };
         let cloud = if m.cloud > 0 { format!(" (+ {} online-only)", fmt::size(m.cloud)) } else { String::new() };
         let mut s = format!("{}{cloud} in {} files {what}  ·  {:.0} ms", fmt::size(m.size), shell::group(m.files), m.elapsed_ms);
+        if let Some(b) = &self.growth.borrow().base {
+            let roots: Vec<String> = m
+                .nodes
+                .iter()
+                .filter(|n| n.depth == 0 && n.row.has_before)
+                .map(|n| {
+                    let free = if n.row.free_before > 0 { format!(", free {} → {}", fmt::size(n.row.free_before), fmt::size(n.row.free)) } else { String::new() };
+                    format!("{} {}{free}", n.row.name, tv::signed_size(n.row.change()))
+                })
+                .collect();
+            s = format!("Compared with {} ({}): {}  ·  Esc stops  ·  {s}", crate::growth::day(b.time, false), crate::growth::ago(b.time), roots.join("; "));
+        }
         if let [i] = sel[..]
             && let Some(n) = m.nodes.get(i)
         {
@@ -734,7 +783,7 @@ impl App {
         if stage == CDDS_ITEMPREPAINT {
             return CDRF_NOTIFYSUBITEMDRAW as LRESULT;
         }
-        if stage != (CDDS_ITEMPREPAINT | CDDS_SUBITEM) || !(cd.iSubItem == 0 || cd.iSubItem == 2) {
+        if stage != (CDDS_ITEMPREPAINT | CDDS_SUBITEM) || !matches!(cd.iSubItem, 0 | 2 | tv::COL_CHANGE | tv::COL_TREND) {
             return CDRF_DODEFAULT as LRESULT;
         }
         let i = cd.nmcd.dwItemSpec;
@@ -748,6 +797,11 @@ impl App {
             let icon = self.files.borrow_mut().get(&node.row.name, node.row.is_dir).0;
             let il = self.files.borrow().image_list;
             tv::draw_name(list, &p, &node, rc, icon, il);
+        } else if cd.iSubItem == tv::COL_CHANGE {
+            tv::draw_change(list, &p, &node, rc);
+        } else if cd.iSubItem == tv::COL_TREND {
+            let g = self.growth.borrow();
+            tv::draw_trend(list, &p, &node, rc, if node.row.is_dir { g.series.get(&crate::growth::key(&node.path())).map(|v| v.as_slice()) } else { None });
         } else {
             tv::draw_bar(list, &p, &node, rc);
         }
@@ -857,6 +911,7 @@ impl App {
                             }
                         }
                     }
+                    0x1B /* Esc */ if self.comparing() => self.set_compare(None),
                     k if ctrl && k == b'C' as u16 => {
                         let paths = self.tree_selected_paths();
                         if !paths.is_empty() {
@@ -887,6 +942,7 @@ impl App {
             LVN_ITEMCHANGED => {
                 self.update_status();
                 self.preview_soon();
+                self.growth_soon();
                 Some(0)
             }
             LVN_BEGINDRAG => {
@@ -902,6 +958,400 @@ impl App {
             NM_CUSTOMDRAW => Some(self.tree_custom_draw(unsafe { &mut *(lparam as *mut NMLVCUSTOMDRAW) })),
             _ => None,
         }
+    }
+
+    // ---- folder growth -----------------------------------------------------------
+
+    pub fn ui_font(&self) -> HFONT {
+        self.font.get()
+    }
+
+    pub fn ui_bold(&self) -> HFONT {
+        self.bold.get()
+    }
+
+    pub fn comparing(&self) -> bool {
+        self.growth.borrow().base.is_some()
+    }
+
+    fn growth_soon(&self) {
+        if self.tree_mode() {
+            unsafe { SetTimer(self.hwnd.get(), TIMER_GROWTH, 120, None) };
+        }
+    }
+
+    /// Re-reads the snapshot list (cheap); forgets cached series if it changed.
+    fn refresh_history(&self) {
+        let list = self.conn.try_lock_for(Duration::from_secs(5)).and_then(|mut c| c.be.history().ok());
+        let mut g = self.growth.borrow_mut();
+        if let Some(l) = list
+            && l != g.snaps
+        {
+            g.snaps = l;
+            g.series.clear();
+            g.free.clear();
+        }
+    }
+
+    /// Makes sure these folders' size series are cached.
+    fn ensure_series(&self, paths: &[String]) {
+        let missing: Vec<String> = {
+            let g = self.growth.borrow();
+            if g.snaps.is_empty() {
+                return;
+            }
+            let mut seen = std::collections::HashSet::new();
+            paths.iter().filter(|p| !g.series.contains_key(&crate::growth::key(p)) && seen.insert(crate::growth::key(p))).cloned().collect()
+        };
+        if missing.is_empty() {
+            return;
+        }
+        let Some(reply) = self.conn.try_lock_for(Duration::from_secs(5)).and_then(|mut c| c.be.series(&missing).ok()) else { return };
+        let mut g = self.growth.borrow_mut();
+        if reply.snaps != g.snaps {
+            g.snaps = reply.snaps.clone();
+            g.series.clear();
+            g.free.clear();
+        }
+        for r in reply.rows {
+            let k = crate::growth::key(&r.path);
+            if r.free.iter().any(|&f| f != u64::MAX) {
+                g.free.insert(k.clone(), r.free);
+            }
+            g.series.insert(k, r.sizes);
+        }
+    }
+
+    /// Series for every folder in the tree (for the Trend column).
+    fn load_tree_series(&self) {
+        let paths: Vec<String> = self.tree.borrow().nodes.iter().filter(|n| n.row.is_dir).map(tv::Node::path).collect();
+        self.ensure_series(&paths);
+        unsafe { InvalidateRect(self.tree_list.get(), null(), 0) };
+    }
+
+    fn show_growth_columns(&self, on: bool) {
+        let (tl, hwnd) = (self.tree_list.get(), self.hwnd.get());
+        for c in [tv::COL_CHANGE, tv::COL_TREND] {
+            let w = tv::COLUMNS[c as usize].1;
+            send(tl, LVM_SETCOLUMNWIDTH, c as usize, if on { px(hwnd, w) } else { 0 } as isize);
+        }
+    }
+
+    /// Compares the tree with `snap` (`None`: stop). Sorts by change while comparing.
+    pub fn set_compare(&self, snap: Option<SnapInfo>) {
+        let id = snap.as_ref().map_or(String::new(), |s| s.id.clone());
+        match self.conn.try_lock_for(Duration::from_secs(5)).map(|mut c| c.be.compare(&id)) {
+            Some(Err(e)) => {
+                self.set_status_left(&e);
+                return;
+            }
+            None => return,
+            Some(Ok(())) => {}
+        }
+        let was = self.comparing();
+        {
+            let mut g = self.growth.borrow_mut();
+            if !was && snap.is_some() {
+                let s = self.settings.borrow();
+                g.prev_sort = Some((s.tree_sort.clone(), s.tree_descending));
+            }
+            g.base = snap;
+            g.pane = None;
+        }
+        let now = self.comparing();
+        if now && !was {
+            let mut s = self.settings.borrow_mut();
+            s.tree_sort = "change".into();
+            s.tree_descending = true;
+        } else if !now
+            && was
+            && let Some((k, d)) = self.growth.borrow_mut().prev_sort.take()
+        {
+            let mut s = self.settings.borrow_mut();
+            (s.tree_sort, s.tree_descending) = (k, d);
+        }
+        self.show_growth_columns(now);
+        self.update_header_tree();
+        self.layout();
+        self.build_tree(false);
+    }
+
+    /// Opens the path that grew most, while one child holds most of the growth.
+    fn drill_growth(&self) {
+        let roots: Vec<usize> = { self.tree.borrow().nodes.iter().enumerate().filter(|(_, n)| n.depth == 0).map(|(i, _)| i).collect() };
+        // The root that grew most (after expanding, indices shift: find by path).
+        let best_root = {
+            let m = self.tree.borrow();
+            roots.iter().copied().max_by_key(|&i| m.nodes[i].row.change()).map(|i| m.nodes[i].path())
+        };
+        let Some(mut path) = best_root else { return };
+        for _ in 0..12 {
+            let next = {
+                let m = self.tree.borrow();
+                let Some(i) = m.find(&path) else { break };
+                let n = &m.nodes[i];
+                if !n.expanded {
+                    let expandable = n.expandable();
+                    drop(m);
+                    if !expandable {
+                        break;
+                    }
+                    self.expand(i);
+                    continue;
+                }
+                let d = n.depth;
+                let kids: Vec<&tv::Node> = m.nodes[i + 1..].iter().take_while(|x| x.depth > d).filter(|x| x.depth == d + 1).collect();
+                let total = n.row.change();
+                kids.iter().max_by_key(|k| k.row.change()).filter(|k| k.row.is_dir && k.row.change() > 0 && k.row.change() * 2 >= total).map(|k| k.path())
+            };
+            match next {
+                Some(p) => path = p,
+                None => break,
+            }
+        }
+        if let Some(i) = self.tree.borrow().find(&path) {
+            let n = self.tree.borrow().nodes.len();
+            send(self.tree_list.get(), LVM_SETITEMCOUNT, n, 0);
+            self.select_tree_row(i);
+        }
+    }
+
+    /// A click on the timeline: compare with that day.
+    pub fn strip_click(&self, x: i32) {
+        let pick = {
+            let g = self.growth.borrow();
+            let Some(d) = g.strip.as_ref() else { return };
+            let rc = w::client_rect(self.strip.get());
+            let pr = crate::growth::plot_rect(self.strip.get(), &rc);
+            crate::growth::nearest(&d.times, x, pr.left, pr.right).filter(|&i| i + 1 < d.times.len()).and_then(|i| g.snaps.get(i).cloned())
+        };
+        if let Some(s) = pick {
+            self.set_compare(Some(s));
+        }
+    }
+
+    /// The folder the strip and pane are about: the selection, else the whole tree.
+    fn growth_scope(&self) -> Option<tv::Node> {
+        let sel = self.tree_selected();
+        let m = self.tree.borrow();
+        sel.first().and_then(|&i| m.nodes.get(i)).filter(|n| n.row.is_dir).cloned()
+    }
+
+    /// Children of a node: from the tree if it's open, else asked for.
+    fn growth_children(&self, n: &tv::Node, sort: TreeSort) -> Vec<rapidfind_core::tree::TreeRow> {
+        {
+            let m = self.tree.borrow();
+            if let Some(i) = m.find(&n.path())
+                && m.nodes[i].expanded
+            {
+                let d = m.nodes[i].depth;
+                return m.nodes[i + 1..].iter().take_while(|x| x.depth > d).filter(|x| x.depth == d + 1).map(|x| x.row.clone()).collect();
+            }
+        }
+        self.conn.try_lock_for(Duration::from_secs(5)).and_then(|mut c| c.be.children(&n.node_ref(), sort, true, 0, 40).ok()).map(|l| l.rows).unwrap_or_default()
+    }
+
+    /// Rebuilds what the strip and the pane show for the current selection.
+    fn rebuild_growth(&self) {
+        if !self.tree_mode() {
+            return;
+        }
+        let scope = self.growth_scope();
+        let comparing = self.comparing();
+        // Layers: the scope's biggest children (by change when comparing), or the volumes.
+        let (title, scope_path, kids, capacity, root_path): (String, Option<String>, Vec<rapidfind_core::tree::TreeRow>, u64, Option<String>) = match &scope {
+            Some(n) => {
+                let mut kids: Vec<_> = self.growth_children(n, if comparing { TreeSort::Change } else { TreeSort::Size }).into_iter().filter(|r| r.is_dir).collect();
+                if comparing {
+                    kids.sort_by_key(|r| std::cmp::Reverse(r.change().unsigned_abs()));
+                } else {
+                    kids.sort_by_key(|r| std::cmp::Reverse(r.size));
+                }
+                kids.truncate(4);
+                let root = (n.depth == 0 && n.row.capacity > 0).then(|| n.path());
+                (n.row.name.clone(), Some(n.path()), kids, if n.depth == 0 { n.row.capacity } else { 0 }, root)
+            }
+            None => {
+                let m = self.tree.borrow();
+                let mut roots: Vec<_> = m.nodes.iter().filter(|n| n.depth == 0).map(|n| n.row.clone()).collect();
+                roots.sort_by_key(|r| std::cmp::Reverse(r.size));
+                ("All drives".into(), None, roots.into_iter().take(4).collect(), 0, None)
+            }
+        };
+        // The pane is about the selection, else the first drive.
+        let pane_node = if comparing { scope.clone().or_else(|| self.tree.borrow().nodes.first().cloned()) } else { None };
+        let mut paths: Vec<String> = kids.iter().map(|r| r.full_path()).collect();
+        paths.extend(scope_path.iter().cloned());
+        paths.extend(pane_node.iter().map(tv::Node::path));
+        self.ensure_series(&paths);
+        let strip = {
+            let g = self.growth.borrow();
+            let now = rapidfind_core::history::now_unix();
+            let mut times: Vec<i64> = g.snaps.iter().map(|s| s.time).collect();
+            times.push(now);
+            let at = |v: u64| if v == u64::MAX { 0 } else { v };
+            let series_of = |p: &str, now_v: u64| -> Vec<u64> {
+                let mut v: Vec<u64> = g.series.get(&crate::growth::key(p)).map(|s| s.iter().map(|&x| at(x)).collect()).unwrap_or_else(|| vec![0; g.snaps.len()]);
+                v.resize(g.snaps.len(), 0);
+                v.push(now_v);
+                v
+            };
+            let mut layers: Vec<crate::growth::Layer> = kids.iter().map(|r| crate::growth::Layer { label: r.name.clone(), values: series_of(&r.full_path(), r.size) }).collect();
+            let scope_vals = match (&scope, &scope_path) {
+                (Some(n), Some(p)) => series_of(p, n.row.size),
+                _ => (0..times.len()).map(|i| layers.iter().map(|l| l.values[i]).sum()).collect(),
+            };
+            let summed: Vec<u64> = (0..times.len()).map(|i| layers.iter().map(|l| l.values[i]).sum()).collect();
+            let other: Vec<u64> = scope_vals.iter().zip(&summed).map(|(a, b)| a.saturating_sub(*b)).collect();
+            if other.iter().any(|&v| v > 0) || layers.is_empty() {
+                layers.push(crate::growth::Layer { label: "everything else".into(), values: other });
+            } else {
+                // Keep the "everything else" slot so colors stay put.
+                layers.push(crate::growth::Layer { label: "everything else".into(), values: vec![0; times.len()] });
+            }
+            let free = match (&root_path, &scope) {
+                (Some(p), Some(n)) => {
+                    let mut f = g.free.get(&crate::growth::key(p)).cloned().unwrap_or_default();
+                    f.resize(g.snaps.len(), u64::MAX);
+                    f.push(n.row.free);
+                    f
+                }
+                _ => Vec::new(),
+            };
+            let base = g.base.as_ref().and_then(|b| g.snaps.iter().position(|s| s.id == b.id));
+            let save_points = g.snaps.iter().enumerate().filter(|(_, s)| s.is_save_point()).map(|(i, _)| i).collect();
+            let size_now = *scope_vals.last().unwrap_or(&0);
+            let change = base.map(|b| size_now as i64 - scope_vals[b] as i64);
+            let mut t = format!("{}  {}", title.trim_end_matches('\\'), fmt::size(size_now));
+            if let Some(c) = change {
+                t.push_str(&format!(" ({})", tv::signed_size(c)));
+            }
+            crate::growth::StripData { title: t, times, layers, capacity, free, base, save_points }
+        };
+        let pane = pane_node.map(|n| {
+            let mut d = self.pane_for(&n);
+            d.days = {
+                let g = self.growth.borrow();
+                let mut times: Vec<i64> = g.snaps.iter().map(|s| s.time).collect();
+                times.push(rapidfind_core::history::now_unix());
+                let mut vals = g.series.get(&crate::growth::key(&n.path())).cloned().unwrap_or_default();
+                vals.resize(g.snaps.len(), u64::MAX);
+                vals.push(n.row.size);
+                crate::growth::daily(&times, &vals)
+            };
+            if self.growth.borrow().tab == crate::growth::TAB_MAP {
+                d.map = self.map_for(&n);
+            }
+            d
+        });
+        {
+            let mut g = self.growth.borrow_mut();
+            g.strip = Some(strip);
+            g.pane = pane;
+        }
+        unsafe {
+            InvalidateRect(self.strip.get(), null(), 0);
+            InvalidateRect(self.gpane.get(), null(), 0);
+        }
+    }
+
+    /// One level of the treemap under `n`: its biggest entries, then one box
+    /// for the rest (or for what was there then and is gone).
+    fn map_level(&self, n: &tv::Node, max: usize) -> Vec<(crate::growth::MapItem, rapidfind_core::tree::TreeRow)> {
+        use crate::growth::MapItem;
+        let rows = self.growth_children(n, TreeSort::Size);
+        let mut out: Vec<(MapItem, rapidfind_core::tree::TreeRow)> =
+            rows.into_iter().map(|r| (MapItem { name: r.name.clone(), path: r.full_path(), size: r.size, before: r.before, kids: Vec::new() }, r)).filter(|(i, _)| i.area() > 0).collect();
+        out.sort_by_key(|(i, _)| std::cmp::Reverse(i.area()));
+        out.truncate(max);
+        let (now_sum, before_sum) = out.iter().fold((0u64, 0u64), |(a, b), (i, _)| (a + i.size, b + i.before));
+        let rest = MapItem {
+            name: String::new(),
+            path: String::new(),
+            size: n.row.size.saturating_sub(now_sum),
+            before: n.row.before.saturating_sub(before_sum),
+            kids: Vec::new(),
+        };
+        // Below 1 % it would only be a sliver.
+        if rest.area() * 100 > n.row.size.max(n.row.before) {
+            let name = if rest.size == 0 { "deleted or moved".to_string() } else { "smaller items".to_string() };
+            out.push((MapItem { name, ..rest }, rapidfind_core::tree::TreeRow::default()));
+        }
+        out
+    }
+
+    /// The treemap of `n`: its children, and the biggest folders' children.
+    fn map_for(&self, n: &tv::Node) -> Vec<crate::growth::MapItem> {
+        let mut top = self.map_level(n, 30);
+        for (item, row) in top.iter_mut().take(10) {
+            if row.is_dir && row.has_children {
+                let child = tv::Node { row: row.clone(), depth: n.depth + 1, expanded: false, parent_size: 0 };
+                item.kids = self.map_level(&child, 16).into_iter().map(|(i, _)| i).collect();
+            }
+        }
+        top.into_iter().map(|(i, _)| i).collect()
+    }
+
+    pub fn set_growth_tab(&self, t: u8) {
+        self.growth.borrow_mut().tab = t;
+        self.rebuild_growth();
+    }
+
+    /// Map click: open that folder in the tree (the pane follows the selection).
+    pub fn map_open(&self, path: &str) {
+        self.reveal_path(path);
+        self.rebuild_growth();
+    }
+
+    /// Map right-click: select the parent of what the pane shows.
+    pub fn map_up(&self) {
+        let parent = {
+            let m = self.tree.borrow();
+            let Some(&i) = self.tree_selected().first() else { return };
+            let Some(d) = m.nodes.get(i).map(|n| n.depth).filter(|&d| d > 0) else { return };
+            (0..i).rev().find(|&j| m.nodes[j].depth == d - 1)
+        };
+        if let Some(j) = parent {
+            self.select_tree_row(j);
+            self.rebuild_growth();
+        }
+    }
+
+    /// Calendar click: compare with the snapshot nearest that day's start.
+    pub fn compare_day(&self, day: i64) {
+        let pick = self.growth.borrow().snaps.iter().min_by_key(|s| (s.time - day).abs()).cloned();
+        if let Some(s) = pick {
+            self.set_compare(Some(s));
+        }
+    }
+
+    fn pane_for(&self, n: &tv::Node) -> crate::growth::PaneData {
+        let base = self.growth.borrow().base.clone();
+        let since = base.as_ref().map_or(String::new(), |b| format!("{} ({})", crate::growth::day(b.time, false), crate::growth::ago(b.time)));
+        let mut kids = self.growth_children(n, TreeSort::Change);
+        kids.sort_by_key(|r| std::cmp::Reverse(r.change().unsigned_abs()));
+        let mut parts: Vec<(String, i64)> = kids.iter().filter(|r| r.change() != 0).take(5).map(|r| (r.name.clone(), r.change())).collect();
+        let rest: i64 = (n.row.change()) - parts.iter().map(|p| p.1).sum::<i64>();
+        if rest != 0 {
+            parts.push(("everything else".into(), rest));
+        }
+        let free = (n.depth == 0 && n.row.capacity > 0 && n.row.free_before > 0).then_some((n.row.free_before, n.row.free));
+        // The chain of biggest growers, a few levels down.
+        let mut chain = Vec::new();
+        let mut cur = n.clone();
+        for _ in 0..7 {
+            let kids = self.growth_children(&cur, TreeSort::Change);
+            let Some(best) = kids.into_iter().filter(|r| r.change() > 0).max_by_key(|r| r.change()) else { break };
+            if best.change() * 5 < cur.row.change().max(1) {
+                break;
+            }
+            chain.push((best.name.clone(), best.change(), best.size));
+            if !best.is_dir || !best.has_children {
+                break;
+            }
+            cur = tv::Node { row: best, depth: cur.depth + 1, expanded: false, parent_size: 0 };
+        }
+        crate::growth::PaneData { title: n.path(), since, before: n.row.before, now: n.row.size, parts, free, chain, ..Default::default() }
     }
 
     fn set_status_left(&self, s: &str) {
@@ -1154,6 +1604,36 @@ impl App {
                     send(self.edit.get(), EM_SETSEL, p.len(), p.len() as isize);
                 }
             }
+            CMD_COMPARE_DAY | CMD_COMPARE_WEEK | CMD_COMPARE_MONTH => {
+                if !self.tree_mode() {
+                    self.set_tree_mode(true);
+                }
+                self.refresh_history();
+                let days = match id {
+                    CMD_COMPARE_DAY => 1,
+                    CMD_COMPARE_WEEK => 7,
+                    _ => 30,
+                };
+                let snap = crate::growth::snap_days_ago(&self.growth.borrow().snaps, days);
+                match snap {
+                    Some(s) => self.set_compare(Some(s)),
+                    None => self.set_status_left("No folder-size history yet: the service keeps one snapshot a day from now on."),
+                }
+            }
+            CMD_SAVE_POINT => {
+                let name = format!("Save point {}", crate::growth::day(rapidfind_core::history::now_unix(), true));
+                let res = self.conn.try_lock_for(Duration::from_secs(10)).map(|mut c| c.be.save_point(&name));
+                match res {
+                    Some(Ok(s)) => {
+                        self.refresh_history();
+                        self.set_status_left(&format!("Saved \"{}\": compare with it later on the timeline (the dot).", s.name));
+                        self.growth_soon();
+                    }
+                    Some(Err(e)) => self.set_status_left(&e),
+                    None => {}
+                }
+            }
+            CMD_STOP_COMPARE => self.set_compare(None),
             CMD_SHOW_IN_TREE => {
                 if let Some(r) = self.selected_rows().first() {
                     *self.reveal.borrow_mut() = Some(r.full_path());
@@ -1304,7 +1784,18 @@ impl App {
             w::move_to(self.preview.host.get(), lw + gap, top, cw - lw - gap, ch - top - sh);
         }
         w::move_to(self.list.get(), 0, top, lw, ch - top - sh);
-        w::move_to(self.tree_list.get(), 0, top, lw, ch - top - sh);
+        // Tree mode: the history strip on top, the growth pane on the right when comparing.
+        let tree = self.tree_mode();
+        let strip_h = if tree { px(hwnd, 124) } else { 0 };
+        let pane_w = if tree && self.comparing() { px(hwnd, 360).min(lw / 2) } else { 0 };
+        let body = (ch - top - sh - strip_h).max(0);
+        w::move_to(self.strip.get(), 0, top, lw, strip_h);
+        w::move_to(self.tree_list.get(), 0, top + strip_h, lw - pane_w, body);
+        w::move_to(self.gpane.get(), lw - pane_w, top + strip_h, pane_w, body);
+        unsafe {
+            ShowWindow(self.strip.get(), if tree { SW_SHOW } else { SW_HIDE });
+            ShowWindow(self.gpane.get(), if pane_w > 0 { SW_SHOW } else { SW_HIDE });
+        }
     }
 
     /// Over the gap between the list and the preview pane.
@@ -1750,6 +2241,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             let _ = app.jobs.send(Job::Poll);
             0
         }
+        WM_TIMER if w == TIMER_GROWTH => {
+            unsafe { KillTimer(hwnd, TIMER_GROWTH) };
+            app.rebuild_growth();
+            0
+        }
         WM_TIMER if w == TIMER_PREVIEW => {
             unsafe { KillTimer(hwnd, TIMER_PREVIEW) };
             app.update_preview();
@@ -1854,6 +2350,9 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             restore: RefCell::new(Vec::new()),
             reveal: RefCell::new(None),
             glyph_click: Cell::new(0),
+            growth: RefCell::new(crate::growth::Growth::default()),
+            strip: Cell::new(null_mut()),
+            gpane: Cell::new(null_mut()),
             preview: Preview::default(),
             preview_btn: Cell::new(null_mut()),
             progress: Cell::new(null_mut()),
@@ -1901,6 +2400,11 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         w::menu_item(view, CMD_SORT_CREATED, "Sort by Date &Created");
         w::menu_sep(view);
         w::menu_item(view, CMD_TREE, "Folder Size &Tree\tCtrl+T");
+        w::menu_item(view, CMD_COMPARE_DAY, "Compare with &Yesterday");
+        w::menu_item(view, CMD_COMPARE_WEEK, "Compare with a &Week Ago");
+        w::menu_item(view, CMD_COMPARE_MONTH, "Compare with a &Month Ago");
+        w::menu_item(view, CMD_SAVE_POINT, "Take a &Save Point");
+        w::menu_item(view, CMD_STOP_COMPARE, "Stop Compari&ng");
         w::menu_item(view, CMD_PREVIEW, "&Preview Pane\tAlt+P");
         w::menu_sep(view);
         w::menu_item(view, CMD_REFRESH, "&Refresh\tF5");
@@ -1973,7 +2477,15 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             col.pszText = wname.as_ptr() as *mut u16;
             send(tl, LVM_INSERTCOLUMNW, c, &col as *const _ as isize);
         }
+        let order = tv::COLUMN_ORDER;
+        send(tl, LVM_SETCOLUMNORDERARRAY, order.len(), order.as_ptr() as isize);
+        for c in [tv::COL_CHANGE, tv::COL_TREND] {
+            send(tl, LVM_SETCOLUMNWIDTH, c as usize, 0);
+        }
         app.tree_list.set(tl);
+        let (strip, gpane) = crate::growth::create(hwnd);
+        app.strip.set(strip);
+        app.gpane.set(gpane);
 
         let status = w::child(hwnd, "msctls_statusbar32", "", SBARS_SIZEGRIP, 0, ID_STATUS);
         app.status.set(status);

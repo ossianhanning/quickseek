@@ -162,6 +162,10 @@ pub struct Engine {
     net_token: TokenSlot,
     /// Index options changed in a way that needs fresh data (date created on).
     rescan_requested: AtomicBool,
+    /// Folder-size snapshots (the service and in-process GUI keep them).
+    history: std::sync::OnceLock<crate::history::History>,
+    /// Last automatic snapshot attempt.
+    snap_try: Mutex<Option<Instant>>,
 }
 
 // ---- loading single volumes ------------------------------------------------------
@@ -331,7 +335,70 @@ impl Engine {
             stop: Arc::new(AtomicBool::new(false)),
             net_token: Arc::new(RwLock::new(None)),
             rescan_requested: AtomicBool::new(false),
+            history: std::sync::OnceLock::new(),
+            snap_try: Mutex::new(None),
         }
+    }
+
+    /// Keep folder-size snapshots in `dir` (see [`crate::history`]).
+    pub fn enable_history(&self, dir: PathBuf) {
+        let _ = self.history.set(crate::history::History::new(dir));
+    }
+
+    pub fn history(&self) -> Option<&crate::history::History> {
+        self.history.get()
+    }
+
+    /// Takes a snapshot of every volume's folder sizes now (named: a save point).
+    pub fn take_snapshot(&self, name: &str) -> Result<crate::history::SnapInfo, String> {
+        let h = self.history().ok_or("folder-size history isn't kept here")?;
+        let t0 = Instant::now();
+        let mut t = crate::tree::Tree::build(self, "", SearchFlags::default())?;
+        let s = t.snapshot(self, name, crate::history::MIN_FOLDER, crate::history::MAX_FOLDERS)?;
+        let info = h.save(&s).map_err(|e| format!("saving the snapshot: {e}"))?;
+        let folders: usize = s.volumes.iter().map(|v| v.folders.len()).sum();
+        log::info!("snapshot {} ({folders} folders) in {} ms", info.id, t0.elapsed().as_millis());
+        Ok(info)
+    }
+
+    /// Takes the day's snapshot if there's none yet (call it every few
+    /// seconds; it checks at most every 30 minutes) and trims the cache.
+    pub fn maybe_snapshot(&self) {
+        let Some(h) = self.history() else { return };
+        h.trim_cache();
+        if self.is_loading() || self.volume_count() == 0 {
+            return;
+        }
+        {
+            let mut last = self.snap_try.lock();
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(1800)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        let now = crate::history::now_unix();
+        if h.has_one_since(crate::history::local_midnight(now)) {
+            return;
+        }
+        if let Err(e) = self.take_snapshot("") {
+            log::warn!("daily snapshot: {e}");
+        }
+    }
+
+    /// Sizes of `paths` in every snapshot, oldest first.
+    pub fn series(&self, paths: &[String]) -> Result<crate::ipc::SeriesReply, String> {
+        let h = self.history().ok_or("folder-size history isn't kept here")?;
+        let snaps = h.list();
+        let maps: Vec<Option<Arc<crate::history::PathMap>>> = snaps.iter().map(|s| h.paths(&s.id).ok()).collect();
+        let rows = paths
+            .iter()
+            .map(|p| crate::ipc::SeriesRow {
+                path: p.clone(),
+                sizes: maps.iter().map(|m| m.as_ref().and_then(|m| m.get(p)).unwrap_or(u64::MAX)).collect(),
+                free: maps.iter().map(|m| m.as_ref().and_then(|m| m.disk(p)).map_or(u64::MAX, |d| d.1)).collect(),
+            })
+            .collect();
+        Ok(crate::ipc::SeriesReply { snaps, rows })
     }
 
     /// Network folders will be scanned as this user from now on (the

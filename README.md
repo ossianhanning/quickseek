@@ -12,7 +12,9 @@ keeps everything live.
   A **folder size tree** (the Tree button, `Ctrl+T`) shows where disk space
   goes, optionally only for what matches the search. **Content search**
   (`content:`) narrows the results to files containing some text, and a
-  **preview pane** (`Alt+P`) shows the selected file.
+  **preview pane** (`Alt+P`) shows the selected file. **Folder growth**
+  compares the tree with daily snapshots: what grew since yesterday, last
+  week or a save point, with a timeline and a "where it went" breakdown.
 - **`rapidfind`**: the CLI, terminal UI and Windows service.
 - **`rapidfind-mcp`**: an MCP server, so AI assistants can find files and
   free disk space through the index.
@@ -54,6 +56,8 @@ rapidfind search -n 0 "S:\dev\ *.rs content:unsafe"   # files containing text (r
 rapidfind status               # service, pipe, volumes (with folder/share states), index files
 rapidfind du C:\Users -d 2       # biggest folders/files, 2 levels (no path: all drives)
 rapidfind du -q "*.mp4|*.mkv"    # only count videos
+rapidfind history growth C:\Users --days 7   # what grew or shrank in the last week
+rapidfind history list | save "before cleanup"
 rapidfind folders add \\nas\photos --rescan-minutes 60
 rapidfind folders list | remove <path>
 rapidfind config show | set config.json | exclude-folder node_modules | exclude-files "*.tmp"
@@ -79,8 +83,29 @@ rapidfind service update | stop | start | uninstall
 | Content search | `content:text` (see below) shows the name matches at once, then reads those files on a pool of threads and drops the ones that don't contain the text, top of the list first. A progress bar and "searching contents: 1,234 of 5,678 files, 12 found" show in the status bar; `Esc` (or Search → Stop Content Search) stops, leaving the unread rows listed, and a second `Esc` clears the box. Files over 64 MB, binaries and online-only cloud files are skipped (`content_max_mb`, `content_binary`, `content_ifilter` in `gui.json`). The search isn't redone on every file change; `F5` does. |
 | Preview pane | View → Preview Pane, the **Preview** button or `Alt+P` opens it right of the list (drag the gap to resize). Text files show with the `content:` matches highlighted and scrolled to the first one (UTF-8, UTF-16 and ANSI, the first 512 KB). Pictures, videos and folders show the shell's thumbnail. Everything else goes to the preview handler Explorer uses (Office documents, PDFs, fonts, ...), usually in its own `prevhost.exe`. Online-only files aren't downloaded for a preview. |
 | Folder size tree | The **Tree** button left of the search box (or View → Folder Size Tree, `Ctrl+T`) swaps the list for an expandable tree of drives and folders: +/− boxes, Size, a bar with each entry's share of its parent (for a drive, of the disk), file counts, online-only bytes and dates. Folders holding a single folder open through to it. With text in the search box, only matching files count, so `*.mp4` shows where videos are and `folder: wfn:node_modules` where node_modules weigh. `→`/`←` expand and collapse (or go to the parent), double-click or `Enter` opens or closes a folder, and the context menu has Search in This Folder plus the Explorer menu (delete etc.; sizes refresh after it). In the result list, "Show in Folder Size Tree" opens the tree at that item. Column headers sort the tree. Sizes count what's on the disk: online-only cloud files (OneDrive placeholders) are shown in their own column instead, and a file with several hard links counts once. |
+| Folder growth | In the tree, View → Compare with Yesterday / a Week Ago / a Month Ago (or a click on the timeline) compares every size with a snapshot. Each bar keeps a ghost of its old size, with the growth in red and shrinkage in blue; a **Change** column (sorted by, biggest growth first) and a **Trend** sparkline per row appear, and the tree opens down to where most of the growth went. The **timeline** above the tree plots the change of the selected folder's biggest children since the first snapshot, with save points as dots, the compared span shaded and, for a drive, a forecast of when it fills at the last two weeks' pace. The **details pane** on the right shows **Where it went** (a waterfall from the old size, or old free space for a drive, through each child's change to now) and **Growth path** (the chain of folders the growth came down through). **Map** is a squarified treemap of the folder two levels deep, each box as big as the item was at its largest (so what shrank or was deleted still shows), red where it grew and blue where it shrank; click a box to open that folder, right-click to go up. **Calendar** colors each of the last months' days by how much the folder grew or shrank that day (a change between snapshots further apart than a day is spread over the days between, marked with a white corner); click a day to compare with it. View → Take a Save Point stores a named snapshot (e.g. before a cleanup) for a year. `Esc` stops comparing. |
 | Shortcuts | `Ctrl+F`/`Ctrl+L` focus search, `Ctrl+C` copy full paths, `Ctrl+Shift+C` copy names, `Ctrl+A` select all, `F5` refresh, `Ctrl+P` options, `Ctrl+T` folder size tree, `Ctrl+Q` quit. |
 | Other | One instance per user (launching again shows the window), tray icon, File → Export Results (CSV), run history (opening a file counts toward `runcount:` and the Run Count sort). |
+
+## Folder growth history
+
+The service takes a snapshot of folder sizes once a day (checked every 30
+minutes, so a PC that's off at midnight catches up when it starts), and on
+demand as a save point. A snapshot holds every folder of 10 MB or more
+(at most 60,000 per drive; the cutoff rises past that) with its size, file
+count and online-only bytes, plus each drive's capacity and free space. It is
+stored as varint columns in zstd: on this machine 29,372 folders take 313 KB
+and 0.26 s. Snapshots live in `%ProgramData%\rapidfind\history` (or
+`%LOCALAPPDATA%\rapidfind\history` without the service) and are thinned out
+as they age: all from the last two days, then one a day for 31 days, one a
+week for 26 weeks and one a month for 24 months, about 80 files or 25 MB in
+all. Save points are kept for a year.
+
+Comparing loads the snapshot as sorted (path hash, size) pairs, 16 bytes per
+folder, so a comparison of all drives takes about 0.35 s. Files have no
+history of their own: a file modified after the snapshot counts as new, and
+an unmodified one as unchanged. A folder that was under 10 MB then counts as
+new.
 
 ## Query syntax
 
@@ -234,6 +259,7 @@ double-click it to install.
 |---|---|
 | `search_files` | The full query language (wildcards across folders, `ext:`, `size:`, `dm:`, `dupe:` ...) plus structured filters (`name`, `path`, `extensions`, `min_size`/`max_size`, `modified_after`/`before`, `type`), sorting and paging. Online-only cloud files are flagged. `content` (or `content:` in `query`, `content_regex` for a regex) keeps files containing the text: it reads at most 256 MB per call (files over 32 MB are skipped) and stops once it has a page of matches; the reply's `content` part says how many files were read and whether the search was complete. |
 | `folder_sizes` | Disk-usage breakdown of a path (or of all drives, with capacity and free space), `depth` levels, top `limit` per folder with the rest summarised. With `query`, only matches count. |
+| `folder_growth` | What grew or shrank under a path since a snapshot `days` back (default 7) or `since` a date or save point, biggest change first, `depth` levels following the changes, with sizes and drives' free space then and now. `list_snapshots` lists the snapshots. |
 | `disk_overview` | Drives and shares: capacity, free, indexed size, online-only bytes, file count, index state. |
 | `cleanup_candidates` | Reclaimable space by category: Recycle Bin, temp folders, node_modules and other build output, Rust `target` folders, package manager caches, crash dumps, previous Windows installations, big old downloads, huge logs and same-size duplicates. Each category comes with a total and its biggest items. Read-only. |
 | `delete_paths` | Moves to the Recycle Bin by default; `permanent` deletes outright (required on shares); `dry_run` reports sizes only. Refuses volume and share roots, the Windows folder, Program Files, profile roots and system files. |
@@ -311,6 +337,7 @@ and drives it through UI Automation and MSAA:
 - the context menu's Copy Full Path, checked on the clipboard
 - Options → Exclude adding a pattern the service applies
 - `Esc` clears the search
+- comparing the tree with a month of seeded history: the growth drill-down, the Change column, stopping
 
 It opens a window and clicks, so don't type while it runs.
 
@@ -324,9 +351,9 @@ Also:
 
 - `crates/core`: the library
   - `ntfs/`: `mft.rs` (raw scan), `record.rs` (FILE record parsing), `usn.rs` (records, enum fallback, ReFS), `journal.rs`, `win.rs` (volumes, tokens, UNC)
-  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `ipc.rs` (protocol, sessions, server, client, backends)
+  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `history.rs` (snapshots, retention), `ipc.rs` (protocol, sessions, server, client, backends)
 - `crates/cli`: the `rapidfind` binary: CLI, terminal UI and `service.rs` (the Windows service)
-- `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `preview.rs` (preview pane), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
+- `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `preview.rs` (preview pane), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode), `growth.rs` (timeline and details pane); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
 - `crates/mcp`: `rapidfind-mcp`, the MCP server (`tools.rs`) and client registration (`register.rs`)
 - `crates/setup`: `rapidfind-setup`, the installer (`install.rs`, `sys.rs`, `ui.rs`)
 - `packaging/winget`: winget manifest templates

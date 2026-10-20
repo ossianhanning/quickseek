@@ -139,10 +139,33 @@ enum Cmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// Folder-size history: snapshots and what grew since one.
+    History {
+        #[command(subcommand)]
+        action: HistoryCmd,
+    },
     /// Connect rapidfind-mcp to AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf). No admin needed.
     Mcp {
         #[command(subcommand)]
         action: McpCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum HistoryCmd {
+    /// Snapshots kept (one a day, thinned out over time; save points kept a year).
+    List,
+    /// Take a snapshot now, e.g. before a cleanup.
+    Save { name: Vec<String> },
+    /// What grew (or shrank) since a snapshot, biggest change first.
+    Growth {
+        /// Folder (default: every drive).
+        path: Option<String>,
+        /// Days back (picks the snapshot closest to then).
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+        #[arg(short = 'n', long, default_value_t = 15)]
+        limit: usize,
     },
 }
 
@@ -452,6 +475,10 @@ fn main() -> anyhow::Result<()> {
             eng.save_all(engine::SAVE_THRESHOLD)?;
         }
         Cmd::Mcp { ref action } => mcp(action)?,
+        Cmd::History { ref action } => {
+            let mut be = open_backend(&cli, false)?;
+            history_cmd(&mut *be, action)?;
+        }
         Cmd::Du { ref path, ref query, depth, limit } => {
             use rapidfind_core::tree::{NodeRef, TreeRow, TreeSort};
             let mut be = open_backend(&cli, false)?;
@@ -643,6 +670,48 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
                     Err(e) => println!("  {:<18} failed: {e}", c.label()),
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// `+1.2 GB` / `-300.0 MB`.
+fn signed_size(d: i64) -> String {
+    format!("{}{}", if d < 0 { "-" } else { "+" }, fmt::size(d.unsigned_abs()))
+}
+
+fn history_cmd(be: &mut dyn Backend, action: &HistoryCmd) -> anyhow::Result<()> {
+    use rapidfind_core::tree::{NodeRef, TreeSort};
+    let when = |t: i64| fmt::time((t + 11_644_473_600) * 10_000_000);
+    match action {
+        HistoryCmd::List => {
+            for s in be.history().map_err(anyhow::Error::msg)? {
+                println!("{}  {:<14} {:>7} folders {:>9}{}", when(s.time), s.id, s.folders, fmt::size(s.bytes), if s.name.is_empty() { String::new() } else { format!("  \"{}\"", s.name) });
+            }
+        }
+        HistoryCmd::Save { name } => {
+            let t = Instant::now();
+            let s = be.save_point(&name.join(" ")).map_err(anyhow::Error::msg)?;
+            println!("saved {} ({}) in {} ms", s.id, when(s.time), t.elapsed().as_millis());
+        }
+        HistoryCmd::Growth { path, days, limit } => {
+            let list = be.history().map_err(anyhow::Error::msg)?;
+            let target = rapidfind_core::history::now_unix() - *days as i64 * 86_400;
+            let base = list.iter().min_by_key(|s| (s.time - target).abs()).context("no snapshots yet (the service takes one a day)")?;
+            be.compare(&base.id).map_err(anyhow::Error::msg)?;
+            let roots = be.tree("", SearchFlags::default(), TreeSort::Change, true).map_err(anyhow::Error::msg)?;
+            let level = match path {
+                Some(p) => be.children(&NodeRef { path: p.clone(), ..Default::default() }, TreeSort::Change, true, 0, *limit as u32).map_err(anyhow::Error::msg)?,
+                None => roots,
+            };
+            println!("since {} ({}): {} -> {} ({})", when(base.time), base.id, fmt::size(level.before), fmt::size(level.size), signed_size(level.size as i64 - level.before as i64));
+            for r in level.rows.iter().take(*limit) {
+                let note = if r.changed { "  (new or changed)" } else if r.is_dir && r.before == 0 && r.size > 0 { "  (new or was small)" } else { "" };
+                let free = if r.capacity > 0 && r.free_before > 0 { format!("  free {} -> {}", fmt::size(r.free_before), fmt::size(r.free)) } else { String::new() };
+                println!("{:>11}  {:>10}  {}{}{free}{note}", signed_size(r.change()), fmt::size(r.size), r.name, if r.is_dir { "\\" } else { "" });
+            }
+            be.compare("").map_err(anyhow::Error::msg)?;
+            be.tree_close();
         }
     }
     Ok(())

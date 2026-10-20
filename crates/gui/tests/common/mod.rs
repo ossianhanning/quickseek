@@ -104,3 +104,39 @@ pub fn serve(pipe: &str, engine: Arc<Engine>) {
     }
     panic!("mock service didn't start");
 }
+
+/// A month of made-up history for `engine` (which must have history on):
+/// Videos grew steadily (+3.5 GB over 30 days), Downloads was cleaned up
+/// 3 days ago (it held 2 GB more before), and a save point 10 days ago.
+pub fn seed_history(engine: &Engine) {
+    use rapidfind_core::history::Snapshot;
+    use rapidfind_core::tree::Tree;
+    let mut t = Tree::build(engine, "", Default::default()).unwrap();
+    let now_snap = t.snapshot(engine, "", 0, 1_000_000).unwrap();
+    let h = engine.history().expect("history enabled");
+    // Adds `delta` to the folder named `name` and all its ancestors.
+    fn adjust(s: &mut Snapshot, name: &str, delta: i64) {
+        for v in &mut s.volumes {
+            let Some(mut i) = v.folders.iter().position(|f| f.name == name) else { continue };
+            loop {
+                let f = &mut v.folders[i];
+                f.size = (f.size as i64 + delta).max(0) as u64;
+                if f.parent == u32::MAX {
+                    break;
+                }
+                i = f.parent as usize;
+            }
+            v.free = (v.free as i64 - delta).max(0) as u64;
+        }
+    }
+    for days in [30i64, 21, 14, 10, 7, 5, 3, 2, 1] {
+        let mut s = now_snap.clone();
+        s.time = now_snap.time - days * 86_400;
+        s.name = if days == 10 { "before cleanup".into() } else { String::new() };
+        adjust(&mut s, "Videos", -(3_500_000_000 * days / 30));
+        if days > 3 {
+            adjust(&mut s, "Downloads", 2_000_000_000);
+        }
+        h.save(&s).unwrap();
+    }
+}

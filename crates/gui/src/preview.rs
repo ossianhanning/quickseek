@@ -362,6 +362,8 @@ fn load(path: &str, name: &str, is_dir: bool, cq: Option<&ContentQuery>) -> Load
                 return Loaded::Message(format!("Can't read this file: {e}"));
             }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Message("This file isn't there any more (it was moved or deleted, or its drive is offline).".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Loaded::Message("Can't open this file: access is denied, or another program has it locked.".into()),
         Err(e) => return Loaded::Message(format!("Can't open this file: {e}")),
     }
     let cut = head.len() > MAX_TEXT;

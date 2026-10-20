@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -40,6 +41,8 @@ pub enum TreeSort {
     Size,
     Files,
     Modified,
+    /// Growth since the comparison snapshot (see [`Tree::base`]).
+    Change,
 }
 
 impl TreeSort {
@@ -52,6 +55,7 @@ impl TreeSort {
             1 => TreeSort::Size,
             2 => TreeSort::Files,
             3 => TreeSort::Modified,
+            4 => TreeSort::Change,
             _ => return None,
         })
     }
@@ -86,6 +90,22 @@ pub struct TreeRow {
     /// Volume roots only: total and free bytes (0 if unknown).
     pub capacity: u64,
     pub free: u64,
+    /// Comparing with a snapshot ([`Tree::base`]): `size` then. Folders not
+    /// in the snapshot (new, or under its size threshold) count as 0; files
+    /// as unchanged unless modified since, then 0 and `changed`.
+    pub before: u64,
+    pub has_before: bool,
+    /// A file modified after the comparison snapshot.
+    pub changed: bool,
+    /// Volume roots: free space at the comparison snapshot (0 if unknown).
+    pub free_before: u64,
+}
+
+impl TreeRow {
+    /// Bytes added (negative: freed) since the comparison snapshot.
+    pub fn change(&self) -> i64 {
+        if self.has_before { self.size as i64 - self.before as i64 } else { 0 }
+    }
 }
 
 impl TreeRow {
@@ -109,6 +129,9 @@ pub struct TreeLevel {
     /// Children in total (`rows` may be a page of them).
     pub total: u64,
     pub rows: Vec<TreeRow>,
+    /// Comparing: the listed folder's size then (`has_before`).
+    pub before: u64,
+    pub has_before: bool,
 }
 
 /// Which folder to list: `vol`/`idx`/`epoch` from a row, or a path when
@@ -368,7 +391,46 @@ impl VolTree {
             epoch: self.epoch,
             capacity: 0,
             free: 0,
+            before: 0,
+            has_before: false,
+            changed: false,
+            free_before: 0,
         })
+    }
+
+    /// Folders of at least `min` bytes, parents before children, at most
+    /// `cap` of them (the biggest: a size cut-off keeps the set ancestor-closed).
+    fn snapshot_folders(&self, ix: &Index, min: u64, cap: usize) -> Vec<crate::history::SnapFolder> {
+        use crate::history::SnapFolder;
+        let root = ix.root;
+        if (root as usize) >= ix.entries.len() {
+            return Vec::new();
+        }
+        // Raise the cut-off if more than `cap` folders would qualify.
+        let mut sizes: Vec<u64> = self.local.iter().zip(&self.cloud).map(|(l, c)| l + c).filter(|&s| s >= min).collect();
+        let min = if sizes.len() > cap {
+            let k = sizes.len() - cap;
+            *sizes.select_nth_unstable(k).1
+        } else {
+            min
+        };
+        drop(sizes);
+        let (l, f, c) = self.totals(root);
+        let mut out = vec![SnapFolder { parent: u32::MAX, name: ix.name(root).trim_end_matches('\\').to_string(), size: l, cloud: c, files: f }];
+        let mut stack = vec![(root, 0u32)];
+        while let Some((d, at)) = stack.pop() {
+            for &k in self.children(d) {
+                if !ix.entries[k as usize].is_dir() {
+                    continue;
+                }
+                let (l, f, c) = self.totals(k);
+                if l + c >= min && out.len() < cap {
+                    out.push(SnapFolder { parent: at, name: ix.name(k).to_string(), size: l, cloud: c, files: f });
+                    stack.push((k, out.len() as u32 - 1));
+                }
+            }
+        }
+        out
     }
 
     /// Finds `rel` (components below the root) by walking child lists.
@@ -388,6 +450,8 @@ pub struct Tree {
     pub flags: SearchFlags,
     vols: Vec<VolTree>,
     built: Instant,
+    /// Compare with this snapshot: rows get `before` and [`TreeSort::Change`] works.
+    pub base: Option<Arc<crate::history::PathMap>>,
 }
 
 fn disk_space(root: &str) -> (u64, u64) {
@@ -421,7 +485,25 @@ impl Tree {
                 })
                 .collect()
         });
-        Ok(Tree { query: query.to_string(), flags, vols, built: Instant::now() })
+        Ok(Tree { query: query.to_string(), flags, vols, built: Instant::now(), base: None })
+    }
+
+    /// A snapshot of every volume's folder sizes (folders of at least
+    /// `min` bytes, at most `cap` per volume), for [`crate::history`].
+    pub fn snapshot(&mut self, eng: &Engine, name: &str, min: u64, cap: usize) -> Result<crate::history::Snapshot, String> {
+        self.refresh(eng)?;
+        let vols = &self.vols;
+        let volumes = eng.with_volume_indexes(|ixs| {
+            vols.iter()
+                .zip(ixs)
+                .map(|(t, (_, kind, ix))| {
+                    let folders = t.snapshot_folders(ix, min, cap);
+                    let (capacity, free) = if *kind != VolumeKind::Folder { folders.first().map_or((0, 0), |r| disk_space(&r.name)) } else { (0, 0) };
+                    crate::history::SnapVolume { key: t.key.clone(), capacity, free, folders }
+                })
+                .collect()
+        });
+        Ok(crate::history::Snapshot { time: crate::history::now_unix(), name: name.to_string(), volumes })
     }
 
     /// Rebuilds if any index was compacted, or changed and the snapshot is old.
@@ -469,11 +551,22 @@ impl Tree {
                 let dir = ix.path(d);
                 rows = t.children(d).iter().filter_map(|&c| t.row(ix, c, &dir, full)).collect();
             }
+            if let Some(base) = &self.base {
+                Self::fill_before(base, &mut rows);
+                let me = if node.vol.is_empty() && node.path.trim_matches(['\\', '/']).is_empty() {
+                    Some(rows.iter().map(|r| r.before).sum())
+                } else {
+                    let p = rows.first().map(|r| r.dir.clone()).unwrap_or_else(|| node.path.clone());
+                    base.get(&p).or(Some(0))
+                };
+                (level.before, level.has_before) = (me.unwrap_or(0), true);
+            }
             let key = |a: &TreeRow, b: &TreeRow| match sort {
                 TreeSort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
                 TreeSort::Size => a.size.cmp(&b.size),
                 TreeSort::Files => a.files.cmp(&b.files),
                 TreeSort::Modified => a.modified.cmp(&b.modified),
+                TreeSort::Change => a.change().cmp(&b.change()),
             };
             rows.sort_by(|a, b| {
                 let o = key(a, b);
@@ -483,6 +576,27 @@ impl Tree {
             level.rows = rows.into_iter().skip(offset).take(limit).collect();
             Ok(level)
         })
+    }
+
+    /// Sizes at the comparison snapshot (see [`TreeRow::before`]).
+    fn fill_before(base: &crate::history::PathMap, rows: &mut [TreeRow]) {
+        // FILETIME of the snapshot, to tell changed files apart.
+        let base_ft = (base.time + 11_644_473_600) * 10_000_000;
+        for r in rows {
+            r.has_before = true;
+            if r.is_dir {
+                r.before = base.get(&r.full_path()).unwrap_or(0);
+                if r.dir.is_empty()
+                    && let Some((_, free)) = base.disk(&r.name)
+                {
+                    r.free_before = free;
+                }
+            } else if r.modified > base_ft {
+                r.changed = true;
+            } else {
+                r.before = r.size;
+            }
+        }
     }
 
     fn locate(vols: &[VolTree], ixs: &[(&str, VolumeKind, &Index)], node: &NodeRef) -> Option<(usize, u32)> {
