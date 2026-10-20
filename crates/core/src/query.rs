@@ -138,7 +138,7 @@ struct Mods {
 }
 
 #[derive(Debug, PartialEq)]
-enum Tok {
+pub(crate) enum Tok {
     Word(String),
     Or,
     Not,
@@ -147,17 +147,28 @@ enum Tok {
 }
 
 fn tokenize(s: &str) -> Vec<Tok> {
-    let chars: Vec<char> = s.chars().collect();
+    tokenize_spans(s).into_iter().map(|(t, _)| t).collect()
+}
+
+/// Tokens with the byte range each one came from (for operators, the
+/// operator character itself).
+pub(crate) fn tokenize_spans(s: &str) -> Vec<(Tok, std::ops::Range<usize>)> {
+    let chars: Vec<(usize, char)> = s.char_indices().collect();
     let mut out = Vec::new();
     let mut cur = String::new();
+    let mut start = 0usize;
     let mut quoted = false;
     let mut depth = 0usize;
-    let flush = |cur: &mut String, out: &mut Vec<Tok>| {
+    let flush = |cur: &mut String, start: usize, out: &mut Vec<(Tok, std::ops::Range<usize>)>| {
         if !cur.is_empty() {
-            out.push(Tok::Word(std::mem::take(cur)));
+            let end = start + cur.len();
+            out.push((Tok::Word(std::mem::take(cur)), start..end));
         }
     };
-    for (i, &c) in chars.iter().enumerate() {
+    for (i, &(at, c)) in chars.iter().enumerate() {
+        if cur.is_empty() {
+            start = at;
+        }
         if c == '"' {
             quoted = !quoted;
             cur.push(c);
@@ -168,31 +179,31 @@ fn tokenize(s: &str) -> Vec<Tok> {
             continue;
         }
         match c {
-            c if c.is_whitespace() => flush(&mut cur, &mut out),
+            c if c.is_whitespace() => flush(&mut cur, start, &mut out),
             '|' => {
-                flush(&mut cur, &mut out);
-                out.push(Tok::Or);
+                flush(&mut cur, start, &mut out);
+                out.push((Tok::Or, at..at + 1));
             }
             '<' if cur.chars().all(|c| c == '!') => {
-                for _ in 0..cur.len() {
-                    out.push(Tok::Not);
+                for k in 0..cur.len() {
+                    out.push((Tok::Not, start + k..start + k + 1));
                 }
                 cur.clear();
-                out.push(Tok::Open);
+                out.push((Tok::Open, at..at + 1));
                 depth += 1;
             }
             '>' if depth > 0
                 && !cur.ends_with([':', '<', '>', '='])
-                && chars.get(i + 1).is_none_or(|n| n.is_whitespace() || *n == '|' || *n == '>') =>
+                && chars.get(i + 1).is_none_or(|(_, n)| n.is_whitespace() || *n == '|' || *n == '>') =>
             {
-                flush(&mut cur, &mut out);
-                out.push(Tok::Close);
+                flush(&mut cur, start, &mut out);
+                out.push((Tok::Close, at..at + 1));
                 depth -= 1;
             }
             c => cur.push(c),
         }
     }
-    flush(&mut cur, &mut out);
+    flush(&mut cur, start, &mut out);
     out
 }
 
@@ -414,6 +425,10 @@ impl Parser<'_> {
                     break; // the rest is the pattern verbatim
                 }
                 "noregex" => (m.regex, consumed_value) = (false, false),
+                k if crate::content::is_content_key(k) => {
+                    // Content terms are taken out by the client (crate::content::split_query).
+                    return Err(format!("{k}: searches file contents, which only the result list, `rapidfind search` and the MCP search do, combined with AND"));
+                }
                 "wfn" | "wholefilename" | "exact" => (m.exact, consumed_value) = (true, false),
                 "file" | "files" => {
                     filters.push(leaf(Leaf::IsFile));

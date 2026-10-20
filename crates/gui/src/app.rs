@@ -3,10 +3,12 @@
 use std::cell::{Cell, RefCell};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+use rapidfind_core::content::{self, ContentOptions, ContentQuery, Scan, Stats};
 use rapidfind_core::fmt;
 use rapidfind_core::fold::FoldMode;
 use rapidfind_core::ipc::{Backend, Page, Row, StatusInfo};
@@ -16,11 +18,12 @@ use rapidfind_core::tree::{TreeLevel, TreeSort};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Controls::*;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, GetKeyState, RegisterHotKey, SetFocus, UnregisterHotKey, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_RETURN, VK_SHIFT};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, ReleaseCapture, SetCapture, GetKeyState, RegisterHotKey, SetFocus, UnregisterHotKey, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_RETURN, VK_SHIFT};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, SetWindowSubclass, Shell_NotifyIconW};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::highlight;
+use crate::preview::Preview;
 use crate::results::{BLOCK, Results};
 use crate::settings::{Settings, parse_hotkey};
 use crate::shell::{self, FileInfoCache, MenuChoice};
@@ -34,6 +37,8 @@ pub const ID_LIST: i32 = 102;
 pub const ID_STATUS: i32 = 103;
 pub const ID_TREE: i32 = 104;
 pub const ID_TREE_BTN: i32 = 105;
+pub const ID_PREVIEW_BTN: i32 = 108;
+pub const ID_PROGRESS: i32 = 109;
 
 pub const WM_APP_RESULT: u32 = WM_APP + 1;
 pub const WM_APP_STATUS: u32 = WM_APP + 2;
@@ -41,7 +46,9 @@ pub const WM_APP_TRAY: u32 = WM_APP + 3;
 /// Posted by a second instance: show the existing window.
 pub const WM_APP_SHOW: u32 = WM_APP + 4;
 pub const WM_APP_TREE: u32 = WM_APP + 5;
+pub const WM_APP_CONTENT: u32 = WM_APP + 6;
 const TIMER_POLL: usize = 1;
+const TIMER_PREVIEW: usize = 2;
 const HOTKEY_ID: i32 = 1;
 
 // Menu command ids (< 0x1000; shell menu items use the range above).
@@ -62,10 +69,12 @@ const CMD_WW: u32 = 301;
 const CMD_PATH: u32 = 302;
 const CMD_REGEX: u32 = 303;
 const CMD_DIACRITICS: u32 = 304;
+const CMD_STOP: u32 = 305;
 const CMD_REFRESH: u32 = 400;
 const CMD_SORT_RUNS: u32 = 401;
 const CMD_SORT_CREATED: u32 = 402;
 pub const CMD_TREE: u32 = 403;
+pub const CMD_PREVIEW: u32 = 404;
 const CMD_OPTIONS: u32 = 500;
 const CMD_LOGIN: u32 = 501;
 const CMD_BACKGROUND: u32 = 502;
@@ -79,6 +88,8 @@ pub struct Conn {
     pub be: Box<dyn Backend>,
     /// The search whose result set the backend session currently holds.
     pub seq: u64,
+    /// How many times content search has filtered that result set.
+    pub ver: u64,
 }
 
 enum Job {
@@ -99,6 +110,69 @@ struct SearchDone {
     seq: u64,
     keep: bool,
     res: Result<Page, String>,
+}
+
+/// Progress of a content search: new stats, and the filtered first page
+/// when rows were dropped.
+struct ContentUpdate {
+    seq: u64,
+    ver: u64,
+    page: Option<Result<Page, String>>,
+    stats: Stats,
+}
+
+/// Reads the files of search `seq`'s results (as this user) and drops the
+/// rows that don't match from the service's result set, posting progress
+/// about three times a second.
+fn content_scan(conn: Arc<Mutex<Conn>>, hwnd: isize, seq: u64, q: Arc<ContentQuery>, opts: ContentOptions, cancel: Arc<AtomicBool>) {
+    let post = |u: ContentUpdate| unsafe {
+        PostMessageW(hwnd as HWND, WM_APP_CONTENT, 0, Box::into_raw(Box::new(u)) as isize);
+    };
+    let superseded = || std::io::Error::other("superseded");
+    let mut scan = Scan::new(q, opts, cancel);
+    let mut pending: Vec<u32> = Vec::new();
+    let mut last = Instant::now();
+    loop {
+        let batch = scan.next_batch(&mut |req| {
+            let mut c = conn.lock();
+            if c.seq != seq {
+                return Err(superseded());
+            }
+            c.be.call(req)
+        });
+        let batch = match batch {
+            Ok(b) => b,
+            Err(e) => {
+                if conn.lock().seq == seq {
+                    scan.stats.done = true;
+                    post(ContentUpdate { seq, ver: 0, page: Some(Err(e)), stats: scan.stats.clone() });
+                }
+                return;
+            }
+        };
+        let done = batch.is_none();
+        if let Some(b) = &batch {
+            pending.extend(b.rejected());
+        }
+        if done || last.elapsed() >= Duration::from_millis(300) {
+            last = Instant::now();
+            let (page, ver) = if pending.is_empty() {
+                (None, 0)
+            } else {
+                let mut c = conn.lock();
+                if c.seq != seq {
+                    return;
+                }
+                let p = c.be.drop_rows(std::mem::take(&mut pending), BLOCK as u32 * 2);
+                c.ver += 1;
+                (Some(p), c.ver)
+            };
+            post(ContentUpdate { seq, ver, page, stats: scan.stats.clone() });
+        }
+        if done {
+            return;
+        }
+    }
 }
 
 pub struct App {
@@ -132,6 +206,16 @@ pub struct App {
     reveal: RefCell<Option<String>>,
     /// When the last click toggled a +/− box (so the double-click that may follow doesn't toggle back).
     glyph_click: Cell<u32>,
+    pub preview: Preview,
+    pub preview_btn: Cell<HWND>,
+    progress: Cell<HWND>,
+    /// The `content:` terms of the current search.
+    content: RefCell<Option<Arc<ContentQuery>>>,
+    scan_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    scan_stats: RefCell<Option<Stats>>,
+    /// The splitter left of the preview pane: its x, and the drag offset while dragging.
+    split_x: Cell<i32>,
+    split_drag: Cell<Option<i32>>,
 }
 
 thread_local! {
@@ -188,6 +272,7 @@ fn worker(conn: Arc<Mutex<Conn>>, rx: Receiver<Job>, hwnd: isize) {
                 let mut c = conn.lock();
                 let res = c.be.search(&query, flags, sort, desc, BLOCK as u32 * 2);
                 c.seq = seq;
+                c.ver = 0;
                 drop(c);
                 let b = Box::new(SearchDone { seq, keep, res });
                 post(WM_APP_RESULT, 0, Box::into_raw(b) as isize);
@@ -244,11 +329,24 @@ impl App {
             self.build_tree(keep);
             return;
         }
+        self.stop_scan();
         let seq = self.latest_seq.get() + 1;
         self.latest_seq.set(seq);
+        let (names, cq) = match content::split_query(&self.query_text(), self.flags()) {
+            Ok(v) => v,
+            Err(e) => {
+                *self.content.borrow_mut() = None;
+                *self.results.borrow_mut() = Results::default();
+                send(self.list.get(), LVM_SETITEMCOUNT, 0, 0);
+                self.set_status_left(&e);
+                return;
+            }
+        };
+        *self.content.borrow_mut() = cq.map(Arc::new);
+        *self.scan_stats.borrow_mut() = None;
         self.searching.set(true);
         let (sort, desc) = self.sort();
-        let _ = self.jobs.send(Job::Search { seq, query: self.query_text(), flags: self.flags(), sort, desc, keep });
+        let _ = self.jobs.send(Job::Search { seq, query: names, flags: self.flags(), sort, desc, keep });
         let text = w::get_text(self.edit.get());
         let title = if text.is_empty() { "rapidfind".to_string() } else { format!("{text} - rapidfind") };
         w::set_text(self.hwnd.get(), &title);
@@ -281,6 +379,10 @@ impl App {
                     }
                 }
                 unsafe { InvalidateRect(list, null(), 0) };
+                let cq = self.content.borrow().clone();
+                if let Some(cq) = cq {
+                    self.start_scan(done.seq, cq);
+                }
             }
             Err(e) => {
                 *self.results.borrow_mut() = Results::default();
@@ -290,6 +392,117 @@ impl App {
             }
         }
         self.update_status();
+        self.preview_soon();
+    }
+
+    // ---- content search -----------------------------------------------------------
+
+    fn content_options(&self) -> ContentOptions {
+        let s = self.settings.borrow();
+        ContentOptions { max_size: s.content_max_mb.max(1) << 20, binary: s.content_binary, ifilter: s.content_ifilter, byte_budget: None }
+    }
+
+    /// Starts reading the files of search `seq`'s results.
+    fn start_scan(&self, seq: u64, cq: Arc<ContentQuery>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.scan_cancel.borrow_mut() = Some(cancel.clone());
+        *self.scan_stats.borrow_mut() = Some(Stats::default());
+        let (conn, hwnd, opts) = (self.conn.clone(), self.hwnd.get() as isize, self.content_options());
+        std::thread::Builder::new().name("content".into()).spawn(move || content_scan(conn, hwnd, seq, cq, opts, cancel)).unwrap();
+        let pb = self.progress.get();
+        send(pb, PBM_SETPOS, 0, 0);
+        unsafe { ShowWindow(pb, SW_SHOW) };
+    }
+
+    pub fn scanning(&self) -> bool {
+        self.scan_stats.borrow().as_ref().is_some_and(|s| !s.done)
+    }
+
+    /// Stops a running content search; the rows not read yet stay listed.
+    pub fn stop_scan(&self) {
+        if let Some(c) = self.scan_cancel.borrow_mut().take() {
+            c.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn on_content(&self, u: ContentUpdate) {
+        if u.seq != self.latest_seq.get() || self.tree_mode() {
+            return;
+        }
+        let list = self.list.get();
+        match u.page {
+            Some(Ok(page)) => {
+                let total = page.total.min(i32::MAX as u64) as usize;
+                let mut r = Results::new(u.seq, page);
+                r.ver = u.ver;
+                *self.results.borrow_mut() = r;
+                send(list, LVM_SETITEMCOUNT, total, (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize);
+                unsafe { InvalidateRect(list, null(), 0) };
+            }
+            Some(Err(e)) if e == rapidfind_core::ipc::STALE => {
+                self.search(true); // the index was compacted: start over
+                return;
+            }
+            Some(Err(e)) => {
+                *self.scan_stats.borrow_mut() = Some(u.stats);
+                unsafe { ShowWindow(self.progress.get(), SW_HIDE) };
+                self.set_status_left(&format!("Content search failed: {e}"));
+                return;
+            }
+            None => {}
+        }
+        let done = u.stats.done;
+        let pos = (u.stats.checked * 1000).checked_div(u.stats.total).unwrap_or(0);
+        send(self.progress.get(), PBM_SETPOS, if done { 1000 } else { pos as usize }, 0);
+        *self.scan_stats.borrow_mut() = Some(u.stats);
+        if done {
+            self.scan_cancel.borrow_mut().take();
+            unsafe { ShowWindow(self.progress.get(), SW_HIDE) };
+        }
+        self.update_status();
+        self.preview_soon();
+    }
+
+    // ---- preview pane ---------------------------------------------------------------
+
+    pub fn preview_on(&self) -> bool {
+        self.settings.borrow().preview
+    }
+
+    pub fn set_preview(&self, on: bool) {
+        self.settings.borrow_mut().preview = on;
+        send(self.preview_btn.get(), BM_SETCHECK, on as usize, 0);
+        w::check_menu(self.menu.get(), CMD_PREVIEW, on);
+        unsafe { ShowWindow(self.preview.host.get(), if on { SW_SHOW } else { SW_HIDE }) };
+        self.layout();
+        if on {
+            self.preview.invalidate();
+            self.update_preview();
+        } else {
+            self.preview.show(None, None, "");
+        }
+    }
+
+    /// Updates the preview shortly (selection changes come in bursts).
+    fn preview_soon(&self) {
+        if self.preview_on() {
+            unsafe { SetTimer(self.hwnd.get(), TIMER_PREVIEW, 80, None) };
+        }
+    }
+
+    fn update_preview(&self) {
+        if !self.preview_on() {
+            return;
+        }
+        let row = if self.tree_mode() {
+            self.selected_rows().into_iter().next()
+        } else {
+            let i = send(self.list.get(), LVM_GETNEXTITEM, usize::MAX, (LVNI_FOCUSED | LVNI_SELECTED) as isize);
+            let i = if i < 0 { send(self.list.get(), LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize) } else { i };
+            if i < 0 { None } else { self.row(i as usize) }
+        };
+        let cq = if self.tree_mode() { None } else { self.content.borrow().clone() };
+        self.preview.show(row.as_ref(), cq, &self.query_text());
     }
 
     // ---- folder-size tree -------------------------------------------------------
@@ -307,7 +520,10 @@ impl App {
             self.restore.borrow_mut().clear();
         }
         let (sort, desc) = self.tree_sort();
-        let _ = self.jobs.send(Job::Tree { seq, query: self.query_text(), flags: self.flags(), sort, desc });
+        self.stop_scan();
+        // The tree counts names only: content terms are left out.
+        let query = content::split_query(&self.query_text(), self.flags()).map(|(names, _)| names).unwrap_or_else(|_| self.query_text());
+        let _ = self.jobs.send(Job::Tree { seq, query, flags: self.flags(), sort, desc });
         self.set_status_left("Adding up folder sizes…");
         let text = w::get_text(self.edit.get());
         w::set_text(self.hwnd.get(), &if text.is_empty() { "Folder sizes - rapidfind".to_string() } else { format!("{text} - folder sizes - rapidfind") });
@@ -669,6 +885,7 @@ impl App {
             }
             LVN_ITEMCHANGED => {
                 self.update_status();
+                self.preview_soon();
                 Some(0)
             }
             LVN_BEGINDRAG => {
@@ -703,8 +920,25 @@ impl App {
         if selected > 0 {
             s = format!("{} of {s} selected", shell::group(selected as u64));
         }
-        if !w::get_text(self.edit.get()).is_empty() || self.settings.borrow().filter != 0 {
-            s.push_str(&format!("  ·  {:.1} ms", r.elapsed_ms));
+        match &*self.scan_stats.borrow() {
+            Some(st) if !st.done => s.push_str(&format!(
+                "  ·  searching contents: {} of {} files, {} found  ·  Esc stops",
+                shell::group(st.checked),
+                shell::group(st.total),
+                shell::group(st.matched)
+            )),
+            Some(st) => {
+                s.push_str(&format!("  ·  {} files read in {:.1} s", shell::group(st.checked), st.elapsed.as_secs_f64()));
+                if st.cancelled {
+                    s.push_str(&format!(" (stopped: {} not read and still listed)", shell::group(st.total.saturating_sub(st.checked))));
+                }
+                let skipped = st.skipped();
+                if !skipped.is_empty() {
+                    s.push_str(&format!("; skipped {skipped}"));
+                }
+            }
+            None if !w::get_text(self.edit.get()).is_empty() || self.settings.borrow().filter != 0 => s.push_str(&format!("  ·  {:.1} ms", r.elapsed_ms)),
+            None => {}
         }
         drop(r);
         self.set_status_left(&s);
@@ -732,17 +966,17 @@ impl App {
     }
 
     fn fetch_blocks(&self, from: usize, to: usize) {
-        let (seq, missing) = {
+        let (seq, ver, missing) = {
             let r = self.results.borrow();
-            (r.seq, r.missing(from, to))
+            (r.seq, r.ver, r.missing(from, to))
         };
         if missing.is_empty() {
             return;
         }
         // Don't stall painting behind a running search.
         let Some(mut c) = self.conn.try_lock_for(Duration::from_millis(50)) else { return };
-        if c.seq != seq {
-            return; // the session already holds a newer search
+        if c.seq != seq || c.ver != ver {
+            return; // the session already holds a newer search (or filtering step)
         }
         for start in missing {
             match c.be.fetch(start as u64, BLOCK as u32) {
@@ -902,6 +1136,8 @@ impl App {
             }
             CMD_SHOW => self.show(),
             CMD_TREE => self.set_tree_mode(!self.tree_mode()),
+            CMD_PREVIEW => self.set_preview(!self.preview_on()),
+            CMD_STOP => self.stop_scan(),
             CMD_EXPAND | CMD_COLLAPSE => {
                 if let Some(&i) = self.tree_selected().first() {
                     self.toggle_node(i);
@@ -1045,27 +1281,45 @@ impl App {
         let eh = px(hwnd, 26);
         let fw = px(hwnd, 150);
         let bw = px(hwnd, 64);
+        let pbw = px(hwnd, 72);
         w::move_to(self.tree_btn.get(), pad, pad, bw, eh);
-        w::move_to(self.edit.get(), 2 * pad + bw, pad, cw - fw - bw - 4 * pad, eh);
-        w::move_to(self.combo.get(), cw - fw - pad, pad, fw, px(hwnd, 300));
+        w::move_to(self.edit.get(), 2 * pad + bw, pad, cw - fw - bw - pbw - 5 * pad, eh);
+        w::move_to(self.combo.get(), cw - fw - pbw - 2 * pad, pad, fw, px(hwnd, 300));
+        w::move_to(self.preview_btn.get(), cw - pbw - pad, pad, pbw, eh);
         send(self.status.get(), WM_SIZE, 0, 0);
         let mut sr = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         unsafe { GetWindowRect(self.status.get(), &mut sr) };
         let sh = sr.bottom - sr.top;
         let parts = [cw - px(hwnd, 420), -1];
         send(self.status.get(), SB_SETPARTS, 2, parts.as_ptr() as isize);
+        w::move_to(self.progress.get(), parts[0] - px(hwnd, 168), px(hwnd, 4), px(hwnd, 160), sh - px(hwnd, 7));
         let top = pad * 2 + eh;
-        w::move_to(self.list.get(), 0, top, cw, ch - top - sh);
-        w::move_to(self.tree_list.get(), 0, top, cw, ch - top - sh);
+        let (mut lw, gap) = (cw, px(hwnd, 5));
+        if self.preview_on() {
+            let pw = px(hwnd, self.settings.borrow().preview_width).clamp(px(hwnd, 120), (cw - px(hwnd, 200)).max(px(hwnd, 120)));
+            lw = (cw - pw - gap).max(0);
+            self.split_x.set(lw);
+            w::move_to(self.preview.host.get(), lw + gap, top, cw - lw - gap, ch - top - sh);
+        }
+        w::move_to(self.list.get(), 0, top, lw, ch - top - sh);
+        w::move_to(self.tree_list.get(), 0, top, lw, ch - top - sh);
+    }
+
+    /// Over the gap between the list and the preview pane.
+    fn on_splitter(&self, x: i32, y: i32) -> bool {
+        let hwnd = self.hwnd.get();
+        let top = px(hwnd, 4) * 2 + px(hwnd, 26);
+        self.preview_on() && x >= self.split_x.get() && x < self.split_x.get() + px(hwnd, 5) && y >= top
     }
 
     fn apply_fonts(&self) {
         let hwnd = self.hwnd.get();
         let (f, b) = (w::ui_font(hwnd, false), w::ui_font(hwnd, true));
         let (of, ob) = (self.font.replace(f), self.bold.replace(b));
-        for c in [self.edit.get(), self.combo.get(), self.list.get(), self.status.get(), self.tree_btn.get(), self.tree_list.get()] {
+        for c in [self.edit.get(), self.combo.get(), self.list.get(), self.status.get(), self.tree_btn.get(), self.tree_list.get(), self.preview_btn.get()] {
             w::set_font(c, f);
         }
+        self.preview.set_font(w::dpi(hwnd));
         unsafe {
             if !of.is_null() {
                 DeleteObject(of as _);
@@ -1255,6 +1509,7 @@ impl App {
             }
             LVN_ITEMCHANGED => {
                 self.update_status();
+                self.preview_soon();
                 Some(0)
             }
             LVN_BEGINDRAG => {
@@ -1324,7 +1579,11 @@ parent:C:\\dir\tdirect children    depth:2
 empty:\tempty folders     attrib:HS\tattributes
 dupe:  sizedupe:\tduplicate names / sizes
 runcount:>0\topened from rapidfind
-file:  folder:  audio:  video:  pic:  doc:  exe:  zip:";
+file:  folder:  audio:  video:  pic:  doc:  exe:  zip:
+
+content:text	the file contains text (read as you; Esc stops)
+case:content:  ww:content:  regex:content:  !content:
+	combine with AND only, e.g.  *.rs content:\"fn main\"";
 
 // ---- window procedures ---------------------------------------------------------
 
@@ -1351,7 +1610,9 @@ unsafe extern "system" fn edit_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM, _id
                 return 0;
             }
             VK_ESCAPE => {
-                if w::get_text(h).is_empty() {
+                if app.scanning() {
+                    app.stop_scan(); // the first Esc stops a content search
+                } else if w::get_text(h).is_empty() {
                     if app.settings.borrow().run_in_background && !app.test_mode {
                         unsafe { ShowWindow(app.hwnd.get(), SW_HIDE) };
                     }
@@ -1399,6 +1660,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
                 app.search(false);
             } else if id == ID_TREE_BTN as u32 && code == BN_CLICKED {
                 app.set_tree_mode(!app.tree_mode());
+            } else if id == ID_PREVIEW_BTN as u32 && code == BN_CLICKED {
+                app.set_preview(!app.preview_on());
             } else if id == ID_FILTER as u32 && code == CBN_SELCHANGE {
                 if let Ok(i) = usize::try_from(send(app.combo.get(), CB_GETCURSEL, 0, 0)) {
                     app.settings.borrow_mut().filter = i;
@@ -1423,6 +1686,47 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             app.on_result(*done);
             0
         }
+        WM_APP_CONTENT => {
+            let u = unsafe { Box::from_raw(l as *mut ContentUpdate) };
+            app.on_content(*u);
+            0
+        }
+        WM_SETCURSOR if w as HWND == hwnd => {
+            let mut pt = POINT { x: 0, y: 0 };
+            unsafe {
+                GetCursorPos(&mut pt);
+                windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
+            }
+            if app.on_splitter(pt.x, pt.y) {
+                unsafe { SetCursor(LoadCursorW(null_mut(), IDC_SIZEWE)) };
+                return 1;
+            }
+            unsafe { DefWindowProcW(hwnd, msg, w, l) }
+        }
+        WM_LBUTTONDOWN => {
+            let (x, y) = (w::loword(l as usize) as i16 as i32, w::hiword(l as usize) as i16 as i32);
+            if app.on_splitter(x, y) {
+                app.split_drag.set(Some(x - app.split_x.get()));
+                unsafe { SetCapture(hwnd) };
+            }
+            0
+        }
+        WM_MOUSEMOVE => {
+            if let Some(off) = app.split_drag.get() {
+                let x = w::loword(l as usize) as i16 as i32 - off;
+                let cw = w::client_rect(hwnd).right;
+                let gap = px(hwnd, 5);
+                app.settings.borrow_mut().preview_width = (cw - x - gap).max(0) * 96 / w::dpi(hwnd);
+                app.layout();
+            }
+            0
+        }
+        WM_LBUTTONUP | WM_CAPTURECHANGED => {
+            if app.split_drag.take().is_some() && msg == WM_LBUTTONUP {
+                unsafe { ReleaseCapture() };
+            }
+            0
+        }
         WM_APP_STATUS => {
             let st = unsafe { Box::from_raw(l as *mut StatusInfo) };
             let changed = { app.results.borrow().generation != st.generation };
@@ -1432,7 +1736,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
                 if was_loading && st_ready(&app.last_status.borrow()) {
                     app.search(true);
                 }
-            } else if (changed || was_loading) && !app.searching.get() {
+            } else if ((changed && app.content.borrow().is_none()) || was_loading) && !app.searching.get() {
+                // A content search isn't redone for every change (F5 does).
                 app.search(true);
             } else {
                 app.update_status();
@@ -1441,6 +1746,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
         }
         WM_TIMER if w == TIMER_POLL => {
             let _ = app.jobs.send(Job::Poll);
+            0
+        }
+        WM_TIMER if w == TIMER_PREVIEW => {
+            unsafe { KillTimer(hwnd, TIMER_PREVIEW) };
+            app.update_preview();
             0
         }
         WM_HOTKEY => {
@@ -1512,7 +1822,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
 
         let settings = Settings::load();
         let (tx, rx) = channel();
-        let conn = Arc::new(Mutex::new(Conn { be, seq: 0 }));
+        let conn = Arc::new(Mutex::new(Conn { be, seq: 0, ver: 0 }));
         let app: &'static App = Box::leak(Box::new(App {
             hwnd: Cell::new(null_mut()),
             edit: Cell::new(null_mut()),
@@ -1542,6 +1852,14 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             restore: RefCell::new(Vec::new()),
             reveal: RefCell::new(None),
             glyph_click: Cell::new(0),
+            preview: Preview::default(),
+            preview_btn: Cell::new(null_mut()),
+            progress: Cell::new(null_mut()),
+            content: RefCell::new(None),
+            scan_cancel: RefCell::new(None),
+            scan_stats: RefCell::new(None),
+            split_x: Cell::new(0),
+            split_drag: Cell::new(None),
         }));
         APP.with(|a| *a.borrow_mut() = Some(app));
 
@@ -1574,11 +1892,14 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         w::menu_item(search, CMD_PATH, "Match &Path");
         w::menu_item(search, CMD_DIACRITICS, "Match &Diacritics");
         w::menu_item(search, CMD_REGEX, "Enable &Regex");
+        w::menu_sep(search);
+        w::menu_item(search, CMD_STOP, "&Stop Content Search\tEsc");
         let view = w::submenu(bar, "&View");
         w::menu_item(view, CMD_SORT_RUNS, "Sort by &Run Count");
         w::menu_item(view, CMD_SORT_CREATED, "Sort by Date &Created");
         w::menu_sep(view);
         w::menu_item(view, CMD_TREE, "Folder Size &Tree\tCtrl+T");
+        w::menu_item(view, CMD_PREVIEW, "&Preview Pane\tAlt+P");
         w::menu_sep(view);
         w::menu_item(view, CMD_REFRESH, "&Refresh\tF5");
         let tools = w::submenu(bar, "&Tools");
@@ -1606,6 +1927,8 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         }
         send(combo, CB_SETCURSEL, settings.filter.min(FILTERS.len() - 1), 0);
         app.combo.set(combo);
+        let pbtn = w::child(hwnd, "Button", "Preview", WS_TABSTOP | (BS_AUTOCHECKBOX | BS_PUSHLIKE) as u32, 0, ID_PREVIEW_BTN);
+        app.preview_btn.set(pbtn);
 
         let list = w::child(hwnd, "SysListView32", "", WS_TABSTOP | (LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS), 0, ID_LIST);
         send(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP | LVS_EX_LABELTIP) as isize);
@@ -1651,6 +1974,11 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
 
         let status = w::child(hwnd, "msctls_statusbar32", "", SBARS_SIZEGRIP, 0, ID_STATUS);
         app.status.set(status);
+        let pb = w::child(status, "msctls_progress32", "", PBS_SMOOTH, 0, ID_PROGRESS);
+        send(pb, PBM_SETRANGE32, 0, 1000);
+        ShowWindow(pb, SW_HIDE);
+        app.progress.set(pb);
+        app.preview.create(hwnd);
 
         app.apply_fonts();
         app.layout();
@@ -1668,6 +1996,9 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             ShowWindow(hwnd, SW_SHOW);
             SetFocus(edit);
         }
+        if settings.preview {
+            app.set_preview(true);
+        }
         if settings.tree_mode {
             app.set_tree_mode(true);
         } else {
@@ -1680,7 +2011,14 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
 /// Keyboard shortcuts that work anywhere in the main window.
 pub fn global_key(msg: &MSG) -> bool {
     let Some(app) = app() else { return false };
-    if msg.message != WM_KEYDOWN || unsafe { GetAncestor(msg.hwnd, GA_ROOT) } != app.hwnd.get() {
+    if unsafe { GetAncestor(msg.hwnd, GA_ROOT) } != app.hwnd.get() {
+        return false;
+    }
+    if msg.message == WM_SYSKEYDOWN && msg.wParam == b'P' as usize {
+        app.command(CMD_PREVIEW); // Alt+P, like Explorer
+        return true;
+    }
+    if msg.message != WM_KEYDOWN {
         return false;
     }
     let ctrl = unsafe { GetKeyState(VK_CONTROL as i32) } < 0;

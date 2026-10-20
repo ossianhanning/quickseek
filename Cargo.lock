@@ -680,6 +680,7 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-normalization",
+ "windows",
  "windows-sys",
  "zstd",
 ]

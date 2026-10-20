@@ -10,6 +10,7 @@
 mod app;
 mod highlight;
 mod options;
+mod preview;
 mod results;
 mod settings;
 mod shell;

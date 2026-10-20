@@ -16,6 +16,8 @@ pub struct Results {
     pub total: usize,
     pub elapsed_ms: f64,
     pub generation: u64,
+    /// Content search: which filtering step of the result set these rows show.
+    pub ver: u64,
     blocks: HashMap<usize, Vec<Row>>,
 }
 
@@ -26,6 +28,7 @@ impl Results {
             total: page.total as usize,
             elapsed_ms: page.elapsed_us as f64 / 1000.0,
             generation: page.generation,
+            ver: 0,
             blocks: HashMap::new(),
         };
         r.insert(page.offset as usize, page.rows);

@@ -10,7 +10,9 @@ keeps everything live.
   filter, highlighted matches, the Explorer context menu, drag-out, a tray
   icon and a global hotkey.
   A **folder size tree** (the Tree button, `Ctrl+T`) shows where disk space
-  goes, optionally only for what matches the search.
+  goes, optionally only for what matches the search. **Content search**
+  (`content:`) narrows the results to files containing some text, and a
+  **preview pane** (`Alt+P`) shows the selected file.
 - **`rapidfind`**: the CLI, terminal UI and Windows service.
 - **`rapidfind-mcp`**: an MCP server, so AI assistants can find files and
   free disk space through the index.
@@ -34,6 +36,7 @@ run elevated (or with `--local`). Their indexes then live in
 rapidfind                      # terminal search-as-you-type
 rapidfind search -l -s size -d "ext:mp4 size:>1gb"
 rapidfind search --case --path "Users\me"
+rapidfind search -n 0 "S:\dev\ *.rs content:unsafe"   # files containing text (read as you)
 rapidfind status               # service, pipe, volumes (with folder/share states), index files
 rapidfind du C:\Users -d 2       # biggest folders/files, 2 levels (no path: all drives)
 rapidfind du -q "*.mp4|*.mkv"    # only count videos
@@ -59,6 +62,8 @@ rapidfind service update | stop | start | uninstall
 | Drag and drop | Drag results into Explorer, editors or mail. |
 | Search menu | Match Case, Whole Word, Match Path, Match Diacritics, Regex. |
 | Tools → Options | **General:** hotkey (default `Ctrl+Alt+Space`), run in background, start with Windows, diacritics. **Volumes:** auto-include fixed/removable volumes, per-volume include, "include only" folders. **Folders:** folders and network shares, rescan interval, watching. **Exclude:** hidden/system, folders (paths or name patterns), file patterns, include-only patterns. **Index:** what the index stores (see below). **Shares:** caching for network shares (see below). |
+| Content search | `content:text` (see below) shows the name matches at once, then reads those files on a pool of threads and drops the ones that don't contain the text, top of the list first. A progress bar and "searching contents: 1,234 of 5,678 files, 12 found" show in the status bar; `Esc` (or Search → Stop Content Search) stops, leaving the unread rows listed, and a second `Esc` clears the box. Files over 64 MB, binaries and online-only cloud files are skipped (`content_max_mb`, `content_binary`, `content_ifilter` in `gui.json`). The search isn't redone on every file change; `F5` does. |
+| Preview pane | View → Preview Pane, the **Preview** button or `Alt+P` opens it right of the list (drag the gap to resize). Text files show with the `content:` matches highlighted and scrolled to the first one (UTF-8, UTF-16 and ANSI, the first 512 KB). Pictures, videos and folders show the shell's thumbnail. Everything else goes to the preview handler Explorer uses (Office documents, PDFs, fonts, ...), usually in its own `prevhost.exe`. Online-only files aren't downloaded for a preview. |
 | Folder size tree | The **Tree** button left of the search box (or View → Folder Size Tree, `Ctrl+T`) swaps the list for an expandable tree of drives and folders: +/− boxes, Size, a bar with each entry's share of its parent (for a drive, of the disk), file counts, online-only bytes and dates. Folders holding a single folder open through to it. With text in the search box, only matching files count, so `*.mp4` shows where videos are and `folder: wfn:node_modules` where node_modules weigh. `→`/`←` expand and collapse (or go to the parent), double-click or `Enter` opens or closes a folder, and the context menu has Search in This Folder plus the Explorer menu (delete etc.; sizes refresh after it). In the result list, "Show in Folder Size Tree" opens the tree at that item. Column headers sort the tree. Sizes count what's on the disk: online-only cloud files (OneDrive placeholders) are shown in their own column instead, and a file with several hard links counts once. |
 | Shortcuts | `Ctrl+F`/`Ctrl+L` focus search, `Ctrl+C` copy full paths, `Ctrl+Shift+C` copy names, `Ctrl+A` select all, `F5` refresh, `Ctrl+P` options, `Ctrl+T` folder size tree, `Ctrl+Q` quit. |
 | Other | One instance per user (launching again shows the window), tray icon, File → Export Results (CSV), run history (opening a file counts toward `runcount:` and the Run Count sort). |
@@ -86,6 +91,22 @@ rapidfind service update | stop | start | uninstall
 | `dupe:`, `sizedupe:` | names (or file sizes) that occur more than once |
 | `runcount:>0` | opened from rapidfind |
 | `file:` `folder:` `audio:` `video:` `pic:` `doc:` `exe:` `zip:` | type filters |
+| `content:foo`, `content:"two words"` | the file contains the text (case-insensitive). Read by the client as you, never by the service |
+| `case:content:Foo` `ww:content:foo` | case-sensitive / whole word (the Search menu's Match Case, Whole Word and Regex apply too) |
+| `regex:content:fo+\d`, `content-regex:^#include` | a regular expression (`^` and `$` match at line ends) |
+| `!content:foo` | doesn't contain it |
+
+Content terms can only be AND-ed with the rest (`*.log content:error` yes,
+`content:a | content:b` or `!<content:a>` no), as in Everything: they filter
+what the rest of the query found. Text is decoded first: UTF-8 with or
+without a BOM, UTF-16 LE/BE with a BOM (or recognisable by its zero bytes),
+otherwise the ANSI code page. A file with other NUL bytes in its first 8 KB
+is binary and skipped. Word, Excel, PowerPoint (and PDFs, where a PDF reader
+installed a filter) are read through Windows Search's IFilter for their type.
+Files are read in 1 MiB chunks with a 64 KiB overlap, and reading stops at
+the first match. Over the pipe, the GUI walks the result set in display order
+(`Snapshot`) and tells the service which rows failed (`DropRows`), so sorting
+and paging keep working on the service side while the list shrinks.
 
 Diacritics: by default `a` and `å` are different. Turn on "ignore
 diacritics" (Search → Match Diacritics off) to make `Angstrom` find
@@ -165,6 +186,9 @@ in `%APPDATA%\rapidfind\gui.json`.
   shared machines if that matters.
 - For network folders, the service keeps an impersonation token of the last
   connected user and only uses it to read the configured folders.
+- Content search never runs in the service: the GUI, CLI or MCP server reads
+  the files itself, as the user running it, so it only finds text in files
+  that user may read. Index-wide name search still covers everything.
 
 ## MCP server (`rapidfind-mcp`)
 
@@ -179,7 +203,7 @@ claude mcp add rapidfind -- S:\path\to\rapidfind-mcp.exe
 
 | Tool | |
 |---|---|
-| `search_files` | The full query language (wildcards across folders, `ext:`, `size:`, `dm:`, `dupe:` ...) plus structured filters (`name`, `path`, `extensions`, `min_size`/`max_size`, `modified_after`/`before`, `type`), sorting and paging. Online-only cloud files are flagged. |
+| `search_files` | The full query language (wildcards across folders, `ext:`, `size:`, `dm:`, `dupe:` ...) plus structured filters (`name`, `path`, `extensions`, `min_size`/`max_size`, `modified_after`/`before`, `type`), sorting and paging. Online-only cloud files are flagged. `content` (or `content:` in `query`, `content_regex` for a regex) keeps files containing the text: it reads at most 256 MB per call (files over 32 MB are skipped) and stops once it has a page of matches; the reply's `content` part says how many files were read and whether the search was complete. |
 | `folder_sizes` | Disk-usage breakdown of a path (or of all drives, with capacity and free space), `depth` levels, top `limit` per folder with the rest summarised. With `query`, only matches count. |
 | `disk_overview` | Drives and shares: capacity, free, indexed size, online-only bytes, file count, index state. |
 | `cleanup_candidates` | Reclaimable space by category: Recycle Bin, temp folders, node_modules and other build output, Rust `target` folders, package manager caches, crash dumps, previous Windows installations, big old downloads, huge logs and same-size duplicates. Each category comes with a total and its biggest items. Read-only. |
@@ -219,6 +243,7 @@ On this machine (6.8M files), `cleanup_candidates` answers in 1.6 s,
 | Queries, all volumes | `txt` 20 ms · `*.dll` 46 ms · `dm:thisweek` 24 ms · `pic: size:>5mb` 26 ms · `a` (4.3M hits) 200 ms · empty query (6.8M) 280 ms |
 | Index on disk | 84 MB for all three volumes (C: 40 MB for 3.27M entries); Everything's db for the same drives is 260 MB. Saving C: takes ~0.5 s. |
 | Memory | Service 676 MB private for 6.8M entries (Everything: ~560 MB). C: is 319 MB: entries 127, names 35, folded names 75, maps 31, sort ranks 51. |
+| Content search | Folder indexes of real trees, in-process (`content_bench` example, release build; first run reads from disk, later runs from the file cache). `S:\dev\rapidfind` `*.rs content:unsafe`: 174 files in 0.13 s, then 0.01–0.02 s. `S:\dev` (840k entries) `*.cpp\|*.h content:TODO`: 16,543 files (273 MB) in 7.7 s cold, 1.0 s warm (16k files/s). Documents in `Downloads`, `ext:pdf content:och`: 306 PDFs through Windows' PDF filter in 10–14 s (text extraction, ~30 files/s; 184 match). Worst case, every file under `S:\dev` (`case:content:vkCreateDevice`, 695k files read, 363k of them binary and skipped after 64 KB): 6.5 min, 46 GB at ~1,700 files/s, bound by the disk. Narrow the name query first. |
 | Correctness | `selftest`: 3,002 random entries checked against the filesystem: 0 missing, 0 size mismatches |
 
 ## Testing
@@ -234,6 +259,7 @@ The last command is the GUI end-to-end test. It starts the real
 and drives it through UI Automation and MSAA:
 
 - typing a query filters results, with correct Name/Path/Size/Type cells
+- content search over a real temp folder: UTF-8 and UTF-16 matches, binaries skipped, `case:`/`!content:`, query errors, stopping, then the preview pane (text with matches, a thumbnail)
 - header clicks sort by size, both directions
 - deep paging to the last row
 - the filter dropdown
@@ -255,9 +281,9 @@ Also:
 
 - `crates/core`: the library
   - `ntfs/`: `mft.rs` (raw scan), `record.rs` (FILE record parsing), `usn.rs` (records, enum fallback, ReFS), `journal.rs`, `win.rs` (volumes, tokens, UNC)
-  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `ipc.rs` (protocol, sessions, server, client, backends)
+  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `ipc.rs` (protocol, sessions, server, client, backends)
 - `crates/cli`: the `rapidfind` binary: CLI, terminal UI and `service.rs` (the Windows service)
-- `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
+- `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `preview.rs` (preview pane), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
 - `crates/mcp`: `rapidfind-mcp`, the MCP server (`tools.rs`)
 - `tools/`: `shot.ps1` (window screenshot), `gui-mock.ps1` (GUI against the mock service)
 
@@ -271,6 +297,7 @@ uses the USN journal for updates).
 
 ## Not yet
 
-- Content search, a preview pane, ETP/HTTP servers and EFU file lists.
+- ETP/HTTP servers and EFU file lists.
+- Content search has no index of its own (Everything doesn't either): every search reads the files again.
 - ReFS volumes have no sizes yet, and ReFS hasn't been tested on a real volume (only with synthetic journal records).
 - Removing one hard link of a multi-link file isn't tracked precisely.

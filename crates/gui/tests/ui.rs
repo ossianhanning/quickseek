@@ -28,6 +28,8 @@ const CMD_OPTIONS: usize = 500;
 const CMD_TREE: usize = 403;
 const CMD_EXPAND: usize = 210;
 const CMD_COLLAPSE: usize = 211;
+const CMD_STOP: usize = 305;
+const CMD_PREVIEW: usize = 404;
 
 const ID_SEARCH: &str = "100";
 const ID_FILTER: &str = "101";
@@ -87,7 +89,10 @@ impl Drop for Gui {
 
 impl Gui {
     fn launch(engine: Arc<Engine>) -> Gui {
-        let pipe = format!(r"\\.\pipe\rapidfind-uitest-{}", std::process::id());
+        // One pipe per launch: an earlier test's mock service keeps running.
+        static LAUNCHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pipe = format!(r"\\.\pipe\rapidfind-uitest-{}-{n}", std::process::id());
         common::serve(&pipe, engine.clone());
         let settings = std::env::temp_dir().join(format!("rapidfind-uitest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings);
@@ -156,6 +161,34 @@ impl Gui {
     fn tree_cell(&self, row: i32, col: i32) -> String {
         const HEADERS: [&str; 6] = ["Name", "Size", "% of Parent", "Files", "Online-only", "Date Modified"];
         msaa_cell(self.tree_hwnd(), row, col, &HEADERS)
+    }
+
+    /// Selects the result row named `name`.
+    fn select_row(&self, name: &str) {
+        let list = self.by_id(ID_LIST);
+        let n = name.to_string();
+        let row = self
+            .ua
+            .create_matcher()
+            .from_ref(&list)
+            .control_type(ControlType::ListItem)
+            .filter_fn(Box::new(move |e: &UIElement| Ok(e.get_name().map(|x| x == n).unwrap_or(false))))
+            .timeout(5000)
+            .find_first()
+            .unwrap_or_else(|e| panic!("list row {name}: {e}"));
+        row.get_pattern::<UISelectionItemPattern>().unwrap().select().unwrap();
+    }
+
+    /// The status bar's left part.
+    fn status(&self) -> String {
+        let bar = self.by_id("103");
+        let parts = self.ua.create_matcher().from_ref(&bar).control_type(ControlType::Text).timeout(1000).find_all().unwrap_or_default();
+        parts.first().and_then(|p| p.get_name().ok()).unwrap_or_default()
+    }
+
+    /// What the preview pane says it shows (its window text).
+    fn preview_state(&self) -> String {
+        self.by_id("106").get_name().unwrap_or_default()
     }
 
     fn tree_names(&self) -> Vec<String> {
@@ -446,6 +479,92 @@ fn gui_end_to_end() {
     g.wait_for("list again", 1, Some("movie.mkv"));
 
     let _ = TreeScope::Descendants;
+}
+
+/// Content search over a real folder: name matches come first, rows whose
+/// files don't contain the text drop out as they are read, and the preview
+/// pane shows the text with the match highlighted (and pictures as thumbnails).
+#[test]
+fn gui_content_search_and_preview() {
+    let dir = std::env::temp_dir().join(format!("rapidfind-uitest-content-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("alpha.txt"), "first line\r\nhere is the needle\r\n").unwrap();
+    let mut w16 = vec![0xFF, 0xFE];
+    w16.extend("A Needle in UTF-16".encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(dir.join("wide.txt"), w16).unwrap();
+    std::fs::write(dir.join("sub").join("deep.log"), "deep NEEDLE").unwrap();
+    std::fs::write(dir.join("blob.bin"), b"\x00\x01needle\x00\x02").unwrap(); // binary: skipped
+    for i in 0..1500 {
+        std::fs::write(dir.join(format!("hay{i:04}.txt")), "just hay").unwrap();
+    }
+    // A 2x2 24-bit BMP.
+    let mut bmp = b"BM".to_vec();
+    let px = [0u8, 0, 255, 0, 255, 0, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0];
+    let size = 54 + px.len() as u32;
+    bmp.extend(size.to_le_bytes());
+    bmp.extend([0u8; 4]);
+    bmp.extend(54u32.to_le_bytes());
+    bmp.extend(40u32.to_le_bytes());
+    bmp.extend(2i32.to_le_bytes());
+    bmp.extend(2i32.to_le_bytes());
+    bmp.extend(1u16.to_le_bytes());
+    bmp.extend(24u16.to_le_bytes());
+    bmp.extend([0u8; 24]);
+    bmp.extend(px);
+    std::fs::write(dir.join("pic.bmp"), bmp).unwrap();
+
+    let root = dir.to_string_lossy().to_string();
+    let folder = rapidfind_core::folder::build(&root, rapidfind_core::fold::FoldMode::Lower);
+    let engine = Arc::new(Engine::from_indexes(vec![common::sample_index('C', 2_000), folder]));
+    let g = Gui::launch(engine.clone());
+    let inside = format!("\"{}\\\"", root.trim_end_matches('\\'));
+
+    // 1. Name matches first, then only files containing "needle" (any case,
+    // UTF-8 and UTF-16), sorted by name; folders and binaries drop out.
+    g.set_query(&format!("{inside} content:needle"));
+    g.wait_for("content matches", 3, Some("alpha.txt"));
+    eventually("all three rows", Duration::from_secs(5), || (g.cell(1, 0) == "deep.log" && g.cell(2, 0) == "wide.txt").then_some(()));
+    let st = eventually("finished status", Duration::from_secs(8), || Some(g.status()).filter(|s| s.contains("files read")));
+    assert!(st.starts_with("3 objects") && st.contains("skipped 1 binary"), "status: {st}");
+
+    // 2. Case-sensitive and negated terms.
+    g.set_query(&format!("{inside} case:content:NEEDLE"));
+    g.wait_for("case-sensitive content", 1, Some("deep.log"));
+    g.set_query(&format!("{inside} *.txt !content:hay"));
+    g.wait_for("files without hay", 2, Some("alpha.txt"));
+
+    // 3. Errors in the query show in the status bar.
+    g.set_query("content:a | b");
+    eventually("error shown", Duration::from_secs(5), || g.status().contains("only be combined with AND").then_some(()));
+
+    // 4. Stopping a scan (Esc in the search box): it may already be done.
+    g.set_query("content:zzz-not-there");
+    g.command(CMD_STOP);
+    let st = eventually("stopped or finished", Duration::from_secs(8), || Some(g.status()).filter(|s| s.contains("files read")));
+    assert!(st.contains("stopped") || st.starts_with("0 objects"), "status: {st}");
+
+    // 5. Preview pane: text with the match highlighted, scrolled to it.
+    g.set_query(&format!("{inside} content:needle"));
+    g.wait_for("content matches again", 3, Some("alpha.txt"));
+    g.command(CMD_PREVIEW);
+    g.select_row("alpha.txt");
+    eventually("text preview", Duration::from_secs(5), || (g.preview_state() == "text · Utf8 · 1 matches").then_some(()));
+    g.select_row("wide.txt");
+    eventually("UTF-16 preview", Duration::from_secs(5), || (g.preview_state() == "text · Utf16Le · 1 matches").then_some(()));
+    let text = g.by_id("107");
+    let body = text.get_pattern::<uiautomation::patterns::UITextPattern>().and_then(|t| t.get_document_range()).and_then(|r| r.get_text(-1)).unwrap_or_default();
+    assert!(body.contains("A Needle in UTF-16"), "preview text: {body:?}");
+
+    // 6. Pictures as shell thumbnails.
+    g.set_query(&format!("{inside} pic.bmp"));
+    g.wait_for("picture", 1, Some("pic.bmp"));
+    g.select_row("pic.bmp");
+    eventually("thumbnail", Duration::from_secs(8), || (g.preview_state() == "image").then_some(()));
+    g.command(CMD_PREVIEW);
+
+    drop(g);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn crate_group(n: u64) -> String {

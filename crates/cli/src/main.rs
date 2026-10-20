@@ -15,7 +15,7 @@ use rapidfind_core::ntfs::journal::Journal;
 use rapidfind_core::ntfs::win;
 use rapidfind_core::query::{Query, SearchFlags};
 use rapidfind_core::search::{SearchOptions, SortKey, search};
-use rapidfind_core::{fmt, persist};
+use rapidfind_core::{content, fmt, persist};
 
 #[derive(Parser)]
 #[command(name = "rapidfind", version, about = "Instant filename search for NTFS volumes")]
@@ -88,6 +88,15 @@ enum Cmd {
         /// Treat the query as a regular expression.
         #[arg(long)]
         regex: bool,
+        /// Content search (`content:`): skip files larger than this many MB.
+        #[arg(long, default_value_t = 64)]
+        max_size_mb: u64,
+        /// Content search: also search files that look binary.
+        #[arg(long)]
+        binary: bool,
+        /// Content search: read documents raw instead of through their IFilter.
+        #[arg(long)]
+        no_ifilter: bool,
     },
     /// Disk usage: the biggest folders and files under a path (all drives by default).
     Du {
@@ -320,18 +329,32 @@ fn main() -> anyhow::Result<()> {
             eprintln!("saved in {} ms", ts.elapsed().as_millis());
             eprintln!("done in {} ms (index saved to {})", t.elapsed().as_millis(), persist::db_dir().display());
         }
-        Cmd::Search { ref query, sort, desc, limit, long, case, path, ww, regex } => {
+        Cmd::Search { ref query, sort, desc, limit, long, case, path, ww, regex, max_size_mb, binary, no_ifilter } => {
             let mut be = open_backend(&cli, false)?;
             let flags = SearchFlags { case, path, whole_word: ww, regex };
             let page = if limit == 0 { u32::MAX } else { limit as u32 };
-            let mut res = be.search(&query.join(" "), flags, sort.into(), desc, page.min(10_000)).map_err(anyhow::Error::msg)?;
-            let want = if limit == 0 { res.total } else { (limit as u64).min(res.total) };
-            while (res.rows.len() as u64) < want {
-                let more = be.fetch(res.rows.len() as u64, 10_000).map_err(anyhow::Error::msg)?;
-                if more.rows.is_empty() {
-                    break;
+            let (names, content) = content::split_query(&query.join(" "), flags).map_err(anyhow::Error::msg)?;
+            let mut res = be.search(&names, flags, sort.into(), desc, if content.is_some() { 1 } else { page.min(10_000) }).map_err(anyhow::Error::msg)?;
+            let mut stats = None;
+            if let Some(cq) = content {
+                // Contents are read here, as the user running the command.
+                let opts = content::ContentOptions { max_size: max_size_mb << 20, binary, ifilter: !no_ifilter, byte_budget: None };
+                let want = (limit != 0).then_some(limit);
+                let (rows, st) = content::matching_rows(&mut |r| be.call(r), Arc::new(cq), opts, want).map_err(anyhow::Error::msg)?;
+                res.rows = rows;
+                if let Some(w) = want {
+                    res.rows.truncate(w);
                 }
-                res.rows.extend(more.rows);
+                stats = Some(st);
+            } else {
+                let want = if limit == 0 { res.total } else { (limit as u64).min(res.total) };
+                while (res.rows.len() as u64) < want {
+                    let more = be.fetch(res.rows.len() as u64, 10_000).map_err(anyhow::Error::msg)?;
+                    if more.rows.is_empty() {
+                        break;
+                    }
+                    res.rows.extend(more.rows);
+                }
             }
             let out = std::io::stdout();
             let mut out = out.lock();
@@ -343,7 +366,26 @@ fn main() -> anyhow::Result<()> {
                     writeln!(out, "{}", row.full_path())?;
                 }
             }
-            eprintln!("{} results ({} shown) in {:.2} ms via {}", res.total, res.rows.len(), res.elapsed_us as f64 / 1000.0, be.label());
+            match stats {
+                Some(st) => {
+                    let more = if st.done { "" } else { " (stopped at the limit)" };
+                    let skipped = st.skipped();
+                    eprintln!(
+                        "{} name matches in {:.2} ms; contents: {} of {} checked, {} matched, {} read in {:.0} ms{more}{}{} via {}",
+                        res.total,
+                        res.elapsed_us as f64 / 1000.0,
+                        st.checked,
+                        st.total,
+                        st.matched,
+                        fmt::size(st.bytes),
+                        st.elapsed.as_secs_f64() * 1000.0,
+                        if skipped.is_empty() { "" } else { "; skipped " },
+                        skipped,
+                        be.label()
+                    );
+                }
+                None => eprintln!("{} results ({} shown) in {:.2} ms via {}", res.total, res.rows.len(), res.elapsed_us as f64 / 1000.0, be.label()),
+            }
             be.finish()?;
         }
         Cmd::Bench { ref query, runs } => {

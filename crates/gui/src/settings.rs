@@ -30,6 +30,15 @@ pub struct Settings {
     pub tree_sort: String,
     pub tree_descending: bool,
     pub tree_column_widths: Vec<i32>,
+    /// The preview pane is open, and its width (96-DPI pixels).
+    pub preview: bool,
+    pub preview_width: i32,
+    /// Content search (`content:`): skip files larger than this many MB.
+    pub content_max_mb: u64,
+    /// Content search: also search files that look binary.
+    pub content_binary: bool,
+    /// Content search: read Office documents and PDFs through their IFilter.
+    pub content_ifilter: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +59,11 @@ impl Default for Settings {
             tree_sort: "size".into(),
             tree_descending: true,
             tree_column_widths: Vec::new(),
+            preview: false,
+            preview_width: 380,
+            content_max_mb: 64,
+            content_binary: false,
+            content_ifilter: true,
         }
     }
 }

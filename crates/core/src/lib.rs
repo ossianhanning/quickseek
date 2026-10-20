@@ -9,11 +9,13 @@
 //! * [`ipc`] — named-pipe protocol between the elevated service and clients.
 
 pub mod config;
+pub mod content;
 pub mod date;
 pub mod engine;
 pub mod fmt;
 pub mod fold;
 pub mod folder;
+pub mod ifilter;
 pub mod index;
 pub mod ipc;
 pub mod live;

@@ -71,6 +71,13 @@ pub enum Request {
     Children { node: NodeRef, sort: TreeSort, descending: bool, offset: u64, count: u32 },
     /// Frees the open tree.
     TreeClose,
+    /// Rows of the current result set in a fixed order (its sort order when
+    /// first asked); positions stay valid across [`Request::DropRows`]. For
+    /// content search, which the client does.
+    Snapshot { offset: u64, count: u32 },
+    /// Removes snapshot positions from the result set; answers with its
+    /// first `page` rows.
+    DropRows { positions: Vec<u32>, page: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -254,6 +261,19 @@ impl Request {
                 w.u32(*count);
             }
             Request::TreeClose => w.u8(9),
+            Request::Snapshot { offset, count } => {
+                w.u8(10);
+                w.u64(*offset);
+                w.u32(*count);
+            }
+            Request::DropRows { positions, page } => {
+                w.u8(11);
+                w.u32(*page);
+                w.u32(positions.len() as u32);
+                for p in positions {
+                    w.u32(*p);
+                }
+            }
         }
         w.0
     }
@@ -288,6 +308,16 @@ impl Request {
                 Request::Children { node, sort, descending: r.u8()? != 0, offset: r.u64()?, count: r.u32()? }
             }
             9 => Request::TreeClose,
+            10 => Request::Snapshot { offset: r.u64()?, count: r.u32()? },
+            11 => {
+                let page = r.u32()?;
+                let n = r.u32()? as usize;
+                if n > r.0.len() / 4 {
+                    return Err(bad("truncated"));
+                }
+                let positions = (0..n).map(|_| r.u32()).collect::<io::Result<_>>()?;
+                Request::DropRows { positions, page }
+            }
             _ => return Err(bad("request kind")),
         })
     }
@@ -543,6 +573,38 @@ impl Session {
                     Err(_) => Response::Error(STALE.into()),
                 }
             }
+            Request::Snapshot { offset, count } => {
+                let Some(rs) = self.rs.as_mut() else { return Response::Error("no search yet".into()) };
+                let t = Instant::now();
+                match eng.with_indexes(|ixs| rs.snapshot_page(ixs, *offset as usize, (*count).min(100_000) as usize)) {
+                    Ok((total, hits)) => Response::Page(Page {
+                        total: total as u64,
+                        offset: *offset,
+                        elapsed_us: t.elapsed().as_micros() as u64,
+                        generation: self.generation,
+                        rows: rows(eng, &hits),
+                    }),
+                    Err(_) => Response::Error(STALE.into()),
+                }
+            }
+            Request::DropRows { positions, page } => {
+                let Some(rs) = self.rs.as_mut() else { return Response::Error("no search yet".into()) };
+                let t = Instant::now();
+                let res = eng.with_indexes(|ixs| {
+                    rs.drop_positions(ixs, positions)?;
+                    rs.page(ixs, 0, (*page).min(100_000) as usize)
+                });
+                match res {
+                    Ok(hits) => Response::Page(Page {
+                        total: rs.total as u64,
+                        offset: 0,
+                        elapsed_us: t.elapsed().as_micros() as u64,
+                        generation: self.generation,
+                        rows: rows(eng, &hits),
+                    }),
+                    Err(_) => Response::Error(STALE.into()),
+                }
+            }
             Request::GetConfig => Response::Config(serde_json::to_string_pretty(&eng.config()).unwrap()),
             Request::SetConfig(json) => match serde_json::from_str::<Config>(json) {
                 Ok(c) => match eng.set_config(c) {
@@ -768,6 +830,16 @@ pub trait Backend: Send {
         }
     }
 
+    /// Rows of the result set's snapshot (see [`Request::Snapshot`]).
+    fn snapshot(&mut self, offset: u64, count: u32) -> Result<Page, String> {
+        page_reply(self.call(&Request::Snapshot { offset, count }))
+    }
+
+    /// Drops snapshot positions; returns the new first page.
+    fn drop_rows(&mut self, positions: Vec<u32>, page: u32) -> Result<Page, String> {
+        page_reply(self.call(&Request::DropRows { positions, page }))
+    }
+
     fn status(&mut self) -> Option<StatusInfo> {
         match self.call(&Request::Status) {
             Ok(Response::Status(s)) => Some(s),
@@ -816,6 +888,15 @@ pub trait Backend: Send {
 
     fn tree_close(&mut self) {
         let _ = self.call(&Request::TreeClose);
+    }
+}
+
+fn page_reply(r: io::Result<Response>) -> Result<Page, String> {
+    match r {
+        Ok(Response::Page(p)) => Ok(p),
+        Ok(Response::Error(e)) => Err(e),
+        Ok(_) => Err("unexpected response".into()),
+        Err(e) => Err(format!("service connection: {e}")),
     }
 }
 
@@ -892,6 +973,9 @@ mod tests {
                 count: 500,
             },
             Request::TreeClose,
+            Request::Snapshot { offset: 5, count: 4096 },
+            Request::DropRows { positions: vec![0, 7, u32::MAX], page: 512 },
+            Request::DropRows { positions: Vec::new(), page: 0 },
         ] {
             assert_eq!(Request::decode(&req.encode()).unwrap(), req);
         }

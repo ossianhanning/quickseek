@@ -215,6 +215,10 @@ pub struct ResultSet {
     epochs: Vec<u64>,
     top: Vec<Hit>,
     full: Option<Vec<Hit>>,
+    /// Content search: the sorted matches as they were when it started, and
+    /// which of them were dropped since (a bitset over positions).
+    snapshot: Option<Vec<Hit>>,
+    dropped: Vec<u64>,
 }
 
 impl ResultSet {
@@ -240,6 +244,8 @@ impl ResultSet {
             epochs: ixs.iter().map(|i| i.epoch).collect(),
             top: Vec::new(),
             full: None,
+            snapshot: None,
+            dropped: Vec::new(),
         };
         if opts.limit == 0 || opts.limit >= rs.total {
             rs.sort_all(ixs);
@@ -365,12 +371,56 @@ impl ResultSet {
         &self.top
     }
 
-    /// Rows `offset..offset+count` in sort order. Sorts everything the first
-    /// time a page beyond the precomputed top is requested.
-    pub fn page(&mut self, ixs: &[&Index], offset: usize, count: usize) -> Result<Vec<Hit>, Stale> {
+    fn check_epochs(&self, ixs: &[&Index]) -> Result<(), Stale> {
         if ixs.len() != self.epochs.len() || ixs.iter().zip(&self.epochs).any(|(i, &e)| i.epoch != e) {
             return Err(Stale);
         }
+        Ok(())
+    }
+
+    /// Hits `offset..offset+count` of the snapshot: the full sorted result
+    /// as it was at the first call. Positions in it stay valid while rows
+    /// are dropped.
+    pub fn snapshot_page(&mut self, ixs: &[&Index], offset: usize, count: usize) -> Result<(usize, Vec<Hit>), Stale> {
+        self.check_epochs(ixs)?;
+        if self.snapshot.is_none() {
+            if self.full.is_none() {
+                self.sort_all(ixs);
+            }
+            self.snapshot = self.full.clone();
+            self.dropped = vec![0; self.total.div_ceil(64)];
+        }
+        let snap = self.snapshot.as_ref().unwrap();
+        let end = offset.saturating_add(count).min(snap.len());
+        Ok((snap.len(), snap.get(offset..end).unwrap_or_default().to_vec()))
+    }
+
+    /// Removes snapshot positions from the result (content search rejects).
+    pub fn drop_positions(&mut self, ixs: &[&Index], positions: &[u32]) -> Result<(), Stale> {
+        self.check_epochs(ixs)?;
+        let Some(snap) = &self.snapshot else { return Ok(()) };
+        for &p in positions {
+            if let Some(w) = self.dropped.get_mut(p as usize / 64) {
+                *w |= 1 << (p % 64);
+            }
+        }
+        let dropped = &self.dropped;
+        let full: Vec<Hit> = snap.par_iter().enumerate().filter(|(i, _)| dropped[i / 64] >> (i % 64) & 1 == 0).map(|(_, h)| *h).collect();
+        let mut per_vol = vec![Vec::new(); self.per_vol.len()];
+        for h in &full {
+            per_vol[h.vol as usize].push(h.idx);
+        }
+        self.per_vol = per_vol;
+        self.total = full.len();
+        self.top = full[..full.len().min(self.opts.limit.max(1))].to_vec();
+        self.full = Some(full);
+        Ok(())
+    }
+
+    /// Rows `offset..offset+count` in sort order. Sorts everything the first
+    /// time a page beyond the precomputed top is requested.
+    pub fn page(&mut self, ixs: &[&Index], offset: usize, count: usize) -> Result<Vec<Hit>, Stale> {
+        self.check_epochs(ixs)?;
         let end = (offset + count).min(self.total);
         if offset >= end {
             return Ok(Vec::new());
@@ -501,6 +551,23 @@ mod tests {
         assert!(rs.page(&[&ix], 50, 10).unwrap().is_empty());
         ix.compact();
         assert_eq!(rs.page(&[&ix], 0, 1), Err(Stale));
+    }
+
+    #[test]
+    fn snapshot_positions_survive_drops() {
+        let ix = sample();
+        let q = Query::parse("").unwrap();
+        let mut rs = ResultSet::new(&[&ix], &q, &SearchOptions { sort: SortKey::Name, descending: false, limit: 2 }, Extras::default());
+        let (n, first) = rs.snapshot_page(&[&ix], 0, 3).unwrap();
+        assert_eq!((n, names(&[&ix], &first)), (7, vec!["C:".to_string(), "Me".into(), "notepad.exe".into()]));
+        rs.drop_positions(&[&ix], &[0, 2]).unwrap();
+        assert_eq!(rs.total, 5);
+        assert_eq!(names(&[&ix], rs.first_page()), vec!["Me", "notes.txt"]);
+        // Positions still refer to the original order.
+        assert_eq!(names(&[&ix], &rs.snapshot_page(&[&ix], 3, 1).unwrap().1), vec!["notes.txt"]);
+        rs.drop_positions(&[&ix], &[3, 99]).unwrap();
+        assert_eq!(names(&[&ix], &rs.page(&[&ix], 0, 10).unwrap()), vec!["Me", "Report.PDF", "Users", "Windows"]);
+        assert_eq!(rs.volume_hits(0, ix.epoch).unwrap().len(), 4);
     }
 
     #[test]

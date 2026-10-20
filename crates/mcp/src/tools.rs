@@ -2,10 +2,14 @@
 //!
 //! Everything goes through a [`Backend`] (the rapidfind service over its
 //! pipe, or an in-process engine in tests), so the index answers instantly
-//! and the filesystem is only touched to delete.
+//! and the filesystem is only touched to delete, and to read file contents
+//! for `search_files`' `content` (here, with the rights of the user who
+//! started the server, capped at [`CONTENT_BUDGET`] bytes per call).
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
+use rapidfind_core::content::{self, ContentOptions, ContentQuery};
 use rapidfind_core::fmt;
 use rapidfind_core::ipc::{Backend, Row};
 use rapidfind_core::query::SearchFlags;
@@ -19,6 +23,11 @@ Wildcards: `*.mp4` matches whole names; in a path, `*` spans any number of folde
 Filters: `ext:jpg;png`, `size:>100mb`, `size:1gb..5gb`, `dm:today`, `dm:>=2026-01-01`, `dm:<last90days`, `dc:` (created, if indexed), \
 `file:`, `folder:`, `parent:C:\\dir` (direct children), `depth:2`, `empty:` (empty folders), `wfn:name` (exact whole name), \
 `dupe:` (same name), `sizedupe:` (same size), `attrib:H`, `regex:^a.*b$`, `case:`, `audio:` `video:` `pic:` `doc:` `exe:` `zip:`.";
+
+/// Most file bytes one `search_files` call reads for content search.
+pub const CONTENT_BUDGET: u64 = 256 << 20;
+/// Larger files are skipped by content search.
+const CONTENT_MAX_FILE: u64 = 32 << 20;
 
 pub fn list() -> Value {
     json!({ "tools": [
@@ -43,7 +52,12 @@ Combine a free-form `query` with structured filters; they are ANDed. Folder size
                     "descending": { "type": "boolean", "description": "Default: true for size and modified, false otherwise." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 50 },
                     "offset": { "type": "integer", "minimum": 0, "default": 0 },
-                    "match_case": { "type": "boolean", "default": false }
+                    "match_case": { "type": "boolean", "default": false },
+                    "content": { "type": "string", "description": "Only files whose contents contain this text (case-insensitive unless `match_case`). Slow compared to the rest: \
+narrow it down with `path`/`extensions`/`query` first. Reads at most 256 MB per call (files over 32 MB, binaries and online-only cloud files are skipped); \
+`content.complete` in the reply says whether every candidate was read. Word/Excel/PowerPoint documents are read through Windows' document filters. \
+`content:text` inside `query` works too." },
+                    "content_regex": { "type": "boolean", "default": false, "description": "`content` is a regular expression." }
                 }
             },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
@@ -237,6 +251,14 @@ fn search_files(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     let limit = n(a, "limit", 50, 1000).max(1) as u32;
     let offset = n(a, "offset", 0, u64::MAX);
     let flags = SearchFlags { case: b(a, "match_case").unwrap_or(false), ..Default::default() };
+    let (q, mut cq) = content::split_query(&q, flags)?;
+    if let Some(text) = s(a, "content") {
+        let one = ContentQuery::single(text, SearchFlags { regex: b(a, "content_regex").unwrap_or(false), ..flags })?;
+        cq.get_or_insert_with(ContentQuery::default).terms.extend(one.terms);
+    }
+    if let Some(cq) = cq {
+        return search_contents(be, &q, flags, sort, desc, offset, limit as usize, cq);
+    }
     let mut page = be.search(&q, flags, sort, desc, limit)?;
     if offset > 0 {
         page = be.fetch(offset, limit)?;
@@ -249,6 +271,47 @@ fn search_files(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
         "results": page.rows.iter().map(file_row).collect::<Vec<_>>(),
         "has_more": offset + shown < page.total,
         "elapsed_ms": page.elapsed_us as f64 / 1000.0,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: SortKey, desc: bool, offset: u64, limit: usize, cq: ContentQuery) -> Result<Value, String> {
+    let page = be.search(q, flags, sort, desc, 1)?;
+    let opts = ContentOptions { max_size: CONTENT_MAX_FILE, byte_budget: Some(CONTENT_BUDGET), ..Default::default() };
+    let what = cq.describe();
+    // One more than asked, to know whether there are more.
+    let want = offset as usize + limit + 1;
+    let (rows, st) = content::matching_rows(&mut |r| be.call(r), Arc::new(cq), opts, Some(want))?;
+    let complete = st.done && !st.budget_exhausted && !st.cancelled;
+    let shown: Vec<Value> = rows.iter().skip(offset as usize).take(limit).map(file_row).collect();
+    let has_more = rows.len() > offset as usize + limit || !complete;
+    let mut info = json!({
+        "contains": what,
+        "name_matches": page.total,
+        "checked": st.checked,
+        "matched": st.matched,
+        "bytes_read": st.bytes,
+        "complete": complete,
+        "elapsed_ms": st.elapsed.as_secs_f64() * 1000.0,
+    });
+    if !st.skipped().is_empty() {
+        info["skipped"] = json!(st.skipped());
+    }
+    if st.budget_exhausted {
+        info["note"] = json!(format!("Stopped after reading {} (the per-call limit); narrow the search or page on with `offset`.", fmt::size(CONTENT_BUDGET)));
+    } else if !complete {
+        info["note"] = json!("Stopped once enough matches were found; use `offset` for more.");
+    }
+    Ok(json!({
+        "query": q,
+        // Exact once every candidate was read.
+        "total": if complete { st.matched } else { rows.len() as u64 },
+        "total_is_exact": complete,
+        "offset": offset,
+        "results": shown,
+        "has_more": has_more,
+        "content": info,
+        "elapsed_ms": page.elapsed_us as f64 / 1000.0 + st.elapsed.as_secs_f64() * 1000.0,
     }))
 }
 
@@ -767,6 +830,32 @@ mod tests {
         assert_eq!(build_query(&json!({})), "");
         assert_eq!(sort_arg(&json!({}), true), (SortKey::Size, true));
         assert_eq!(sort_arg(&json!({ "sort": "name" }), true), (SortKey::Name, false));
+    }
+
+    #[test]
+    fn content_search() {
+        let dir = std::env::temp_dir().join(format!("rapidfind-mcp-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello needle world").unwrap();
+        std::fs::write(dir.join("b.txt"), "nothing here").unwrap();
+        let mut w16 = vec![0xFF, 0xFE];
+        w16.extend("utf-16 Needle".encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(dir.join("sub").join("c.log"), w16).unwrap();
+        let ix = rapidfind_core::folder::build(&dir.to_string_lossy(), rapidfind_core::fold::FoldMode::Lower);
+        let mut be = rapidfind_core::ipc::Local::new(Arc::new(rapidfind_core::engine::Engine::from_indexes(vec![ix])));
+        let paths = |v: &Value| v["results"].as_array().unwrap().iter().map(|r| r["path"].as_str().unwrap().rsplit('\\').next().unwrap().to_string()).collect::<Vec<_>>();
+        let v = call(&mut be, "search_files", &json!({ "content": "needle" })).unwrap();
+        assert_eq!(paths(&v), ["a.txt", "c.log"], "{v}");
+        assert_eq!(v["content"]["complete"], json!(true));
+        assert_eq!(v["total"], json!(2));
+        let v = call(&mut be, "search_files", &json!({ "content": "needle", "match_case": true })).unwrap();
+        assert_eq!(paths(&v), ["a.txt"]);
+        let v = call(&mut be, "search_files", &json!({ "query": "*.txt !content:needle" })).unwrap();
+        assert_eq!(paths(&v), ["b.txt"]);
+        let v = call(&mut be, "search_files", &json!({ "content": "ne+dle", "content_regex": true, "limit": 1 })).unwrap();
+        assert_eq!((paths(&v), v["has_more"].clone()), (vec!["a.txt".to_string()], json!(true)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
