@@ -101,13 +101,19 @@ fn main() {
         for key in [SortKey::Size, SortKey::Modified, SortKey::Path] {
             for q in ["", "txt"] {
                 let query = Query::parse(q).unwrap();
-                let t = Instant::now();
-                let mut rs = ResultSet::new(&[&ix], &query, &SearchOptions { sort: key, descending: true, limit: 512 }, Extras::default());
-                let first = t.elapsed().as_secs_f64() * 1000.0;
-                let t = Instant::now();
-                let _ = rs.page(&[&ix], rs.total - 10, 10);
-                let deep = t.elapsed().as_secs_f64() * 1000.0;
-                println!("{label} {key:?} {q:>4?}: first page {first:7.1} ms, scroll to end {deep:8.1} ms ({} hits)", rs.total);
+                // Best of a few runs (path sort without ranks is slow: once).
+                let runs = if fast || key != SortKey::Path { 5 } else { 1 };
+                let (mut first, mut deep, mut total) = (f64::MAX, f64::MAX, 0);
+                for _ in 0..runs {
+                    let t = Instant::now();
+                    let mut rs = ResultSet::new(&[&ix], &query, &SearchOptions { sort: key, descending: true, limit: 512 }, Extras::default());
+                    first = first.min(t.elapsed().as_secs_f64() * 1000.0);
+                    let t = Instant::now();
+                    let _ = rs.page(&[&ix], rs.total - 10, 10);
+                    deep = deep.min(t.elapsed().as_secs_f64() * 1000.0);
+                    total = rs.total;
+                }
+                println!("{label} {key:?} {q:>4?}: first page {first:7.1} ms, scroll to end {deep:8.1} ms ({total} hits)");
             }
         }
     }

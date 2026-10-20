@@ -63,7 +63,7 @@ pub fn run(letter: char) -> anyhow::Result<()> {
                     } else if m.is_file() && m.len() != e.size {
                         size_mismatch += 1;
                         if examples.len() < 5 {
-                            examples.push(format!("size {} vs {}: {p}", e.size, m.len()));
+                            examples.push(format!("size {} vs {}: {p}", { e.size }, m.len()));
                         }
                     }
                 }

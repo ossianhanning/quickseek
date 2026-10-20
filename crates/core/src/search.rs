@@ -161,11 +161,11 @@ impl Cmp<'_> {
         let o = match self.key {
             SortKey::Name => self.by_name(a, b),
             SortKey::Size => {
-                self.ranked(RankKey::Size, a, b).unwrap_or_else(|| e(a).size.cmp(&e(b).size).then_with(|| self.by_name(a, b)))
+                self.ranked(RankKey::Size, a, b).unwrap_or_else(|| { e(a).size }.cmp(&{ e(b).size }).then_with(|| self.by_name(a, b)))
             }
             SortKey::Modified => self
                 .ranked(RankKey::Modified, a, b)
-                .unwrap_or_else(|| e(a).modified.cmp(&e(b).modified).then_with(|| self.by_name(a, b))),
+                .unwrap_or_else(|| { e(a).modified }.cmp(&{ e(b).modified }).then_with(|| self.by_name(a, b))),
             SortKey::Path => self.ranked(RankKey::Path, a, b).unwrap_or_else(|| self.by_path(a, b)),
             SortKey::Created => {
                 let c = |h: Hit| self.ixs[h.vol as usize].created(h.idx).unwrap_or(0);

@@ -375,7 +375,7 @@ fn gui_end_to_end() {
     {
         let v = &engine.volumes()[0];
         let mut ix = v.index.write();
-        let (root, rec) = (ix.root, ix.rec_map.len() as u32);
+        let (root, rec) = (ix.root, ix.rec_count);
         ix.add_link(rec, 0, root, "zz-live-test.txt", 0x20, 1, common::BASE_TIME, common::BASE_TIME);
     }
     g.wait_for("live file shows up", 1, Some("zz-live-test.txt"));

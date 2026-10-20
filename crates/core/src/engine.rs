@@ -659,7 +659,7 @@ impl Engine {
     /// Counts a run of `path`; returns the new count.
     pub fn record_run(&self, path: &str) -> Option<u32> {
         let (v, i) = self.lookup_path(path)?;
-        let (serial, record) = self.with_indexes(|ixs| (ixs[v].volume_serial, ixs[v].entries[i as usize].record));
+        let (serial, record) = self.with_indexes(|ixs| (ixs[v].volume_serial, ixs[v].record(i)));
         let now = crate::date::DateEnv::system().now_local_min;
         let info = self.runs.write().record(serial, record, now);
         if let Some(p) = &self.opts.runs_path

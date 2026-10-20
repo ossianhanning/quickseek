@@ -185,9 +185,10 @@ fn column(n: usize, f: impl Fn(usize, &mut Vec<u8>) + Sync) -> Vec<u8> {
     parts.concat()
 }
 
-/// Saves `ix` atomically (compacting first once garbage passes 20%).
+/// Saves `ix` atomically (compacting first once garbage passes 20%, or once
+/// enough entries were added out of record order to slow record lookups).
 pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
-    if ix.garbage * 5 > ix.entries.len() {
+    if ix.garbage * 5 > ix.entries.len() || ix.late_count() * 16 > ix.entries.len() {
         ix.compact();
     }
     if let Some(d) = path.parent() {
@@ -200,8 +201,10 @@ pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
     let with_created = ix.created.len() == n;
 
     let names = column(n, |i, o| o.extend_from_slice(ix.name(i as u32).as_bytes()));
-    let name_lens = column(n, |i, o| put_varint(o, e[i].name_len as u64));
-    let records = column(n, |i, o| put_varint(o, zigzag(e[i].record as i64 - prev(i).map_or(0, |p| p.record as i64))));
+    let recs = ix.records();
+    let name_lens = column(n, |i, o| put_varint(o, e[i].name_len() as u64));
+    let records = column(n, |i, o| put_varint(o, zigzag(recs[i] as i64 - if i == 0 { 0 } else { recs[i - 1] as i64 })));
+    drop(recs);
     let parents = column(n, |i, o| put_varint(o, if e[i].parent == NONE { 0 } else { zigzag(i as i64 - e[i].parent as i64) + 1 }));
     let sizes = column(n, |i, o| put_varint(o, e[i].size));
     let modified = column(n, |i, o| put_varint(o, zigzag(e[i].modified.wrapping_sub(prev(i).map_or(0, |p| p.modified)))));
@@ -211,7 +214,7 @@ pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
         Vec::new()
     };
     let flags = column(n, |i, o| o.extend_from_slice(&(e[i].flags & !DERIVED_FLAGS).to_le_bytes()));
-    let seqs = column(n, |i, o| put_varint(o, e[i].seq as u64));
+    let seqs = column(n, |i, o| put_varint(o, ix.seq(i as u32) as u64));
     let mut recent = Vec::new();
     for (&i, &t) in &ix.recent {
         put_varint(&mut recent, i as u64);
@@ -234,7 +237,7 @@ pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
         w.write_all(&ix.root.to_le_bytes())?;
         w.write_all(&[ix.has_sizes as u8, (ix.fold_mode == FoldMode::StripDiacritics) as u8, with_created as u8, 0])?;
         w.write_all(&(n as u64).to_le_bytes())?;
-        w.write_all(&(ix.rec_map.len() as u64).to_le_bytes())?;
+        w.write_all(&(ix.rec_count as u64).to_le_bytes())?;
         let all: [&Vec<u8>; STREAMS] = [&names, &name_lens, &records, &parents, &sizes, &modified, &created, &flags, &seqs, &recent, &ids];
         for s in all {
             write_stream(&mut w, s)?;
@@ -310,7 +313,7 @@ pub fn load(path: &Path) -> io::Result<Index> {
     let mut off = 0usize;
     for i in 0..n {
         let len = lens[i] as usize;
-        if len > u16::MAX as usize || off + len > names.len() {
+        if len > crate::index::MAX_NAME || off + len > names.len() {
             return Err(bad());
         }
         let parent = match pars[i] as u64 {
@@ -327,14 +330,11 @@ pub fn load(path: &Path) -> io::Result<Index> {
         entries.push(Entry {
             size: szs[i] as u64,
             modified: mods[i],
-            record: recs[i] as u32,
             parent,
-            name_off: off as u32,
-            fold_rec: i as u32,
-            name_len: len as u16,
+            // Offset into the loaded `names` until rebuild_fold below.
+            name_ref: off as u32,
+            len_rec: len as u16,
             flags: fl & !DERIVED_FLAGS,
-            seq: sq[i] as u16,
-            _pad: 0,
         });
         off += len;
     }
@@ -342,23 +342,8 @@ pub fn load(path: &Path) -> io::Result<Index> {
         return Err(bad());
     }
 
-    let mut rec_map = vec![NONE; rec_len];
-    let mut more_links = std::collections::HashMap::new();
-    let mut garbage = 0;
-    for (i, e) in entries.iter().enumerate() {
-        if e.flags & F_DELETED != 0 {
-            garbage += 1;
-            continue;
-        }
-        let r = e.record as usize;
-        if r >= rec_map.len() {
-            rec_map.resize(r + 1, NONE);
-        }
-        if rec_map[r] != NONE {
-            more_links.insert(i as u32, rec_map[r]);
-        }
-        rec_map[r] = i as u32;
-    }
+    let garbage = entries.iter().filter(|e| e.flags & F_DELETED != 0).count();
+    let seqs: Vec<u16> = sq.into_iter().map(|s| s as u16).collect();
     let mut recent_map = std::collections::HashMap::new();
     let mut v = Varints { b: &recent, p: 0 };
     while v.p < recent.len() {
@@ -379,9 +364,8 @@ pub fn load(path: &Path) -> io::Result<Index> {
     let mut ix = Index {
         letter,
         entries,
-        names,
-        rec_map,
-        more_links,
+        seqs,
+        rec_count: rec_len as u32,
         recent: recent_map,
         id_map,
         created: cre,
@@ -397,8 +381,16 @@ pub fn load(path: &Path) -> io::Result<Index> {
     };
     // The folded arena and single-copy name packing are derived; sort ranks
     // follow in the background (engine::rank_in_background).
-    ix.rebuild_fold();
+    let recs: Vec<u32> = recs.into_iter().map(|r| r as u32).collect();
+    ix.rebuild_rec_index(&recs);
+    drop(recs);
+    ix.fold_raw_names(&names);
+    drop(names);
     ix.shrink();
+    if ix.late_count() * 16 > ix.entries.len() {
+        // Saved out of record order (older folder indexes): sort it once.
+        ix.compact();
+    }
     Ok(ix)
 }
 
@@ -438,8 +430,8 @@ mod tests {
         for i in 0..ix.entries.len() as u32 {
             assert_eq!(back.path(i), ix.path(i));
             assert_eq!(back.fold_name(i), ix.fold_name(i));
-            assert_eq!(back.entries[i as usize].size, ix.entries[i as usize].size);
-            assert_eq!(back.entries[i as usize].modified, ix.entries[i as usize].modified);
+            assert_eq!({ back.entries[i as usize].size }, { ix.entries[i as usize].size });
+            assert_eq!({ back.entries[i as usize].modified }, { ix.entries[i as usize].modified });
             assert_eq!(back.created(i), ix.created(i));
             assert_eq!(back.entries[i as usize].attrs(), ix.entries[i as usize].attrs());
         }

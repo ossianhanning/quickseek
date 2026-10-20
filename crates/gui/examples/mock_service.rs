@@ -31,7 +31,7 @@ fn main() {
             let v = &engine.volumes()[0];
             let mut ix = v.index.write();
             let parent = ix.root;
-            let rec = ix.rec_map.len() as u32;
+            let rec = ix.rec_count;
             ix.add_link(rec, 0, parent, &format!("live-{n}.txt"), 0x20, n * 100, common::BASE_TIME, common::BASE_TIME);
             n += 1;
         }
