@@ -384,7 +384,7 @@ fn scan_with(letter: char, src: Source, progress: &(dyn Fn(u64, u64) + Sync)) ->
     };
     let vd = volume_data(&vol).map_err(|e| ctx("FSCTL_GET_NTFS_VOLUME_DATA", e))?;
     let rs = vd.bytes_per_file_record_segment as usize;
-    if rs == 0 || CHUNK_BYTES % rs != 0 {
+    if rs == 0 || !CHUNK_BYTES.is_multiple_of(rs) {
         return Err(io::Error::other(format!("unsupported file record size {rs}")));
     }
     let sector = vd.bytes_per_sector.max(512) as usize;

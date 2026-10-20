@@ -91,7 +91,7 @@ pub fn run(letter: char) -> anyhow::Result<()> {
             println!("    {l}: {r}")
         }
     });
-    ensure!(!eng.volumes.is_empty(), "engine failed to open {letter}:");
+    ensure!(eng.volume_count() > 0, "engine failed to open {letter}:");
     let tag = format!("rftest{}", std::process::id());
     let base = std::path::PathBuf::from(format!("{letter}:\\")).join("Users").join("Public");
     let base = if base.exists() { base } else { std::env::temp_dir() };

@@ -8,13 +8,33 @@ use std::path::{Path, PathBuf};
 
 use bytemuck::Pod;
 
+use crate::fold::FoldMode;
 use crate::index::{Entry, Index, NONE};
 
-const MAGIC: &[u8; 8] = b"RAPIDFD\x03";
+const MAGIC: &[u8; 8] = b"RAPIDFD\x04";
+
+static DB_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Overrides where indexes are stored (the service uses %ProgramData%).
+pub fn set_db_dir(dir: PathBuf) {
+    let _ = DB_DIR.set(dir);
+}
 
 pub fn db_dir() -> PathBuf {
+    if let Some(d) = DB_DIR.get() {
+        return d.clone();
+    }
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     base.join("rapidfind")
+}
+
+/// Cache file for a folder index, named by a hash of its (case-folded) path.
+pub fn folder_db_path(key: &str) -> PathBuf {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.to_lowercase().bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    db_dir().join("folders").join(format!("{h:016x}.db"))
 }
 
 pub fn db_path(letter: char) -> PathBuf {
@@ -61,12 +81,17 @@ pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
         w.write_all(&ix.journal_id.to_le_bytes())?;
         w.write_all(&ix.next_usn.to_le_bytes())?;
         w.write_all(&ix.root.to_le_bytes())?;
-        w.write_all(&[ix.has_sizes as u8])?;
+        w.write_all(&[ix.has_sizes as u8, (ix.fold_mode == FoldMode::StripDiacritics) as u8])?;
+        // The folded arena and sort ranks are derived data: rebuilt in
+        // parallel on load, which is faster than reading them from disk.
         write_vec(&mut w, &ix.entries)?;
         write_vec(&mut w, &ix.names)?;
-        // The folded arena is derived data: rebuilt in parallel on load,
-        // which is faster than reading it back from disk.
-        write_vec(&mut w, &ix.name_rank)?;
+        let (ri, rt): (Vec<u32>, Vec<i64>) = ix.recent.iter().map(|(&i, &t)| (i, t)).unzip();
+        write_vec(&mut w, &ri)?;
+        write_vec(&mut w, &rt)?;
+        let (ids, recs): (Vec<u128>, Vec<u32>) = ix.id_map.iter().flatten().map(|(&k, &v)| (k, v)).unzip();
+        write_vec(&mut w, &ids)?;
+        write_vec(&mut w, &recs)?;
         w.write_all(&(ix.rec_map.len() as u64).to_le_bytes())?;
         w.flush()?;
     }
@@ -89,14 +114,19 @@ pub fn load(path: &Path) -> io::Result<Index> {
     let next_usn = read_u64(&mut r)? as i64;
     r.read_exact(&mut b4)?;
     let root = u32::from_le_bytes(b4);
-    let mut b1 = [0u8; 1];
+    let mut b1 = [0u8; 2];
     r.read_exact(&mut b1)?;
     const MAX: u64 = 1 << 32;
     let mut entries: Vec<Entry> = read_vec(&mut r, MAX)?;
     let names: Vec<u8> = read_vec(&mut r, MAX)?;
-    let name_rank: Vec<u32> = read_vec(&mut r, MAX)?;
+    let ri: Vec<u32> = read_vec(&mut r, MAX)?;
+    let rt: Vec<i64> = read_vec(&mut r, MAX)?;
+    let ids: Vec<u128> = read_vec(&mut r, MAX)?;
+    let recs: Vec<u32> = read_vec(&mut r, MAX)?;
     let rec_len = read_u64(&mut r)? as usize;
-    let bad = name_rank.len() != entries.len()
+    let bad = ri.len() != rt.len()
+        || ids.len() != recs.len()
+        || ri.iter().any(|&i| i as usize >= entries.len())
         || root as usize >= entries.len().max(1)
         || entries.iter().any(|e| e.name_off as usize + e.name_len as usize > names.len());
     if bad {
@@ -124,7 +154,9 @@ pub fn load(path: &Path) -> io::Result<Index> {
         entries,
         names,
         rec_map,
-        name_rank,
+        recent: ri.into_iter().zip(rt).collect(),
+        id_map: (!ids.is_empty()).then(|| ids.into_iter().zip(recs).collect()),
+        fold_mode: if b1[1] != 0 { FoldMode::StripDiacritics } else { FoldMode::Lower },
         root,
         has_sizes: b1[0] != 0,
         garbage,
@@ -134,6 +166,8 @@ pub fn load(path: &Path) -> io::Result<Index> {
         volume_serial,
         ..Default::default()
     };
+    // Sort ranks are computed in the background by the engine (sorting
+    // falls back to exact comparisons until then), so loading stays fast.
     ix.rebuild_fold();
     ix.shrink();
     Ok(ix)
@@ -160,7 +194,10 @@ mod tests {
             assert_eq!(back.fold_name(i), ix.fold_name(i));
         }
         assert_eq!(back.links(35).count(), 1);
-        assert_eq!(back.name_rank, ix.name_rank);
+        assert!(back.ranks_missing(), "ranks are rebuilt after load");
+        let mut back = back;
+        back.compute_ranks();
+        assert_eq!(back.ranks.by, ix.ranks.by);
     }
 
     #[test]

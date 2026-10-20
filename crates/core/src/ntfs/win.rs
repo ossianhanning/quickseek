@@ -198,6 +198,28 @@ pub struct VolumeInfo {
     pub letter: char,
     pub fs: String,
     pub serial: u32,
+    /// GetDriveTypeW: 2 removable, 3 fixed, 4 remote, 5 cdrom, 6 ramdisk.
+    pub drive_type: u32,
+}
+
+pub const DRIVE_REMOVABLE: u32 = 2;
+pub const DRIVE_FIXED: u32 = 3;
+
+/// 128-bit file id of a volume's root directory (FileIdInfo).
+pub fn root_file_id(letter: char) -> io::Result<u128> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx};
+    let h = open_root_dir(letter)?;
+    let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandleEx(h.0, FileIdInfo, &mut info as *mut _ as *mut _, size_of::<FILE_ID_INFO>() as u32) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(u128::from_le_bytes(info.FileId.Identifier))
+}
+
+/// Bit mask of present drive letters (bit 0 = A:).
+pub fn logical_drives() -> u32 {
+    unsafe { GetLogicalDrives() }
 }
 
 /// All lettered volumes, with their filesystem name.
@@ -226,10 +248,12 @@ pub fn list_volumes() -> Vec<VolumeInfo> {
         };
         if ok != 0 {
             let n = fs.iter().position(|&c| c == 0).unwrap_or(fs.len());
+            let drive_type = unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(root.as_ptr()) };
             out.push(VolumeInfo {
                 letter,
                 fs: String::from_utf16_lossy(&fs[..n]),
                 serial,
+                drive_type,
             });
         }
     }
@@ -243,4 +267,85 @@ pub fn is_elevated() -> bool {
         .find(|v| v.fs == "NTFS")
         .map(|v| open_volume(v.letter, 0).is_ok())
         .unwrap_or(false)
+}
+
+/// An impersonation token (a pipe client's identity), used by the service to
+/// reach network shares with the user's credentials instead of LocalSystem's.
+pub struct Token(HANDLE);
+
+unsafe impl Send for Token {}
+unsafe impl Sync for Token {}
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+impl Token {
+    /// Captures the identity of the client connected to `pipe`.
+    pub fn from_pipe_client(pipe: &std::fs::File) -> Option<Token> {
+        use std::os::windows::io::AsRawHandle;
+        let pipe = pipe.as_raw_handle();
+        use windows_sys::Win32::Security::{
+            DuplicateTokenEx, RevertToSelf, SecurityImpersonation, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+            TokenImpersonation,
+        };
+        use windows_sys::Win32::System::Pipes::ImpersonateNamedPipeClient;
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+        unsafe {
+            if ImpersonateNamedPipeClient(pipe) == 0 {
+                return None;
+            }
+            let mut t: HANDLE = null_mut();
+            let ok = OpenThreadToken(GetCurrentThread(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_IMPERSONATE, 1, &mut t);
+            RevertToSelf();
+            if ok == 0 {
+                return None;
+            }
+            let mut dup: HANDLE = null_mut();
+            let ok = DuplicateTokenEx(t, TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE, null(), SecurityImpersonation, TokenImpersonation, &mut dup);
+            CloseHandle(t);
+            (ok != 0).then_some(Token(dup))
+        }
+    }
+
+    /// The current thread acts as this user until [`Token::revert`].
+    pub fn impersonate(&self) -> bool {
+        unsafe { windows_sys::Win32::System::Threading::SetThreadToken(null(), self.0) != 0 }
+    }
+
+    pub fn revert() {
+        unsafe { windows_sys::Win32::Security::RevertToSelf() };
+    }
+}
+
+/// Mapped drive paths (`Z:\data`) only exist in the user's session; turn them
+/// into UNC (`\server\share\data`) so the service can reach them.
+pub fn universal_path(path: &str) -> String {
+    use windows_sys::Win32::NetworkManagement::WNet::{UNIVERSAL_NAME_INFO_LEVEL, UNIVERSAL_NAME_INFOW, WNetGetUniversalNameW};
+    let w = wide(path);
+    let mut buf = vec![0u64; 512];
+    let mut size = (buf.len() * 8) as u32;
+    let rc = unsafe { WNetGetUniversalNameW(w.as_ptr(), UNIVERSAL_NAME_INFO_LEVEL, buf.as_mut_ptr() as *mut _, &mut size) };
+    if rc != 0 {
+        return path.to_string();
+    }
+    let info = unsafe { &*(buf.as_ptr() as *const UNIVERSAL_NAME_INFOW) };
+    let p = info.lpUniversalName;
+    if p.is_null() {
+        return path.to_string();
+    }
+    let mut n = 0;
+    unsafe {
+        while *p.add(n) != 0 {
+            n += 1;
+        }
+        String::from_utf16_lossy(std::slice::from_raw_parts(p, n))
+    }
+}
+
+/// UNC paths (`\server\share`) — indexed as network folders.
+pub fn is_network_path(path: &str) -> bool {
+    path.starts_with(r"\\") && !path.starts_with(r"\\?\") && !path.starts_with(r"\\.\")
 }

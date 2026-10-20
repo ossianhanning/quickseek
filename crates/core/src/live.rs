@@ -39,9 +39,10 @@ pub struct Applier {
 }
 
 impl Applier {
-    /// Applies `recs`; returns the record numbers whose size/times should be refreshed.
-    pub fn apply(&mut self, ix: &mut Index, recs: &[UsnRecord]) -> Vec<(u32, u64)> {
-        let mut refresh: Vec<(u32, u64)> = Vec::new();
+    /// Applies `recs`; returns (record, file id) of files whose size/times
+    /// should be refreshed.
+    pub fn apply(&mut self, ix: &mut Index, recs: &[UsnRecord]) -> Vec<(u32, u128)> {
+        let mut refresh: Vec<(u32, u128)> = Vec::new();
         let retry = std::mem::take(&mut self.orphans);
         for r in recs {
             self.apply_one(ix, r, &mut refresh);
@@ -56,16 +57,23 @@ impl Applier {
         refresh
     }
 
-    fn apply_one(&mut self, ix: &mut Index, r: &UsnRecord, refresh: &mut Vec<(u32, u64)>) {
-        let rec = r.record();
-        let prec = r.parent_record();
+    fn apply_one(&mut self, ix: &mut Index, r: &UsnRecord, refresh: &mut Vec<(u32, u128)>) {
+        let reason = r.reason;
+        let deleting = reason & USN_REASON_FILE_DELETE != 0;
+        // NTFS: the record number is in the id. ReFS (128-bit ids): map to a
+        // dense record, allocating one for files we haven't seen.
+        let (rec, prec) = if ix.id_map.is_some() {
+            let Some(rec) = ix.map_id(r.frn128, !deleting) else { return };
+            (rec, ix.map_id(r.parent128, false).unwrap_or(u32::MAX))
+        } else {
+            (r.record(), r.parent_record())
+        };
         if ntfs::is_hidden_metafile(rec, prec) || rec == ntfs::ROOT_RECORD {
             return;
         }
         self.applied += 1;
-        let reason = r.reason;
 
-        if reason & USN_REASON_FILE_DELETE != 0 {
+        if deleting {
             ix.remove_record(rec);
             self.pending_rename.remove(&rec);
             return;
@@ -135,23 +143,29 @@ impl Applier {
         if reason & DATA_CHANGE != 0 {
             e.modified = r.timestamp.max(e.modified);
             if !is_dir {
-                refresh.push((rec, r.frn));
+                refresh.push((rec, r.frn128));
             }
         }
+        ix.note_recent(entry, r.timestamp);
         ix.generation += 1;
     }
 }
 
 fn deleted_since(o: &UsnRecord, recs: &[UsnRecord]) -> bool {
-    recs.iter().any(|r| r.record() == o.record() && r.reason & USN_REASON_FILE_DELETE != 0)
+    recs.iter().any(|r| r.frn128 == o.frn128 && r.reason & USN_REASON_FILE_DELETE != 0)
 }
 
-/// Size and timestamps of a file by id.
-pub fn file_info_by_id(hint: &Handle, frn: u64) -> Option<(u64, i64, i64)> {
+/// Size and timestamps of a file by id (64-bit NTFS or 128-bit ReFS id).
+pub fn file_info_by_id(hint: &Handle, id: u128, extended: bool) -> Option<(u64, i64, i64)> {
+    use windows_sys::Win32::Storage::FileSystem::{ExtendedFileIdType, FILE_ID_128, FILE_ID_DESCRIPTOR_0};
     let desc = FILE_ID_DESCRIPTOR {
         dwSize: size_of::<FILE_ID_DESCRIPTOR>() as u32,
-        Type: FileIdType,
-        Anonymous: windows_sys::Win32::Storage::FileSystem::FILE_ID_DESCRIPTOR_0 { FileId: frn as i64 },
+        Type: if extended { ExtendedFileIdType } else { FileIdType },
+        Anonymous: if extended {
+            FILE_ID_DESCRIPTOR_0 { ExtendedFileId: FILE_ID_128 { Identifier: id.to_le_bytes() } }
+        } else {
+            FILE_ID_DESCRIPTOR_0 { FileId: id as i64 }
+        },
     };
     let h: HANDLE = unsafe {
         OpenFileById(
@@ -188,7 +202,7 @@ mod tests {
     use crate::search::{SearchOptions, search};
 
     fn rec(frn: u64, parent: u64, reason: u32, attrs: u32, name: &str, usn: i64) -> UsnRecord {
-        UsnRecord { frn, parent, usn, timestamp: 1, reason, attrs, name: name.into() }
+        UsnRecord { frn, parent, frn128: frn as u128, parent128: parent as u128, usn, timestamp: 1, reason, attrs, name: name.into() }
     }
 
     fn find(ix: &Index, q: &str) -> Vec<String> {
@@ -227,6 +241,39 @@ mod tests {
         assert!(find(&ix, "late").is_empty());
         a.apply(&mut ix, &[rec(60, 5, USN_REASON_FILE_CREATE, 0x10, "dir", 2)]);
         assert_eq!(find(&ix, "late"), vec![r"C:\dir\late.txt"]);
+    }
+
+    #[test]
+    fn records_recent_changes() {
+        let mut ix = sample();
+        let mut a = Applier::default();
+        a.apply(&mut ix, &[rec(80, 5, USN_REASON_FILE_CREATE, 0x20, "fresh.log", 1)]);
+        let i = crate::index::tests::by_name(&ix, "fresh.log");
+        assert_eq!(ix.recent.get(&i), Some(&1));
+    }
+
+    /// ReFS: 128-bit ids are mapped to dense records; the root id is
+    /// registered when the volume is scanned.
+    #[test]
+    fn refs_ids_are_mapped() {
+        let mut ix = sample();
+        let root_id: u128 = 0x1111_0000_0000_0000_0000_0000_0000_0000;
+        ix.id_map = Some(HashMap::from([(root_id, ntfs::ROOT_RECORD)]));
+        let mut a = Applier::default();
+        let dir: u128 = 0x2222_0000_0000_0000_0000_0000_0000_0007;
+        let file: u128 = 0x3333_0000_0000_0000_0000_0000_0000_0009;
+        let mk = |f: u128, p: u128, reason: u32, attrs: u32, name: &str, usn: i64| UsnRecord {
+            frn128: f, parent128: p, frn: f as u64, parent: p as u64, usn, timestamp: 2, reason, attrs, name: name.into(),
+        };
+        let refresh = a.apply(&mut ix, &[
+            mk(dir, root_id, USN_REASON_FILE_CREATE, 0x10, "devdrive", 1),
+            mk(file, dir, USN_REASON_FILE_CREATE | USN_REASON_DATA_EXTEND, 0x20, "main.rs", 2),
+        ]);
+        assert_eq!(find(&ix, "main.rs"), vec![r"C:\devdrive\main.rs".to_string()]);
+        assert_eq!(refresh.len(), 1);
+        assert_eq!(refresh[0].1, file);
+        a.apply(&mut ix, &[mk(file, dir, USN_REASON_FILE_DELETE, 0x20, "main.rs", 3)]);
+        assert!(find(&ix, "main.rs").is_empty());
     }
 
     #[test]

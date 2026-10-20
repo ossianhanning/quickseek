@@ -7,10 +7,11 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, ClearType};
 use crossterm::{cursor, execute, queue};
-use rapidfind_core::engine::Engine;
 use rapidfind_core::fmt;
-use rapidfind_core::query::Query;
-use rapidfind_core::search::{Hits, SearchOptions, SortKey};
+use rapidfind_core::search::SortKey;
+
+use rapidfind_core::ipc::Backend;
+use rapidfind_core::query::SearchFlags;
 
 struct Row {
     name: String,
@@ -30,7 +31,8 @@ struct State {
     ms: f64,
     error: Option<String>,
     rows: Vec<Row>,
-    generation: u64,
+    generation: Option<u64>,
+    source: &'static str,
 }
 
 fn truncate(s: &str, w: usize) -> String {
@@ -42,36 +44,31 @@ fn truncate(s: &str, w: usize) -> String {
     t
 }
 
-fn run_query(eng: &Engine, st: &mut State, height: usize) {
-    st.generation = eng.generation();
-    let q = match Query::parse(&st.query) {
-        Ok(q) => q,
+fn run_query(be: &mut dyn Backend, st: &mut State, height: usize) {
+    let limit = st.scroll + height;
+    match be.search(&st.query, SearchFlags::default(), st.sort, st.desc, limit as u32) {
+        Ok(page) => {
+            st.error = None;
+            st.generation = Some(page.generation);
+            st.total = page.total as usize;
+            st.ms = page.elapsed_us as f64 / 1000.0;
+            st.rows = page
+                .rows
+                .into_iter()
+                .map(|r| Row {
+                    size: if r.is_dir && !r.has_size { String::new() } else { fmt::size(r.size) },
+                    modified: fmt::time(r.modified),
+                    full: r.full_path(),
+                    name: r.name,
+                    dir: r.dir,
+                })
+                .collect();
+        }
         Err(e) => {
             st.error = Some(e);
-            return;
+            st.generation = None;
         }
-    };
-    st.error = None;
-    let limit = st.scroll + height;
-    let hits: Hits = eng.search(&q, &SearchOptions { sort: st.sort, descending: st.desc, limit });
-    st.total = hits.total;
-    st.ms = hits.elapsed.as_secs_f64() * 1000.0;
-    st.rows = eng.with_indexes(|ixs| {
-        hits.items
-            .iter()
-            .map(|h| {
-                let ix = ixs[h.vol as usize];
-                let e = &ix.entries[h.idx as usize];
-                Row {
-                    name: ix.name(h.idx).to_string(),
-                    dir: ix.parent_path(h.idx),
-                    size: if e.is_dir() && !ix.has_sizes { String::new() } else { fmt::size(e.size) },
-                    modified: fmt::time(e.modified),
-                    full: ix.path(h.idx),
-                }
-            })
-            .collect()
-    });
+    }
     if st.selected >= st.total.max(1) {
         st.selected = st.total.saturating_sub(1);
     }
@@ -85,7 +82,10 @@ fn draw(st: &State, w: u16, h: u16) -> std::io::Result<()> {
     let sort = format!("{:?}{}", st.sort, if st.desc { " ↓" } else { " ↑" });
     let status = match &st.error {
         Some(e) => format!("error: {e}"),
-        None => format!("{} results in {:.1} ms · sort {sort} · Tab sort  Ctrl+R reverse  Enter reveal  Esc quit", st.total, st.ms),
+        None => format!(
+            "{} results in {:.1} ms ({}) · sort {sort} · Tab sort  Ctrl+R reverse  Enter reveal  Esc quit",
+            st.total, st.ms, st.source
+        ),
     };
     queue!(out, cursor::MoveTo(0, 1), SetAttribute(Attribute::Dim), Print(truncate(&status, w)), SetAttribute(Attribute::Reset))?;
 
@@ -113,16 +113,16 @@ fn draw(st: &State, w: u16, h: u16) -> std::io::Result<()> {
     out.flush()
 }
 
-pub fn run(eng: &Engine) -> anyhow::Result<()> {
+pub fn run(be: &mut dyn Backend) -> anyhow::Result<()> {
     terminal::enable_raw_mode()?;
     execute!(stdout(), terminal::EnterAlternateScreen)?;
-    let res = run_inner(eng);
+    let res = run_inner(be);
     execute!(stdout(), terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     res
 }
 
-fn run_inner(eng: &Engine) -> anyhow::Result<()> {
+fn run_inner(be: &mut dyn Backend) -> anyhow::Result<()> {
     let mut st = State {
         query: String::new(),
         sort: SortKey::Name,
@@ -133,11 +133,12 @@ fn run_inner(eng: &Engine) -> anyhow::Result<()> {
         ms: 0.0,
         error: None,
         rows: Vec::new(),
-        generation: 0,
+        generation: None,
+        source: be.label(),
     };
     let (mut w, mut h) = terminal::size()?;
     let page = |h: u16| (h as usize).saturating_sub(2).max(1);
-    run_query(eng, &mut st, page(h));
+    run_query(be, &mut st, page(h));
     draw(&st, w, h)?;
     let mut last_poll = Instant::now();
     loop {
@@ -171,9 +172,10 @@ fn run_inner(eng: &Engine) -> anyhow::Result<()> {
                                 SortKey::Path => SortKey::Size,
                                 SortKey::Size => SortKey::Modified,
                                 SortKey::Modified => SortKey::Created,
-                                SortKey::Created => SortKey::Name,
+                                SortKey::Created => SortKey::RunCount,
+                                SortKey::RunCount => SortKey::Name,
                             };
-                            st.desc = matches!(st.sort, SortKey::Size | SortKey::Modified | SortKey::Created);
+                            st.desc = matches!(st.sort, SortKey::Size | SortKey::Modified | SortKey::Created | SortKey::RunCount);
                             requery = true;
                         }
                         KeyCode::Down => st.selected = (st.selected + 1).min(st.total.saturating_sub(1)),
@@ -207,14 +209,15 @@ fn run_inner(eng: &Engine) -> anyhow::Result<()> {
                 st.scroll = st.selected + 1 - vis;
             }
             if requery || st.scroll + vis > st.rows.len() && st.rows.len() < st.total {
-                run_query(eng, &mut st, vis);
+                run_query(be, &mut st, vis);
             }
             draw(&st, w, h)?;
         } else if last_poll.elapsed() > Duration::from_millis(500) {
-            // Live updates: re-run when the journal changed something.
+            // Live updates (and the service finishing its initial load):
+            // re-run when the index generation changed.
             last_poll = Instant::now();
-            if eng.generation() != st.generation {
-                run_query(eng, &mut st, page(h));
+            if be.generation() != st.generation {
+                run_query(be, &mut st, page(h));
                 draw(&st, w, h)?;
             }
         }
