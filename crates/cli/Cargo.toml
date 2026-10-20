@@ -1,0 +1,11 @@
+[package]
+name = "rapidfind"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+env_logger = "0.11.11"
+rapidfind-core = { version = "0.1.0", path = "../core" }
