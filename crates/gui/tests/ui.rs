@@ -513,6 +513,64 @@ fn gui_growth_compare() {
     let _ = std::fs::remove_dir_all(&hist);
 }
 
+/// Deleting from the tree: Del on a folder of thousands of files deletes it
+/// in the background (the window keeps answering), the tree takes its size
+/// off at once, and when the index notices (here: the test removes it) the
+/// live tree drops it without a refresh.
+#[test]
+fn gui_delete_in_background() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_KEYDOWN, WM_NULL};
+    let dir = std::env::temp_dir().join(format!("rapidfind-uitest-delete-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for sub in 0..30 {
+        let d = dir.join("big").join(format!("part{sub:02}"));
+        std::fs::create_dir_all(&d).unwrap();
+        for f in 0..100 {
+            std::fs::write(d.join(format!("f{f:03}.bin")), [7u8; 2048]).unwrap();
+        }
+    }
+    std::fs::create_dir_all(dir.join("keep")).unwrap();
+    std::fs::write(dir.join("keep").join("small.txt"), "stays").unwrap();
+    let root = dir.to_string_lossy().to_string();
+    let engine = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(&root, rapidfind_core::fold::FoldMode::Lower)]));
+    let g = Gui::launch(engine.clone());
+    g.command(CMD_TREE);
+    let has = |name: &str| g.tree_names().iter().any(|n| n.split("   ").next() == Some(name));
+    eventually("tree shows big and keep", Duration::from_secs(8), || (has("big") && has("keep")).then_some(()));
+    g.select_tree_row("big");
+    unsafe { PostMessageW(g.tree_hwnd(), WM_KEYDOWN, 0x2E /* VK_DELETE */, 0) };
+    // While the files go, the window answers right away.
+    let t0 = Instant::now();
+    let mut slowest = Duration::ZERO;
+    let mut saw_marked = false;
+    while dir.join("big").exists() {
+        let t = Instant::now();
+        let mut out = 0usize;
+        let ok = unsafe { SendMessageTimeoutW(g.hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 2000, &mut out) };
+        assert!(ok != 0, "the window stopped answering while deleting");
+        slowest = slowest.max(t.elapsed());
+        saw_marked |= g.tree_names().iter().any(|n| n.contains("deleting"));
+        assert!(t0.elapsed() < Duration::from_secs(60), "big wasn't deleted");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(slowest < Duration::from_millis(500), "the window took {slowest:?} to answer while deleting");
+    let t1 = Instant::now();
+    while !g.status().contains("Deleted \"big\"") {
+        assert!(t1.elapsed() < Duration::from_secs(8), "status: {:?}", g.status());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Usually seen, but a fast disk may finish first.
+    eprintln!("deleted 3,000 files in {:?}; slowest answer {slowest:?}; saw the greyed row: {saw_marked}", t0.elapsed());
+    // The index notices (a watcher would; here the test removes it): the live tree follows.
+    let big = format!("{}\\big", root.trim_end_matches('\\'));
+    {
+        let (v, i) = engine.lookup_path(&big).expect("big in the index");
+        engine.volumes()[v].index.write().remove_subtree(i);
+    }
+    eventually("live tree dropped big", Duration::from_secs(10), || (!has("big") && has("keep")).then_some(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Content search over a real folder: name matches come first, rows whose
 /// files don't contain the text drop out as they are read, and the preview
 /// pane shows the text with the match highlighted (and pictures as thumbnails).

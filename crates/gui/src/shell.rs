@@ -1,5 +1,6 @@
 //! Shell integration: icons, type names, opening files, clipboard, the
-//! Explorer context menu, drag-out, folder pickers and start-on-login.
+//! Explorer context menu, deleting in the background, drag-out, folder
+//! pickers and start-on-login.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -238,7 +239,21 @@ pub fn forward_menu_message(msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
 pub enum MenuChoice {
     Own(u32),
     Shell,
+    /// The shell's Delete (with Shift held: permanently), left to the caller
+    /// to run in the background instead of blocking in `InvokeCommand`.
+    Delete { permanent: bool },
     None,
+}
+
+/// The canonical verb of shell menu item `off` ("delete", "rename", ...).
+fn verb(cm: &IContextMenu, off: usize) -> String {
+    let mut buf = [0u16; 64];
+    let r = unsafe { cm.GetCommandString(off, 4 /* GCS_VERBW */, None, windows::core::PSTR(buf.as_mut_ptr() as *mut u8), buf.len() as u32) };
+    if r.is_err() {
+        return String::new();
+    }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..n]).to_ascii_lowercase()
 }
 
 const SHELL_FIRST: u32 = 0x1000;
@@ -268,6 +283,11 @@ pub fn context_menu(hwnd: HWND, paths: &[String], own: &[(u32, &str)], x: i32, y
         MenuChoice::None
     } else if cmd < SHELL_FIRST {
         MenuChoice::Own(cmd)
+    } else if let Some(cm) = &cm
+        && verb(cm, (cmd - SHELL_FIRST) as usize) == "delete"
+    {
+        let shift = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x10 /* VK_SHIFT */) } < 0;
+        MenuChoice::Delete { permanent: shift }
     } else if let Some(cm) = &cm {
         let off = (cmd - SHELL_FIRST) as usize;
         let mut ici: CMINVOKECOMMANDINFOEX = unsafe { std::mem::zeroed() };
@@ -285,6 +305,65 @@ pub fn context_menu(hwnd: HWND, paths: &[String], own: &[(u32, &str)], x: i32, y
     };
     unsafe { DestroyMenu(menu) };
     choice
+}
+
+/// How a background delete ended.
+#[derive(Debug)]
+pub struct DeleteDone {
+    pub paths: Vec<String>,
+    pub permanent: bool,
+    /// The user cancelled (in the confirmation or progress dialog), or some
+    /// items were skipped.
+    pub aborted: bool,
+    pub error: Option<String>,
+}
+
+/// Deletes `paths` on a thread of its own with the shell's file operation
+/// (its confirmation and progress dialogs, the Recycle Bin unless
+/// `permanent`), then calls `done`. The calling window never waits.
+/// `quiet` (the UI tests) skips confirmations and the Recycle Bin.
+pub fn delete_async(paths: Vec<String>, permanent: bool, quiet: bool, done: impl FnOnce(DeleteDone) + Send + 'static) {
+    std::thread::Builder::new()
+        .name("delete".into())
+        .spawn(move || {
+            let (aborted, error) = match delete_now(&paths, permanent, quiet) {
+                Ok(aborted) => (aborted, None),
+                // Cancelled from the dialog.
+                Err(e) if e.code().0 as u32 == 0x8007_04C7 || e.code().0 as u32 == 0x8027_0000 => (true, None),
+                Err(e) => (false, Some(e.message().to_string())),
+            };
+            done(DeleteDone { paths, permanent: permanent || quiet, aborted, error });
+        })
+        .expect("delete thread");
+}
+
+fn delete_now(paths: &[String], permanent: bool, quiet: bool) -> windows::core::Result<bool> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    use windows::Win32::UI::Shell::{FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_WANTNUKEWARNING, FOFX_RECYCLEONDELETE, FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName};
+    unsafe {
+        let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let r = (|| {
+            let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)?;
+            // No owner window: an owner on another thread would tie its
+            // input to ours while the copy engine works.
+            let mut flags = if permanent || quiet { 0 } else { FOF_ALLOWUNDO.0 | FOFX_RECYCLEONDELETE.0 | FOF_WANTNUKEWARNING.0 };
+            if quiet {
+                flags |= FOF_NOCONFIRMATION.0;
+            }
+            op.SetOperationFlags(FILEOPERATION_FLAGS(flags))?;
+            for p in paths {
+                let w = wide(p);
+                let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None)?;
+                op.DeleteItem(&item, None)?;
+            }
+            op.PerformOperations()?;
+            Ok(op.GetAnyOperationsAborted()?.as_bool())
+        })();
+        if init {
+            CoUninitialize();
+        }
+        r
+    }
 }
 
 #[implement(IDropSource)]

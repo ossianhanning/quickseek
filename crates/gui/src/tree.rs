@@ -83,6 +83,8 @@ pub struct Node {
     pub expanded: bool,
     /// What the bar is relative to: the parent's size (the disk's capacity for a root).
     pub parent_size: u64,
+    /// Being deleted: drawn grey, its size already taken off its folders.
+    pub deleting: bool,
 }
 
 impl Node {
@@ -126,7 +128,7 @@ impl Model {
             .into_iter()
             .map(|r| {
                 let parent_size = if r.capacity > 0 { r.capacity } else { size };
-                Node { row: r, depth: 0, expanded: false, parent_size }
+                Node { row: r, depth: 0, expanded: false, parent_size, deleting: false }
             })
             .collect();
     }
@@ -136,7 +138,7 @@ impl Model {
         let Some(n) = self.nodes.get_mut(i) else { return };
         n.expanded = true;
         let (depth, size) = (n.depth + 1, n.row.size);
-        let new: Vec<Node> = children.into_iter().map(|r| Node { row: r, depth, expanded: false, parent_size: size }).collect();
+        let new: Vec<Node> = children.into_iter().map(|r| Node { row: r, depth, expanded: false, parent_size: size, deleting: false }).collect();
         self.nodes.splice(i + 1..i + 1, new);
     }
 
@@ -159,6 +161,42 @@ impl Model {
         self.nodes.iter().filter(|n| n.expanded).map(Node::path).collect()
     }
 
+    /// Marks the nodes at `paths` as being deleted and takes their size and
+    /// file count off every folder above them (and the total), so the tree
+    /// shows the result at once. Returns the bytes taken off.
+    pub fn mark_deleting(&mut self, paths: &[String]) -> u64 {
+        let mut freed = 0;
+        for p in paths {
+            let Some(i) = self.find(p).filter(|&i| !self.nodes[i].deleting) else { continue };
+            // Inside a folder already being deleted: already counted.
+            if self.ancestors(i).iter().any(|&a| self.nodes[a].deleting) {
+                continue;
+            }
+            let (size, files) = (self.nodes[i].row.size, if self.nodes[i].row.is_dir { self.nodes[i].row.files } else { 1 });
+            self.nodes[i].deleting = true;
+            for a in self.ancestors(i) {
+                let r = &mut self.nodes[a].row;
+                r.size = r.size.saturating_sub(size);
+                r.files = r.files.saturating_sub(files);
+            }
+            self.size = self.size.saturating_sub(size);
+            self.files = self.files.saturating_sub(files);
+            freed += size;
+        }
+        freed
+    }
+
+    /// Indices of the folders above node `i`, nearest first.
+    fn ancestors(&self, i: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut cur = i;
+        while let Some(p) = self.parent_of(cur) {
+            out.push(p);
+            cur = p;
+        }
+        out
+    }
+
     pub fn find(&self, path: &str) -> Option<usize> {
         let p = path.trim_end_matches('\\');
         self.nodes.iter().position(|n| n.path().trim_end_matches('\\').eq_ignore_ascii_case(p))
@@ -174,6 +212,7 @@ pub fn contains(node_path: &str, path: &str) -> bool {
 pub fn cell_text(n: &Node, col: i32) -> String {
     let r = &n.row;
     match col {
+        0 if n.deleting => format!("{}   (deleting…)", r.name),
         0 if r.capacity > 0 => format!("{}   {} free of {}", r.name, fmt::size(r.free), fmt::size(r.capacity)),
         0 => r.name.clone(),
         1 if r.has_size || !r.is_dir => fmt::size(r.size),
@@ -214,11 +253,17 @@ pub struct Paint {
     pub bold: HFONT,
     pub selected: bool,
     pub classic_sel: bool,
+    /// Being deleted: grey text.
+    pub dim: bool,
 }
 
 fn colors(p: &Paint) -> (COLORREF, COLORREF) {
     unsafe {
-        if p.classic_sel { (GetSysColor(COLOR_HIGHLIGHT), GetSysColor(COLOR_HIGHLIGHTTEXT)) } else { (GetSysColor(COLOR_WINDOW), GetSysColor(COLOR_WINDOWTEXT)) }
+        if p.classic_sel {
+            (GetSysColor(COLOR_HIGHLIGHT), GetSysColor(COLOR_HIGHLIGHTTEXT))
+        } else {
+            (GetSysColor(COLOR_WINDOW), GetSysColor(if p.dim { COLOR_GRAYTEXT } else { COLOR_WINDOWTEXT }))
+        }
     }
 }
 
@@ -281,7 +326,9 @@ pub fn draw_name(list: HWND, p: &Paint, n: &Node, rc: RECT, icon: i32, image_lis
         let text_rc = RECT { left: ix + sz + px(list, 4), ..rc };
         let end = text_at(p.hdc, &n.row.name, text_rc.left, &text_rc, false);
         SelectObject(p.hdc, p.font as _);
-        if n.row.capacity > 0 {
+        if n.deleting {
+            text_at(p.hdc, "   deleting…", end, &text_rc, false);
+        } else if n.row.capacity > 0 {
             SetTextColor(p.hdc, if p.classic_sel { fg } else { 0x0070_7070 });
             let extra = format!("   {} free of {}", fmt::size(n.row.free), fmt::size(n.row.capacity));
             text_at(p.hdc, &extra, end, &text_rc, false);
@@ -439,5 +486,25 @@ mod tests {
         m.nodes[0].row = TreeRow { has_before: true, before: 200, ..m.nodes[0].row.clone() };
         assert_eq!(m.nodes[0].before_fraction(), Some(0.5));
         assert_eq!(cell_text(&m.nodes[0], 6), "\u{2212}100 B");
+    }
+
+    #[test]
+    fn deleting_takes_sizes_off_at_once() {
+        let mut m = Model::default();
+        m.set_roots(100, 10, vec![TreeRow { files: 10, ..row("C:", "", 100, true) }]);
+        m.expand(0, vec![TreeRow { files: 8, ..row("Users", r"C:\", 80, true) }, row("pagefile.sys", r"C:\", 20, false)]);
+        m.expand(1, vec![TreeRow { files: 5, ..row("me", r"C:\Users", 60, true) }]);
+        // me, and a path inside it (counted once), and one that isn't shown.
+        let freed = m.mark_deleting(&[r"C:\Users\me".into(), r"C:\Users\me\x".into(), r"C:\gone".into()]);
+        assert_eq!(freed, 60);
+        assert_eq!((m.nodes[0].row.size, m.nodes[1].row.size, m.nodes[2].row.size), (40, 20, 60));
+        assert_eq!((m.nodes[0].row.files, m.nodes[1].row.files), (5, 3));
+        assert_eq!((m.size, m.files), (40, 5));
+        assert!(m.nodes[2].deleting && !m.nodes[1].deleting);
+        assert_eq!(cell_text(&m.nodes[2], 0), "me   (deleting…)");
+        // Marking it again changes nothing; a file counts as one.
+        assert_eq!(m.mark_deleting(&[r"C:\Users\me".into()]), 0);
+        assert_eq!(m.mark_deleting(&[r"C:\pagefile.sys".into()]), 20);
+        assert_eq!((m.nodes[0].row.size, m.nodes[0].row.files), (20, 4));
     }
 }

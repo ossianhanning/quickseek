@@ -48,6 +48,8 @@ pub const WM_APP_TRAY: u32 = WM_APP + 3;
 pub const WM_APP_SHOW: u32 = WM_APP + 4;
 pub const WM_APP_TREE: u32 = WM_APP + 5;
 pub const WM_APP_CONTENT: u32 = WM_APP + 6;
+/// A background delete finished (lparam: `Box<shell::DeleteDone>`).
+pub const WM_APP_DELETED: u32 = WM_APP + 7;
 const TIMER_POLL: usize = 1;
 const TIMER_PREVIEW: usize = 2;
 const TIMER_GROWTH: usize = 3;
@@ -216,6 +218,18 @@ pub struct App {
     glyph_click: Cell<u32>,
     /// Comparing with a snapshot, the timeline strip and the details pane.
     pub growth: RefCell<crate::growth::Growth>,
+    /// Paths being deleted in the background (lowercase, no trailing `\`).
+    deleting: RefCell<std::collections::HashSet<String>>,
+    deletes_running: Cell<u32>,
+    /// What the last delete did, shown before the status text (until it expires).
+    delete_note: RefCell<Option<(String, Option<Instant>)>>,
+    /// The index generation the tree was built from, and when.
+    tree_gen: Cell<u64>,
+    tree_at: Cell<Option<Instant>>,
+    /// The tree build in flight refreshes in place (no "adding up" status).
+    tree_quiet: Cell<bool>,
+    /// Select these again after the tree build in flight.
+    keep_sel: RefCell<Vec<String>>,
     strip: Cell<HWND>,
     gpane: Cell<HWND>,
     pub preview: Preview,
@@ -536,7 +550,11 @@ impl App {
         // The tree counts names only: content terms are left out.
         let query = content::split_query(&self.query_text(), self.flags()).map(|(names, _)| names).unwrap_or_else(|_| self.query_text());
         let _ = self.jobs.send(Job::Tree { seq, query, flags: self.flags(), sort, desc });
-        self.set_status_left("Adding up folder sizes…");
+        self.tree_gen.set(self.last_status.borrow().as_ref().map_or(0, |s| s.generation));
+        self.tree_at.set(Some(Instant::now()));
+        if !self.tree_quiet.get() {
+            self.set_status_left("Adding up folder sizes…");
+        }
         let text = w::get_text(self.edit.get());
         w::set_text(self.hwnd.get(), &if text.is_empty() { "Folder sizes - rapidfind".to_string() } else { format!("{text} - folder sizes - rapidfind") });
     }
@@ -570,13 +588,21 @@ impl App {
                     }
                 } else {
                     for p in &restore {
-                        if let Some(i) = self.tree.borrow().find(p).filter(|&i| !self.tree.borrow().nodes[i].expanded) {
+                        // Look up first: the borrow must end before expand() changes the tree.
+                        let at = { let m = self.tree.borrow(); m.find(p).filter(|&i| !m.nodes[i].expanded) };
+                        if let Some(i) = at {
                             self.expand(i);
                         }
                     }
                 }
                 let n = self.tree.borrow().nodes.len();
                 send(list, LVM_SETITEMCOUNT, n, if restore.is_empty() { 0 } else { (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize });
+                self.tree_quiet.set(false);
+                let keep = std::mem::take(&mut *self.keep_sel.borrow_mut());
+                let found: Vec<usize> = { let m = self.tree.borrow(); keep.iter().filter_map(|p| m.find(p)).collect() };
+                if !found.is_empty() {
+                    self.select_tree_rows(&found);
+                }
                 if let Some(p) = self.reveal.borrow_mut().take() {
                     self.reveal_path(&p);
                 }
@@ -644,6 +670,18 @@ impl App {
         it.state = LVIS_SELECTED | LVIS_FOCUSED;
         send(list, LVM_SETITEMSTATE, i, &it as *const _ as isize);
         send(list, LVM_ENSUREVISIBLE, i, 0);
+    }
+
+    /// Selects rows `rows` (the first focused) without scrolling, after a refresh.
+    fn select_tree_rows(&self, rows: &[usize]) {
+        let list = self.tree_list.get();
+        let mut it: LVITEMW = unsafe { std::mem::zeroed() };
+        it.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+        send(list, LVM_SETITEMSTATE, usize::MAX, &it as *const _ as isize);
+        for (k, &i) in rows.iter().enumerate() {
+            it.state = if k == 0 { LVIS_SELECTED | LVIS_FOCUSED } else { LVIS_SELECTED };
+            send(list, LVM_SETITEMSTATE, i, &it as *const _ as isize);
+        }
     }
 
     /// Expands the folders down to `path` and selects it.
@@ -783,8 +821,14 @@ impl App {
         if stage == CDDS_ITEMPREPAINT {
             return CDRF_NOTIFYSUBITEMDRAW as LRESULT;
         }
-        if stage != (CDDS_ITEMPREPAINT | CDDS_SUBITEM) || !matches!(cd.iSubItem, 0 | 2 | tv::COL_CHANGE | tv::COL_TREND) {
+        if stage != (CDDS_ITEMPREPAINT | CDDS_SUBITEM) {
             return CDRF_DODEFAULT as LRESULT;
+        }
+        if !matches!(cd.iSubItem, 0 | 2 | tv::COL_CHANGE | tv::COL_TREND) {
+            // Default-drawn columns: grey while being deleted.
+            let dim = self.tree.borrow().nodes.get(cd.nmcd.dwItemSpec).is_some_and(|n| n.deleting);
+            cd.clrText = unsafe { GetSysColor(if dim { COLOR_GRAYTEXT } else { COLOR_WINDOWTEXT }) };
+            return CDRF_NEWFONT as LRESULT;
         }
         let i = cd.nmcd.dwItemSpec;
         let Some(node) = self.tree.borrow().nodes.get(i).cloned() else { return CDRF_DODEFAULT as LRESULT };
@@ -792,7 +836,7 @@ impl App {
         let rc = tv::cell_rect(list, i, cd.iSubItem);
         let selected = send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
         let focused = unsafe { GetFocus() } == list;
-        let p = tv::Paint { hdc: cd.nmcd.hdc, font: self.font.get(), bold: self.bold.get(), selected, classic_sel: selected && focused && !crate::themed() };
+        let p = tv::Paint { hdc: cd.nmcd.hdc, font: self.font.get(), bold: self.bold.get(), selected, classic_sel: selected && focused && !crate::themed(), dim: node.deleting };
         if cd.iSubItem == 0 {
             let icon = self.files.borrow_mut().get(&node.row.name, node.row.is_dir).0;
             let il = self.files.borrow().image_list;
@@ -806,6 +850,111 @@ impl App {
             tv::draw_bar(list, &p, &node, rc);
         }
         CDRF_SKIPDEFAULT as LRESULT
+    }
+
+    // ---- deleting ----------------------------------------------------------------
+
+    /// Deletes what's selected in the view showing (Recycle Bin unless `permanent`).
+    fn delete_selection(&self, permanent: bool) {
+        if self.tree_mode() {
+            self.delete_paths(self.tree_selected_paths(), 0, permanent);
+        } else {
+            let rows = self.selected_rows();
+            self.delete_paths(rows.iter().map(|r| r.full_path()).collect(), rows.iter().map(|r| r.size).sum(), permanent);
+        }
+    }
+
+    /// Deletes `paths` on a thread of its own: the window stays usable, the
+    /// rows turn grey and the tree takes their size off at once, and both
+    /// views refresh when it's done. `bytes` is the size when not in the tree.
+    fn delete_paths(&self, paths: Vec<String>, bytes: u64, permanent: bool) {
+        if paths.is_empty() {
+            return;
+        }
+        if let Some(p) = paths.iter().find(|p| is_root(p)) {
+            self.set_status_left(&format!("{p} is a whole drive or share: rapidfind doesn't delete those."));
+            return;
+        }
+        {
+            let mut d = self.deleting.borrow_mut();
+            d.extend(paths.iter().map(|p| delete_key(p)));
+        }
+        let freed = if self.tree_mode() { self.tree.borrow_mut().mark_deleting(&paths) } else { bytes };
+        unsafe {
+            InvalidateRect(self.tree_list.get(), null(), 0);
+            InvalidateRect(self.list.get(), null(), 0);
+        }
+        self.deletes_running.set(self.deletes_running.get() + 1);
+        let what = items_label(&paths);
+        let size = if freed > 0 { format!(" ({})", fmt::size(freed)) } else { String::new() };
+        let note = if permanent { format!("Deleting {what}{size}…") } else { format!("Moving {what}{size} to the Recycle Bin…") };
+        *self.delete_note.borrow_mut() = Some((note, None));
+        self.update_status();
+        let hwnd = self.hwnd.get() as isize;
+        shell::delete_async(paths, permanent, self.test_mode, move |d| unsafe {
+            PostMessageW(hwnd as HWND, WM_APP_DELETED, 0, Box::into_raw(Box::new(d)) as isize);
+        });
+    }
+
+    fn on_deleted(&self, d: shell::DeleteDone) {
+        self.deletes_running.set(self.deletes_running.get().saturating_sub(1));
+        {
+            let mut set = self.deleting.borrow_mut();
+            for p in &d.paths {
+                set.remove(&delete_key(p));
+            }
+        }
+        let what = items_label(&d.paths);
+        let note = match (&d.error, d.aborted, d.permanent) {
+            (Some(e), _, _) => format!("Couldn't delete {what}: {}", e.trim()),
+            (None, true, _) => format!("Deleting {what} was cancelled or skipped some items"),
+            (None, false, true) => format!("Deleted {what}"),
+            (None, false, false) => format!("Moved {what} to the Recycle Bin (the space comes back when it's emptied)"),
+        };
+        *self.delete_note.borrow_mut() = Some((note, Some(Instant::now() + Duration::from_secs(10))));
+        if self.tree_mode() {
+            self.refresh_tree_quietly();
+        } else {
+            self.search(true);
+        }
+        unsafe { InvalidateRect(self.list.get(), null(), 0) };
+        self.update_status();
+    }
+
+    /// Whether row `path` of either view is being deleted.
+    fn is_deleting(&self, path: &str) -> bool {
+        let d = self.deleting.borrow();
+        !d.is_empty() && d.contains(&delete_key(path))
+    }
+
+    /// Rebuilds the tree in place: open folders, the selection and the
+    /// scroll position stay.
+    fn refresh_tree_quietly(&self) {
+        self.tree_quiet.set(true);
+        *self.keep_sel.borrow_mut() = self.tree_selected_paths();
+        self.build_tree(true);
+    }
+
+    /// Live tree: rebuilds after the index changed (from any program), at
+    /// most every few seconds, not while deleting, not while the user is in
+    /// the middle of clicking or scrolling, and not while hidden.
+    fn maybe_refresh_tree(&self, generation: u64) {
+        if generation == self.tree_gen.get() || self.deletes_running.get() > 0 || self.tree_quiet.get() {
+            return;
+        }
+        if self.tree_at.get().is_some_and(|t| t.elapsed() < Duration::from_secs(if self.test_mode { 1 } else { 5 })) {
+            return;
+        }
+        let hwnd = self.hwnd.get();
+        if unsafe { IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 } {
+            return;
+        }
+        let mut li = windows_sys::Win32::UI::Input::KeyboardAndMouse::LASTINPUTINFO { cbSize: size_of::<windows_sys::Win32::UI::Input::KeyboardAndMouse::LASTINPUTINFO>() as u32, dwTime: 0 };
+        let now = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() };
+        if unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetLastInputInfo(&mut li) } != 0 && now.wrapping_sub(li.dwTime) < 1200 && !self.test_mode {
+            return;
+        }
+        self.refresh_tree_quietly();
     }
 
     fn tree_context_menu(&self, x: i32, y: i32) {
@@ -829,7 +978,8 @@ impl App {
         own.extend([(CMD_OPEN, "&Open"), (CMD_OPEN_PATH, "Open &Path"), (0, ""), (CMD_COPY_FULL, "Copy &Full Path"), (CMD_COPY_NAME, "Copy &Name"), (0, ""), (CMD_PROPERTIES, "P&roperties")]);
         match shell::context_menu(self.hwnd.get(), &paths, &own, x, y) {
             MenuChoice::Own(id) => self.command(id),
-            MenuChoice::Shell => self.build_tree(true), // e.g. deleted: sizes changed
+            MenuChoice::Shell => self.refresh_tree_quietly(), // e.g. renamed: show it
+            MenuChoice::Delete { permanent } => self.delete_paths(paths, 0, permanent),
             MenuChoice::None => {}
         }
     }
@@ -891,6 +1041,7 @@ impl App {
                 let cur = sel.first().copied();
                 let vk = k.wVKey;
                 match vk {
+                    0x2E /* Delete */ => self.delete_selection(unsafe { GetKeyState(VK_SHIFT as i32) } < 0),
                     0x27 /* Right */ => {
                         if let Some(i) = cur {
                             let (expanded, expandable) = self.tree.borrow().nodes.get(i).map_or((false, false), |n| (n.expanded, n.expandable()));
@@ -906,7 +1057,7 @@ impl App {
                             let expanded = self.tree.borrow().nodes.get(i).is_some_and(|n| n.expanded);
                             if expanded {
                                 self.toggle_node(i);
-                            } else if let Some(p) = self.tree.borrow().parent_of(i) {
+                            } else if let Some(p) = { self.tree.borrow().parent_of(i) } {
                                 self.select_tree_row(p);
                             }
                         }
@@ -1285,7 +1436,7 @@ impl App {
         let mut top = self.map_level(n, 30);
         for (item, row) in top.iter_mut().take(10) {
             if row.is_dir && row.has_children {
-                let child = tv::Node { row: row.clone(), depth: n.depth + 1, expanded: false, parent_size: 0 };
+                let child = tv::Node { row: row.clone(), depth: n.depth + 1, expanded: false, parent_size: 0, deleting: false };
                 item.kids = self.map_level(&child, 16).into_iter().map(|(i, _)| i).collect();
             }
         }
@@ -1349,7 +1500,7 @@ impl App {
             if !best.is_dir || !best.has_children {
                 break;
             }
-            cur = tv::Node { row: best, depth: cur.depth + 1, expanded: false, parent_size: 0 };
+            cur = tv::Node { row: best, depth: cur.depth + 1, expanded: false, parent_size: 0, deleting: false };
         }
         crate::growth::PaneData { title: n.path(), since, before: n.row.before, now: n.row.size, parts, free, chain, ..Default::default() }
     }
@@ -1359,10 +1510,20 @@ impl App {
         send(self.status.get(), SB_SETTEXTW, 0, w.as_ptr() as isize);
     }
 
+    /// The delete note, while it's current.
+    fn note(&self) -> Option<String> {
+        let mut n = self.delete_note.borrow_mut();
+        if n.as_ref().is_some_and(|(_, until)| until.is_some_and(|t| Instant::now() > t)) {
+            *n = None;
+        }
+        n.as_ref().map(|(s, _)| s.clone())
+    }
+
     fn update_status(&self) {
+        let note = self.note().map(|n| format!("{n}  ·  ")).unwrap_or_default();
         if self.tree_mode() {
             let s = self.tree_status();
-            self.set_status_left(&s);
+            self.set_status_left(&format!("{note}{s}"));
             return;
         }
         let r = self.results.borrow();
@@ -1884,7 +2045,8 @@ impl App {
         ];
         match shell::context_menu(self.hwnd.get(), &paths, &own, x, y) {
             MenuChoice::Own(id) => self.command(id),
-            MenuChoice::Shell => self.search(true), // e.g. delete/rename: show the effect
+            MenuChoice::Shell => self.search(true), // e.g. rename: show the effect
+            MenuChoice::Delete { permanent } => self.delete_paths(paths, rows.iter().map(|r| r.size).sum(), permanent),
             MenuChoice::None => {}
         }
     }
@@ -1898,8 +2060,14 @@ impl App {
         if stage == CDDS_ITEMPREPAINT {
             return CDRF_NOTIFYSUBITEMDRAW as LRESULT;
         }
-        if stage != (CDDS_ITEMPREPAINT | CDDS_SUBITEM) || cd.iSubItem > 1 || self.hl_terms.borrow().is_empty() {
+        if stage != (CDDS_ITEMPREPAINT | CDDS_SUBITEM) {
             return CDRF_DODEFAULT as LRESULT;
+        }
+        // Grey while being deleted.
+        let dim = !self.deleting.borrow().is_empty() && self.row(cd.nmcd.dwItemSpec).is_some_and(|r| self.is_deleting(&r.full_path()));
+        cd.clrText = unsafe { GetSysColor(if dim { COLOR_GRAYTEXT } else { COLOR_WINDOWTEXT }) };
+        if cd.iSubItem > 1 || self.hl_terms.borrow().is_empty() {
+            return CDRF_NEWFONT as LRESULT;
         }
         let i = cd.nmcd.dwItemSpec;
         let Some(row) = self.row(i) else { return CDRF_DODEFAULT as LRESULT };
@@ -1918,7 +2086,7 @@ impl App {
             let focused = GetFocus() == list;
             let classic_sel = selected && focused && !crate::themed();
             let bg: COLORREF = if classic_sel { GetSysColor(COLOR_HIGHLIGHT) } else { GetSysColor(COLOR_WINDOW) };
-            let fg: COLORREF = if classic_sel { GetSysColor(COLOR_HIGHLIGHTTEXT) } else { GetSysColor(COLOR_WINDOWTEXT) };
+            let fg: COLORREF = if classic_sel { GetSysColor(COLOR_HIGHLIGHTTEXT) } else if dim { GetSysColor(COLOR_GRAYTEXT) } else { GetSysColor(COLOR_WINDOWTEXT) };
             if !selected {
                 let br = CreateSolidBrush(bg);
                 FillRect(hdc, &rc, br);
@@ -2014,7 +2182,9 @@ impl App {
                 let k = unsafe { &*(lparam as *const NMLVKEYDOWN) };
                 let ctrl = unsafe { GetKeyState(VK_CONTROL as i32) } < 0;
                 let shift = unsafe { GetKeyState(VK_SHIFT as i32) } < 0;
-                if ctrl && k.wVKey == b'C' as u16 {
+                if k.wVKey == 0x2E && !ctrl {
+                    self.delete_selection(shift);
+                } else if ctrl && k.wVKey == b'C' as u16 {
                     self.copy(if shift { CMD_COPY_NAME } else { CMD_COPY_FULL });
                 } else if ctrl && k.wVKey == b'A' as u16 {
                     let mut it: LVITEMW = unsafe { std::mem::zeroed() };
@@ -2179,6 +2349,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             app.on_result(*done);
             0
         }
+        WM_APP_DELETED => {
+            let d = unsafe { Box::from_raw(l as *mut shell::DeleteDone) };
+            app.on_deleted(*d);
+            0
+        }
         WM_APP_CONTENT => {
             let u = unsafe { Box::from_raw(l as *mut ContentUpdate) };
             app.on_content(*u);
@@ -2224,10 +2399,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             let st = unsafe { Box::from_raw(l as *mut StatusInfo) };
             let changed = { app.results.borrow().generation != st.generation };
             let was_loading = app.last_status.borrow().as_ref().is_some_and(|s| !s.ready);
+            let generation = st.generation;
             *app.last_status.borrow_mut() = Some(*st);
             if app.tree_mode() {
                 if was_loading && st_ready(&app.last_status.borrow()) {
                     app.search(true);
+                } else {
+                    app.maybe_refresh_tree(generation);
+                    app.update_status();
                 }
             } else if ((changed && app.content.borrow().is_none()) || was_loading) && !app.searching.get() {
                 // A content search isn't redone for every change (F5 does).
@@ -2351,6 +2530,13 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             reveal: RefCell::new(None),
             glyph_click: Cell::new(0),
             growth: RefCell::new(crate::growth::Growth::default()),
+            deleting: RefCell::new(Default::default()),
+            deletes_running: Cell::new(0),
+            delete_note: RefCell::new(None),
+            tree_gen: Cell::new(0),
+            tree_at: Cell::new(None),
+            tree_quiet: Cell::new(false),
+            keep_sel: RefCell::new(Vec::new()),
             strip: Cell::new(null_mut()),
             gpane: Cell::new(null_mut()),
             preview: Preview::default(),
@@ -2565,4 +2751,26 @@ pub fn global_key(msg: &MSG) -> bool {
 
 fn st_ready(s: &Option<StatusInfo>) -> bool {
     s.as_ref().is_some_and(|s| s.ready)
+}
+
+/// How deleting tracks paths.
+fn delete_key(p: &str) -> String {
+    p.trim_end_matches('\\').to_lowercase()
+}
+
+/// A drive (`C:\`) or share root (`\\server\share`): never deleted from here.
+fn is_root(p: &str) -> bool {
+    let t = p.trim_end_matches('\\');
+    if t.len() <= 2 {
+        return true;
+    }
+    t.strip_prefix("\\\\").is_some_and(|rest| rest.split('\\').filter(|s| !s.is_empty()).count() <= 2)
+}
+
+/// "notes.txt" or "3 items".
+fn items_label(paths: &[String]) -> String {
+    match paths {
+        [one] => format!("\"{}\"", one.trim_end_matches('\\').rsplit('\\').next().unwrap_or(one)),
+        _ => format!("{} items", shell::group(paths.len() as u64)),
+    }
 }
