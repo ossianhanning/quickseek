@@ -78,6 +78,7 @@ pub const CMD_PREVIEW: u32 = 404;
 const CMD_OPTIONS: u32 = 500;
 const CMD_LOGIN: u32 = 501;
 const CMD_BACKGROUND: u32 = 502;
+pub const CMD_CONNECT_AI: u32 = 503;
 const CMD_SYNTAX: u32 = 600;
 const CMD_ABOUT: u32 = 601;
 const CMD_SHOW: u32 = 700;
@@ -399,7 +400,7 @@ impl App {
 
     fn content_options(&self) -> ContentOptions {
         let s = self.settings.borrow();
-        ContentOptions { max_size: s.content_max_mb.max(1) << 20, binary: s.content_binary, ifilter: s.content_ifilter, byte_budget: None }
+        ContentOptions { max_size: s.content_max_mb.max(1) << 20, binary: s.content_binary, ifilter: s.content_ifilter, byte_budget: None, time_limit: None }
     }
 
     /// Starts reading the files of search `seq`'s results.
@@ -1114,6 +1115,7 @@ impl App {
             CMD_SORT_RUNS => self.set_sort(SortKey::RunCount),
             CMD_SORT_CREATED => self.set_sort(SortKey::Created),
             CMD_OPTIONS => crate::options::open(self),
+            CMD_CONNECT_AI => crate::connect::open(self),
             CMD_LOGIN => {
                 shell::set_start_on_login(!shell::start_on_login());
                 self.sync_menu();
@@ -1904,6 +1906,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         w::menu_item(view, CMD_REFRESH, "&Refresh\tF5");
         let tools = w::submenu(bar, "&Tools");
         w::menu_item(tools, CMD_OPTIONS, "&Options…\tCtrl+P");
+        w::menu_item(tools, CMD_CONNECT_AI, "Connect &AI Assistants…");
         w::menu_sep(tools);
         w::menu_item(tools, CMD_BACKGROUND, "Run in &Background (tray)");
         w::menu_item(tools, CMD_LOGIN, "Start with &Windows");

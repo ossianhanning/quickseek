@@ -6,7 +6,7 @@
 //! It needs the rapidfind service running (or `RAPIDFIND_PIPE`), and runs
 //! as the user who starts it: deletes happen with that user's rights.
 
-mod tools;
+use rapidfind_mcp::tools;
 
 use std::io::{BufRead, Write};
 
@@ -15,10 +15,7 @@ use serde_json::{Value, json};
 
 const PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS: &str = "rapidfind indexes every file and folder name on the local drives (and configured network shares) with sizes and dates, \
-so searches and folder-size breakdowns are instant and never scan the disk. To free space: start with disk_overview or folder_sizes \
-(no path = drives; then drill into the biggest folders), use cleanup_candidates for the usual reclaimable categories, and search_files for \
-specifics (big files: min_size + sort size). Show the user what you'd delete and its size before calling delete_paths; it recycles by default.";
+use rapidfind_mcp::guide;
 
 struct Server {
     be: Option<Box<dyn Backend>>,
@@ -57,9 +54,9 @@ impl Server {
                 let version = if PROTOCOLS.contains(&asked) { asked } else { PROTOCOLS[0] };
                 Ok(json!({
                     "protocolVersion": version,
-                    "capabilities": { "tools": { "listChanged": false } },
+                    "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
                     "serverInfo": { "name": "rapidfind", "title": "rapidfind file search", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": INSTRUCTIONS,
+                    "instructions": guide::INSTRUCTIONS,
                 }))
             }
             "ping" => Ok(json!({})),
@@ -77,7 +74,11 @@ impl Server {
                 })
             }
             "resources/list" => Ok(json!({ "resources": [] })),
-            "prompts/list" => Ok(json!({ "prompts": [] })),
+            "prompts/list" => Ok(guide::prompts_list()),
+            "prompts/get" => {
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                guide::prompt_get(name, params.get("arguments").unwrap_or(&Value::Null)).map_err(|e| (-32602, e))
+            }
             _ => Err((-32601, format!("method not found: {method}"))),
         };
         Some(match result {
@@ -93,10 +94,12 @@ fn main() {
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
+        // Some shells (Windows PowerShell) start piped input with a byte-order mark.
+        let line = line.trim_start_matches('\u{feff}');
         if line.trim().is_empty() {
             continue;
         }
-        let reply = match serde_json::from_str::<Value>(&line) {
+        let reply = match serde_json::from_str::<Value>(line) {
             Ok(Value::Array(batch)) => {
                 let r: Vec<Value> = batch.iter().filter_map(|m| server.handle(m)).collect();
                 (!r.is_empty()).then_some(Value::Array(r))
@@ -166,6 +169,16 @@ mod tests {
         let list = s.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["search_files", "folder_sizes", "disk_overview", "cleanup_candidates", "delete_paths", "empty_recycle_bin"]);
+        assert!(init["result"]["capabilities"]["prompts"].is_object());
+        assert!(init["result"]["instructions"].as_str().unwrap().contains("search_files"));
+        let prompts = s.handle(&json!({ "jsonrpc": "2.0", "id": 5, "method": "prompts/list" })).unwrap();
+        let names: Vec<&str> = prompts["result"]["prompts"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["free_disk_space", "whats_using_space", "find_files", "find_large_files"]);
+        let got = s.handle(&json!({ "jsonrpc": "2.0", "id": 6, "method": "prompts/get", "params": { "name": "free_disk_space", "arguments": { "drive": "D:" } } })).unwrap();
+        let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains(r"D:\") && text.contains("cleanup_candidates"), "{text}");
+        let missing = s.handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "prompts/get", "params": { "name": "find_files" } })).unwrap();
+        assert_eq!(missing["error"]["code"], -32602);
         let unknown = s.handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "nope" })).unwrap();
         assert_eq!(unknown["error"]["code"], -32601);
         let bad = s.handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "search_files", "arguments": { "query": "size:banana" } } })).unwrap();

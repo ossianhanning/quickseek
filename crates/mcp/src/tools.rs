@@ -25,7 +25,7 @@ Filters: `ext:jpg;png`, `size:>100mb`, `size:1gb..5gb`, `dm:today`, `dm:>=2026-0
 `dupe:` (same name), `sizedupe:` (same size), `attrib:H`, `regex:^a.*b$`, `case:`, `audio:` `video:` `pic:` `doc:` `exe:` `zip:`.";
 
 /// Most file bytes one `search_files` call reads for content search.
-pub const CONTENT_BUDGET: u64 = 256 << 20;
+pub const CONTENT_BUDGET: u64 = 1 << 30;
 /// Larger files are skipped by content search.
 const CONTENT_MAX_FILE: u64 = 32 << 20;
 
@@ -34,7 +34,7 @@ pub fn list() -> Value {
         {
             "name": "search_files",
             "title": "Search files",
-            "description": format!("Instantly find files and folders on all indexed drives and network shares (an index of every file name, size and date; no disk scan). \
+            "description": format!("Find files and folders on this PC instantly: by name, path wildcards, extension, size, date or contents; the largest, oldest or duplicate files. Searches all indexed drives and network shares (an index of every file name, size and date; no disk scan). \
 Combine a free-form `query` with structured filters; they are ANDed. Folder sizes are the total of everything inside. {SYNTAX}"),
             "inputSchema": {
                 "type": "object",
@@ -54,10 +54,11 @@ Combine a free-form `query` with structured filters; they are ANDed. Folder size
                     "offset": { "type": "integer", "minimum": 0, "default": 0 },
                     "match_case": { "type": "boolean", "default": false },
                     "content": { "type": "string", "description": "Only files whose contents contain this text (case-insensitive unless `match_case`). Slow compared to the rest: \
-narrow it down with `path`/`extensions`/`query` first. Reads at most 256 MB per call (files over 32 MB, binaries and online-only cloud files are skipped); \
+narrow it down with `path`/`extensions`/`query` first. Reads at most 1 GB or 30 s per call, text-like files first and build/dependency folders skipped (files over 32 MB, binaries and online-only cloud files are skipped); \
 `content.complete` in the reply says whether every candidate was read. Word/Excel/PowerPoint documents are read through Windows' document filters. \
 `content:text` inside `query` works too." },
-                    "content_regex": { "type": "boolean", "default": false, "description": "`content` is a regular expression." }
+                    "content_regex": { "type": "boolean", "default": false, "description": "`content` is a regular expression." },
+                    "include_build_folders": { "type": "boolean", "default": false, "description": "Content search skips node_modules, target, .git, .venv, __pycache__, obj, dist, build and similar folders unless this is true." }
                 }
             },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
@@ -65,7 +66,7 @@ narrow it down with `path`/`extensions`/`query` first. Reads at most 256 MB per 
         {
             "name": "folder_sizes",
             "title": "Folder sizes",
-            "description": format!("Disk usage breakdown (like TreeSize/WinDirStat, but instant from the index): the biggest folders and files under a path, \
+            "description": format!("What is using disk space: answers \"what has eaten my D: drive\" / \"what is taking space on C:\". Disk usage breakdown (like TreeSize/WinDirStat, but instant from the index): the biggest folders and files under a path, \
 with size, share of the parent and file count, expanded `depth` levels. Without `path`, starts at the drives (with their capacity and free space). \
 With `query`, only matching files count (e.g. `*.mp4` shows where videos take space; `folder: wfn:node_modules` where node_modules are); \
 a matched folder counts with everything inside it. {SYNTAX}"),
@@ -85,14 +86,14 @@ a matched folder counts with everything inside it. {SYNTAX}"),
         {
             "name": "disk_overview",
             "title": "Disk overview",
-            "description": "Every indexed drive and network share: capacity, free space, space taken by indexed files, file count and index state.",
+            "description": "How full each drive is (start here for disk-space questions): every indexed drive and network share with capacity, free space, space taken by indexed files, file count and index state.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
             "name": "cleanup_candidates",
             "title": "Cleanup candidates",
-            "description": "Finds space that can usually be reclaimed, by category: Recycle Bin, temp folders, build output and dependency folders \
+            "description": "Clean up / free disk space: finds space that can usually be reclaimed, by category: Recycle Bin, temp folders, build output and dependency folders \
 (node_modules, Rust target, __pycache__, ...), package manager caches, crash dumps, old Windows installations, big old downloads, huge logs and \
 same-size duplicates. Returns each category's total and its biggest items with paths, so you can review and then delete with delete_paths. \
 Nothing is deleted by this tool.",
@@ -257,7 +258,7 @@ fn search_files(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
         cq.get_or_insert_with(ContentQuery::default).terms.extend(one.terms);
     }
     if let Some(cq) = cq {
-        return search_contents(be, &q, flags, sort, desc, offset, limit as usize, cq);
+        return search_contents(be, &q, flags, sort, desc, offset, limit as usize, cq, b(a, "include_build_folders").unwrap_or(false));
     }
     let mut page = be.search(&q, flags, sort, desc, limit)?;
     if offset > 0 {
@@ -274,33 +275,81 @@ fn search_files(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     }))
 }
 
+/// Folders content search skips unless asked: dependencies, build output and
+/// VCS data, which are huge and almost never what "which files mention X" means.
+const SKIP_DIRS: &str = r"!*\node_modules\* !*\target\* !*\.git\* !*\.svn\* !*\.hg\* !*\.venv\* !*\venv\* !*\__pycache__\* !*\obj\* !*\.next\* !*\dist\* !*\build\* !*\.gradle\* !*\.cargo\registry\* !*\site-packages\*";
+
+/// Text-like files, read first so the budget goes to likely matches.
+const TEXT_EXT: &str = "ext:txt;md;markdown;rst;log;csv;tsv;json;jsonc;yaml;yml;toml;ini;cfg;conf;env;xml;html;htm;css;scss;less;js;mjs;cjs;ts;tsx;jsx;vue;svelte;py;pyi;rs;go;java;kt;kts;scala;c;h;cc;cpp;cxx;hpp;hh;cs;fs;vb;swift;m;mm;rb;php;pl;lua;r;jl;dart;sh;bash;zsh;ps1;psm1;psd1;bat;cmd;sql;graphql;proto;gradle;cmake;mk;tf;hcl;ipynb;tex;bib;svg;sln;csproj;vcxproj;props;targets;shader;hlsl;glsl;uss;uxml;asmdef;doc;docx;odt;rtf;pdf;xls;xlsx;ods;ppt;pptx;odp;msg;eml";
+
+/// Wall-clock limit of one content search (besides the byte budget).
+pub const CONTENT_TIME: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[allow(clippy::too_many_arguments)]
-fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: SortKey, desc: bool, offset: u64, limit: usize, cq: ContentQuery) -> Result<Value, String> {
-    let page = be.search(q, flags, sort, desc, 1)?;
-    let opts = ContentOptions { max_size: CONTENT_MAX_FILE, byte_budget: Some(CONTENT_BUDGET), ..Default::default() };
+fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: SortKey, desc: bool, offset: u64, limit: usize, cq: ContentQuery, include_build: bool) -> Result<Value, String> {
+    let base = if include_build { format!("<{q} >") } else { format!("<{q} > {SKIP_DIRS}") };
+    // Text-like files first, unless the caller chose extensions.
+    let chose_ext = q.to_ascii_lowercase().contains("ext:");
+    let passes: Vec<String> = if chose_ext { vec![base.clone()] } else { vec![format!("{base} {TEXT_EXT}"), format!("{base} !{TEXT_EXT}")] };
+    let cq = Arc::new(cq);
     let what = cq.describe();
     // One more than asked, to know whether there are more.
     let want = offset as usize + limit + 1;
-    let (rows, st) = content::matching_rows(&mut |r| be.call(r), Arc::new(cq), opts, Some(want))?;
-    let complete = st.done && !st.budget_exhausted && !st.cancelled;
+    let started = std::time::Instant::now();
+    let (mut rows, mut total, mut st) = (Vec::new(), 0u64, content::Stats::default());
+    let mut stopped = None;
+    for pq in &passes {
+        // Smallest first: within the budget that checks the most files.
+        let page = be.search(pq, flags, SortKey::Size, false, 1)?;
+        total += page.total;
+        let left_bytes = CONTENT_BUDGET.saturating_sub(st.bytes);
+        let left_time = CONTENT_TIME.saturating_sub(started.elapsed());
+        let opts = ContentOptions { max_size: CONTENT_MAX_FILE, byte_budget: Some(left_bytes.max(1)), time_limit: Some(left_time), ..Default::default() };
+        let (r, s) = content::matching_rows(&mut |r| be.call(r), cq.clone(), opts, Some(want - rows.len().min(want)))?;
+        rows.extend(r);
+        for (dst, src) in [(&mut st.checked, s.checked), (&mut st.matched, s.matched), (&mut st.bytes, s.bytes), (&mut st.too_large, s.too_large), (&mut st.binary, s.binary), (&mut st.offline, s.offline), (&mut st.unreadable, s.unreadable)] {
+            *dst += src;
+        }
+        if s.budget_exhausted || s.timed_out || !s.done {
+            stopped = Some(if s.budget_exhausted { "budget" } else if s.timed_out { "time" } else { "enough" });
+            break;
+        }
+    }
+    let complete = stopped.is_none();
+    let key = |r: &Row| r.full_path().to_lowercase();
+    match sort {
+        SortKey::Size => rows.sort_by_key(|r| r.size),
+        SortKey::Modified => rows.sort_by_key(|r| r.modified),
+        SortKey::Path => rows.sort_by_key(key),
+        _ => rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| key(a).cmp(&key(b)))),
+    }
+    if desc {
+        rows.reverse();
+    }
     let shown: Vec<Value> = rows.iter().skip(offset as usize).take(limit).map(file_row).collect();
     let has_more = rows.len() > offset as usize + limit || !complete;
     let mut info = json!({
         "contains": what,
-        "name_matches": page.total,
+        "candidates": total,
         "checked": st.checked,
         "matched": st.matched,
         "bytes_read": st.bytes,
         "complete": complete,
-        "elapsed_ms": st.elapsed.as_secs_f64() * 1000.0,
+        "elapsed_ms": started.elapsed().as_secs_f64() * 1000.0,
+        "order": if chose_ext { "smallest files first" } else { "text-like files (source, documents, config) first, then the rest" },
     });
+    if !include_build {
+        info["skipped_folders"] = json!("node_modules, target, .git, .venv, __pycache__, obj, dist, build and similar (include_build_folders: true searches them too)");
+    }
     if !st.skipped().is_empty() {
         info["skipped"] = json!(st.skipped());
     }
-    if st.budget_exhausted {
-        info["note"] = json!(format!("Stopped after reading {} (the per-call limit); narrow the search or page on with `offset`.", fmt::size(CONTENT_BUDGET)));
-    } else if !complete {
-        info["note"] = json!("Stopped once enough matches were found; use `offset` for more.");
+    let incomplete = |why: String| format!("NOT every file was searched: {why}, with {} of {} candidates checked. Results are incomplete; narrow it with `extensions` and a deeper `path` and search again.", st.checked, total);
+    match stopped {
+        Some("budget") => info["note"] = json!(incomplete(format!("stopped after reading {} (the per-call limit)", fmt::size(CONTENT_BUDGET)))),
+        Some("time") => info["note"] = json!(incomplete(format!("stopped after {} s (the per-call limit)", CONTENT_TIME.as_secs()))),
+        Some(_) => info["note"] = json!("Stopped once enough matches were found; use `offset` for more."),
+        None => {}
     }
     Ok(json!({
         "query": q,
@@ -311,7 +360,7 @@ fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: Sort
         "results": shown,
         "has_more": has_more,
         "content": info,
-        "elapsed_ms": page.elapsed_us as f64 / 1000.0 + st.elapsed.as_secs_f64() * 1000.0,
+        "elapsed_ms": started.elapsed().as_secs_f64() * 1000.0,
     }))
 }
 

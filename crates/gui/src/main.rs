@@ -8,6 +8,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod app;
+mod connect;
 mod highlight;
 mod options;
 mod preview;

@@ -139,6 +139,33 @@ enum Cmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// Connect rapidfind-mcp to AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf). No admin needed.
+    Mcp {
+        #[command(subcommand)]
+        action: McpCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCmd {
+    /// Register with every detected client (or only `--client ...`). Copies
+    /// rapidfind-mcp.exe to %LOCALAPPDATA%\Programs\rapidfind first unless it
+    /// already lives in a stable folder.
+    Install {
+        /// claude-code, claude-desktop, cursor, vscode, vscode-insiders, windsurf
+        #[arg(short, long)]
+        client: Vec<String>,
+        /// rapidfind-mcp.exe to register (default: the one next to this program).
+        #[arg(long)]
+        exe: Option<std::path::PathBuf>,
+    },
+    /// Remove the registration (from every client, or only `--client ...`).
+    Uninstall {
+        #[arg(short, long)]
+        client: Vec<String>,
+    },
+    /// Which clients are installed and where rapidfind is registered.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -153,6 +180,9 @@ enum ServiceCmd {
     Start,
     /// Stop the service; it saves its index first (admin).
     Stop,
+    /// Install, or update if already installed (used by the installer).
+    #[command(hide = true)]
+    InstallOrUpdate,
     /// Entry point used by the Service Control Manager.
     #[command(hide = true)]
     Run,
@@ -284,6 +314,13 @@ fn main() -> anyhow::Result<()> {
             ServiceCmd::Install => service::install()?,
             ServiceCmd::Uninstall => service::uninstall()?,
             ServiceCmd::Update => service::update()?,
+            ServiceCmd::InstallOrUpdate => {
+                if service::query_state()?.is_some() {
+                    service::update()?
+                } else {
+                    service::install()?
+                }
+            }
             ServiceCmd::Start => service::start()?,
             ServiceCmd::Stop => service::stop()?,
             ServiceCmd::Run => service::run()?,
@@ -342,7 +379,7 @@ fn main() -> anyhow::Result<()> {
             let mut stats = None;
             if let Some(cq) = content {
                 // Contents are read here, as the user running the command.
-                let opts = content::ContentOptions { max_size: max_size_mb << 20, binary, ifilter: !no_ifilter, byte_budget: None };
+                let opts = content::ContentOptions { max_size: max_size_mb << 20, binary, ifilter: !no_ifilter, byte_budget: None, time_limit: None };
                 let want = (limit != 0).then_some(limit);
                 let (rows, st) = content::matching_rows(&mut |r| be.call(r), Arc::new(cq), opts, want).map_err(anyhow::Error::msg)?;
                 res.rows = rows;
@@ -414,6 +451,7 @@ fn main() -> anyhow::Result<()> {
             );
             eng.save_all(engine::SAVE_THRESHOLD)?;
         }
+        Cmd::Mcp { ref action } => mcp(action)?,
         Cmd::Du { ref path, ref query, depth, limit } => {
             use rapidfind_core::tree::{NodeRef, TreeRow, TreeSort};
             let mut be = open_backend(&cli, false)?;
@@ -541,6 +579,70 @@ fn main() -> anyhow::Result<()> {
             let res = tui::run(be.as_mut());
             be.finish().context("saving index")?;
             res?;
+        }
+    }
+    Ok(())
+}
+
+fn mcp_clients(ids: &[String]) -> anyhow::Result<Vec<rapidfind_mcp::register::Client>> {
+    use rapidfind_mcp::register::{ALL, Client};
+    if ids.is_empty() {
+        return Ok(ALL.into_iter().filter(|c| c.detected()).collect());
+    }
+    ids.iter()
+        .flat_map(|s| s.split(','))
+        .map(|id| Client::from_id(id.trim()).ok_or_else(|| anyhow::anyhow!("unknown client {id:?}; one of: {}", ALL.map(|c| c.id()).join(", "))))
+        .collect()
+}
+
+fn mcp(action: &McpCmd) -> anyhow::Result<()> {
+    use rapidfind_mcp::register as reg;
+    match action {
+        McpCmd::Status => {
+            for s in reg::status_all() {
+                let state = match (&s.registered, &s.problem) {
+                    (Some(cmd), _) => format!("registered: {cmd}{}", if s.skill { " (+ rapidfind skill)" } else { "" }),
+                    (None, Some(p)) => format!("can't tell: {p}"),
+                    (None, None) if s.detected => "not registered".into(),
+                    _ => "not installed".into(),
+                };
+                println!("  {:<18} {state}", s.client.label());
+            }
+        }
+        McpCmd::Install { client, exe } => {
+            let src = match exe {
+                Some(e) => e.canonicalize().with_context(|| format!("{}", e.display()))?,
+                None => reg::sibling_exe().context("rapidfind-mcp.exe isn't next to this program; pass --exe")?,
+            };
+            let exe = reg::stable_exe(&src).map_err(anyhow::Error::msg)?;
+            let clients = mcp_clients(client)?;
+            if clients.is_empty() {
+                bail!("no supported AI client found (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf); use --client to register anyway");
+            }
+            println!("registering {}", exe.display());
+            let mut failed = 0;
+            for c in clients {
+                match reg::register(c, &exe) {
+                    Ok(()) => println!("  {:<18} done: {}", c.label(), reg::restart_hint(c)),
+                    Err(e) => {
+                        failed += 1;
+                        println!("  {:<18} failed: {e}", c.label());
+                    }
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} client(s) failed");
+            }
+        }
+        McpCmd::Uninstall { client } => {
+            let clients = if client.is_empty() { rapidfind_mcp::register::ALL.to_vec() } else { mcp_clients(client)? };
+            for c in clients {
+                match reg::unregister(c) {
+                    Ok(true) => println!("  {:<18} removed", c.label()),
+                    Ok(false) => {}
+                    Err(e) => println!("  {:<18} failed: {e}", c.label()),
+                }
+            }
         }
     }
     Ok(())

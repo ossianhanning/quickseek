@@ -19,9 +19,22 @@ keeps everything live.
 
 ## Getting started
 
+Run **`rapidfind-setup-<version>-x64.exe`** (from `tools\build-release.ps1`,
+or once published `winget install OssianHanning.rapidfind`). It installs to
+`C:\Program Files\rapidfind`: the background service, a Start menu entry, the
+`rapidfind` command on PATH, optionally starting with Windows, and optionally
+connects your AI assistants (see the MCP section). Uninstall from Apps &
+Features; your index and settings in `%ProgramData%\rapidfind` are kept
+(`rapidfind-setup.exe --uninstall --purge` removes them too).
+
+Silent switches (winget passes `--silent`): `--dir <folder>`, `--no-service`,
+`--no-shortcut`, `--no-path`, `--no-startup`, `--mcp` (connect detected AI
+assistants; off in silent mode unless given), `--mcp-clients cursor,claude-code`,
+`--log <file>`. Through winget: `winget install OssianHanning.rapidfind --custom "--mcp"`.
+
 Reading the MFT needs administrator rights, so the index normally lives in a
 background service. The GUI and CLI talk to it as a normal user over
-`\\.\pipe\rapidfind`.
+`\\.\pipe\rapidfind`. Without the installer:
 
 ```
 rapidfind service install     # once, elevated: copies the exe to %ProgramData%\rapidfind, registers + starts it
@@ -195,11 +208,26 @@ in `%APPDATA%\rapidfind\gui.json`.
 `rapidfind-mcp.exe` is a [Model Context Protocol](https://modelcontextprotocol.io)
 server over stdio. It talks to the service like the GUI does, so it needs no
 elevation, and anything it deletes, it deletes with the rights of the user who
-started it. To register it with Claude Code:
+started it. Registering it is per user and needs no admin, three ways:
 
-```
-claude mcp add rapidfind -- S:\path\to\rapidfind-mcp.exe
-```
+- **GUI:** Tools → Connect AI Assistants… (a checkbox per client).
+- **CLI:** `rapidfind mcp install` (every detected client, or `--client cursor`),
+  `rapidfind mcp status`, `rapidfind mcp uninstall`.
+- **Installer:** the "Connect AI assistants" option (`--mcp` when silent).
+
+Supported clients: Claude Code (through `claude mcp add --scope user`), Claude
+Desktop, Cursor, VS Code and VS Code Insiders (agent mode), and Windsurf. Their
+JSON configs are merged, not replaced. Other servers and the key order are
+kept, a `.rapidfind-backup` copy is written first, and a file with comments is
+left alone (you get the entry to add by hand). When `rapidfind-mcp.exe` isn't
+in a stable place like Program Files, it's copied to
+`%LOCALAPPDATA%\Programs\rapidfind` first, so a rebuild or `cargo clean`
+doesn't break the clients. Restart Claude Desktop afterwards; Claude Code picks
+it up in new sessions.
+
+For Claude Desktop there's also **`rapidfind-<version>.mcpb`**, a Desktop
+Extension built by `tools\build-release.ps1` (or `tools\build-mcpb.ps1`):
+double-click it to install.
 
 | Tool | |
 |---|---|
@@ -212,6 +240,20 @@ claude mcp add rapidfind -- S:\path\to\rapidfind-mcp.exe
 
 On this machine (6.8M files), `cleanup_candidates` answers in 1.6 s,
 `folder_sizes` in about 0.3 s and `search_files` in 10 to 40 ms.
+
+## Releases and winget
+
+`tools\build-release.ps1 -Repo https://github.com/<owner>/rapidfind` builds
+everything into `target\dist`:
+- the installer, with the release binaries embedded (zstd-compressed);
+- the `.mcpb` extension;
+- winget manifests in `winget\manifests\o\OssianHanning\rapidfind\<version>`,
+  carrying the installer's SHA-256 and checked with `winget validate`.
+
+To publish, upload the installer to the GitHub release `v<version>`. Then
+open a pull request with the manifest folder to
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) (or run
+`wingetcreate submit` on it). The manifest templates are in `packaging\winget`.
 
 ## How it is fast
 
@@ -284,8 +326,10 @@ Also:
   - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `ipc.rs` (protocol, sessions, server, client, backends)
 - `crates/cli`: the `rapidfind` binary: CLI, terminal UI and `service.rs` (the Windows service)
 - `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `preview.rs` (preview pane), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
-- `crates/mcp`: `rapidfind-mcp`, the MCP server (`tools.rs`)
-- `tools/`: `shot.ps1` (window screenshot), `gui-mock.ps1` (GUI against the mock service)
+- `crates/mcp`: `rapidfind-mcp`, the MCP server (`tools.rs`) and client registration (`register.rs`)
+- `crates/setup`: `rapidfind-setup`, the installer (`install.rs`, `sys.rs`, `ui.rs`)
+- `packaging/winget`: winget manifest templates
+- `tools/`: `build-release.ps1` (installer, .mcpb, winget manifests), `build-mcpb.ps1`, `shot.ps1` (window screenshot), `gui-mock.ps1` (GUI against the mock service)
 
 ## Prior art
 

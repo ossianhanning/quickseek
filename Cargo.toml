@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp"]
+members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp", "crates/setup"]
+# The installer embeds the other binaries: build it with tools\build-release.ps1.
+default-members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp"]
 
 [workspace.package]
 version = "0.1.0"

@@ -377,11 +377,13 @@ pub struct ContentOptions {
     pub ifilter: bool,
     /// Stop (the rest unchecked) after reading this many bytes in total.
     pub byte_budget: Option<u64>,
+    /// Stop (the rest unchecked) after this long.
+    pub time_limit: Option<Duration>,
 }
 
 impl Default for ContentOptions {
     fn default() -> Self {
-        ContentOptions { max_size: 64 << 20, binary: false, ifilter: true, byte_budget: None }
+        ContentOptions { max_size: 64 << 20, binary: false, ifilter: true, byte_budget: None, time_limit: None }
     }
 }
 
@@ -415,16 +417,19 @@ const OVERLAP: usize = 64 << 10;
 pub struct Budget {
     limit: u64,
     used: AtomicU64,
+    /// A read was refused: some file wasn't (fully) read.
+    refused: AtomicBool,
 }
 
 impl Budget {
     pub fn new(limit: Option<u64>) -> Budget {
-        Budget { limit: limit.unwrap_or(u64::MAX), used: AtomicU64::new(0) }
+        Budget { limit: limit.unwrap_or(u64::MAX), used: AtomicU64::new(0), refused: AtomicBool::new(false) }
     }
     pub(crate) fn take(&self, n: u64) -> bool {
         let before = self.used.fetch_add(n, Relaxed);
         if before.saturating_add(n) > self.limit {
             self.used.fetch_sub(n, Relaxed);
+            self.refused.store(true, Relaxed);
             false
         } else {
             true
@@ -436,8 +441,10 @@ impl Budget {
     pub fn used(&self) -> u64 {
         self.used.load(Relaxed)
     }
+    /// Out of budget: full, or it already had to refuse a read (the last
+    /// few bytes rarely fit a whole chunk).
     pub fn exhausted(&self) -> bool {
-        self.limit != u64::MAX && self.used() >= self.limit
+        self.limit != u64::MAX && (self.used() >= self.limit || self.refused.load(Relaxed))
     }
 }
 
@@ -616,6 +623,8 @@ pub struct Stats {
     pub elapsed: Duration,
     pub cancelled: bool,
     pub budget_exhausted: bool,
+    /// Stopped at [`ContentOptions::time_limit`].
+    pub timed_out: bool,
     pub done: bool,
 }
 
@@ -687,6 +696,11 @@ impl Scan {
             return Ok(None);
         }
         if self.cancel.load(Relaxed) || self.budget.exhausted() {
+            self.finish();
+            return Ok(None);
+        }
+        if self.opts.time_limit.is_some_and(|t| self.start.elapsed() >= t) {
+            self.stats.timed_out = true;
             self.finish();
             return Ok(None);
         }
@@ -876,6 +890,15 @@ mod tests {
         for chunk in 1..12 {
             assert_eq!(cq.check_reader(&mut &data[..], data.len() as u64, &opts, &Budget::new(None), &none, chunk), Outcome::Match, "chunk {chunk}");
         }
+    }
+
+    #[test]
+    fn budget_counts_as_exhausted_once_a_read_is_refused() {
+        let b = Budget::new(Some(10));
+        assert!(b.take(8) && !b.exhausted());
+        assert!(!b.take(5), "over the limit");
+        assert!(b.exhausted(), "2 bytes left, but a file went unread");
+        assert!(!Budget::new(None).exhausted());
     }
 
     #[test]

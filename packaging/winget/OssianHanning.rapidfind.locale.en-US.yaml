@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+PackageIdentifier: OssianHanning.rapidfind
+PackageVersion: {VERSION}
+PackageLocale: en-US
+Publisher: Ossian Hanning
+PackageName: rapidfind
+PackageUrl: {REPO}
+License: MIT OR Apache-2.0
+ShortDescription: Instant file search, folder sizes and an MCP server for AI assistants, for all your drives.
+Description: |-
+  rapidfind indexes every file on your NTFS and ReFS drives from the master file table and keeps the index live
+  from the USN journal, so searching millions of files by name, path wildcards, size or date is instant
+  (like Everything). It also shows a folder size tree of what takes space, indexes network shares and folders,
+  searches file contents, and ships rapidfind-mcp, an MCP server that lets AI assistants find files and free
+  disk space. Installs a background service (so searches run unelevated), the GUI, the CLI and the MCP server.
+  Pass --custom "--mcp" to also connect detected AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf).
+Moniker: rapidfind
+Tags:
+  - search
+  - file-search
+  - everything
+  - disk-usage
+  - ntfs
+  - mcp
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0
