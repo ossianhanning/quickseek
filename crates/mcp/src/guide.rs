@@ -19,7 +19,9 @@ Disk space: disk_overview, then folder_sizes (path like \"D:\\\", depth 1-2, dri
 what grew or shrank since yesterday, last week, a date or a save point: folder_growth (daily snapshots). \
 Before delete_paths, show what would go with sizes and get a yes; it recycles by default, so space is freed only after \
 empty_recycle_bin (ask first) or permanent: true. Online-only OneDrive files are reported apart (they take no disk space). \
-Results that read better as a picture carry an optional `chart` hint (chart type, fields to plot); draw it if you can render charts.";
+After a disk-space answer (disk_overview, folder_sizes, folder_growth, cleanup_candidates), show the result as a chart when your client \
+can render visuals: users of this tool expect a picture of where the space went. The result's first field, `present`, says which chart \
+to draw (type, title, unit) and holds its data ready to plot; put the explanation in prose next to the chart.";
 
 /// Name of the Claude Code skill folder (`~/.claude/skills/<name>/SKILL.md`).
 pub const SKILL_NAME: &str = "rapidfind";

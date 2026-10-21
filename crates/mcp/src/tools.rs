@@ -69,7 +69,7 @@ pub fn list() -> Value {
             "description": format!("What is using disk space: answers \"what has eaten my D: drive\" / \"what is taking space on C:\". Disk usage breakdown (like TreeSize/WinDirStat, but instant from the index): the biggest folders and files under a path, \
     with size, share of the parent and file count, expanded `depth` levels. Without `path`, starts at the drives (with their capacity and free space). \
     With `query`, only matching files count (e.g. `*.mp4` shows where videos take space; `folder: wfn:node_modules` where node_modules are); \
-    a matched folder counts with everything inside it. May carry a `chart` hint (treemap or bar chart). {SYNTAX}"),
+    a matched folder counts with everything inside it. Starts with `present`: the chart to show (treemap or bar) and its data. {SYNTAX}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -89,7 +89,7 @@ pub fn list() -> Value {
             "description": "What changed / grew: answers \"why is my disk filling up\", \"what got bigger this week\", \"where did 20 GB go since yesterday\", \"did the cleanup work\". \
     Compares folder sizes now with a daily snapshot (kept for 31 days daily, then weekly and monthly) or a named save point, and lists the folders and files under `path` \
     by how much they grew or shrank, with sizes then and now and each drive's free space then and now. `depth` follows the biggest changes further down. \
-    Snapshots only hold folders of 10 MB or more, so smaller folders show up as new. With `list_snapshots: true` it only lists the snapshots there are. `timeline` has sizes in every snapshot for a trend chart (see the `chart` hint).",
+    Snapshots only hold folders of 10 MB or more, so smaller folders show up as new. With `list_snapshots: true` it only lists the snapshots there are. Starts with `present`: the charts to show (size over time, what grew and shrank) and their data; `timeline` has the sizes in bytes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1622,7 +1622,12 @@ mod tests {
             (Some("shrinks"), Some(4000)),
             "the rest: {v}"
         );
-        assert!(v["chart"].as_str().unwrap().contains("line chart"), "{v}");
+        assert_eq!(
+            v["present"]["type"],
+            json!("line"),
+            "one chart with limit 1: {v}"
+        );
+        assert_eq!(v.as_object().unwrap().keys().next().unwrap(), "present");
         assert!(call(&mut be, "folder_growth", &json!({ "since": "nonsense" })).is_err());
         assert_eq!(parse_date("1970-01-02"), Some(86_400));
         assert_eq!(parse_date("2026-10-20"), Some(1_792_454_400));
