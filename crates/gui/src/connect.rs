@@ -24,6 +24,8 @@ pub const ID_STATE: i32 = 1150;
 pub const ID_APPLY: i32 = 1190;
 pub const ID_PATH: i32 = 1191;
 pub const ID_RESULT: i32 = 1192;
+/// Top of what's under the client rows (30 px each, from 62).
+const BELOW: i32 = 62 + ALL.len() as i32 * 30 + 8;
 
 thread_local! {
     static HWND_OPEN: RefCell<HWND> = const { RefCell::new(null_mut()) };
@@ -196,7 +198,7 @@ pub fn open(app: &App) {
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             s(620),
-            s(470),
+            s(BELOW + 220),
             owner,
             null_mut(),
             w::hinstance(),
@@ -244,15 +246,15 @@ pub fn open(app: &App) {
                 22,
             );
         }
-        add("Static", "", SS_PATHELLIPSIS, ID_PATH, 16, 250, 580, 20);
-        add("Static", "", 0, ID_RESULT, 16, 276, 580, 110);
+        add("Static", "", SS_PATHELLIPSIS, ID_PATH, 16, BELOW, 580, 20);
+        add("Static", "", 0, ID_RESULT, 16, BELOW + 26, 580, 110);
         add(
             "Button",
             "Apply",
             (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
             ID_APPLY,
             404,
-            396,
+            BELOW + 146,
             96,
             28,
         );
@@ -262,7 +264,7 @@ pub fn open(app: &App) {
             (BS_PUSHBUTTON as u32) | WS_TABSTOP,
             2,
             508,
-            396,
+            BELOW + 146,
             96,
             28,
         );

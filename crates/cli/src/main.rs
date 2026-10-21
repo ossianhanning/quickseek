@@ -876,7 +876,7 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
             let clients = mcp_clients(client)?;
             if clients.is_empty() {
                 bail!(
-                    "no supported AI client found (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf); use --client to register anyway"
+                    "no supported AI client found (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex, Antigravity); use --client to register anyway"
                 );
             }
             println!("registering {}", exe.display());

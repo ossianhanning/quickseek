@@ -367,7 +367,7 @@ pub fn run(a: Args) -> i32 {
         }
         let detected: Vec<&str> = a.opts.mcp.iter().map(|c| c.label()).collect();
         let mcp_text = if detected.is_empty() {
-            "Connect AI assistants (none found: Claude Code, Claude Desktop, Cursor, VS Code, Windsurf)".to_string()
+            "Connect AI assistants (none found: Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex, Antigravity)".to_string()
         } else {
             format!(
                 "Connect AI assistants to rapidfind's MCP server: {}",

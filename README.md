@@ -264,10 +264,14 @@ started it. Registering it is per user and needs no admin, three ways:
 - **Installer:** the "Connect AI assistants" option, on by default, also for winget (`--no-mcp` skips it).
 
 Supported clients: Claude Code (through `claude mcp add --scope user`), Claude
-Desktop, Cursor, VS Code and VS Code Insiders (agent mode), and Windsurf. Their
-JSON configs are merged, not replaced. Other servers and the key order are
-kept, a `.rapidfind-backup` copy is written first, and a file with comments is
-left alone (you get the entry to add by hand). When `rapidfind-mcp.exe` isn't
+Desktop, Cursor, VS Code and VS Code Insiders (agent mode), Windsurf,
+Antigravity (`~/.gemini/config/mcp_config.json`) and Codex
+(`[mcp_servers.rapidfind]` in `~/.codex/config.toml`). Their configs are
+merged, not replaced. Other servers and the key order are kept (Codex's TOML
+keeps its comments and layout too), a `.rapidfind-backup` copy is written
+first, and a JSON file with comments is left alone (you get the entry to add by
+hand). Claude Code and Codex also get the rapidfind skill (`~/.claude/skills`,
+`~/.agents/skills`), which `rapidfind-mcp` keeps up to date after updates. When `rapidfind-mcp.exe` isn't
 in a stable place like Program Files, it's copied to
 `%LOCALAPPDATA%\Programs\rapidfind` first, so a rebuild or `cargo clean`
 doesn't break the clients. Restart Claude Desktop afterwards; Claude Code picks
