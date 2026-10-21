@@ -2,6 +2,7 @@
 //! server with AI clients ([`register`]), shared by `rapidfind-mcp`, the CLI,
 //! the GUI and the installer.
 
+pub mod charts;
 pub mod guide;
 pub mod register;
 pub mod tools;

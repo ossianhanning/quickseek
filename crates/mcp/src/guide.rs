@@ -18,7 +18,8 @@ Finding: search_files (name, path wildcards like users\\*\\*.pdf where * spans f
 Disk space: disk_overview, then folder_sizes (path like \"D:\\\", depth 1-2, drill into the biggest folders) and cleanup_candidates; \
 what grew or shrank since yesterday, last week, a date or a save point: folder_growth (daily snapshots). \
 Before delete_paths, show what would go with sizes and get a yes; it recycles by default, so space is freed only after \
-empty_recycle_bin (ask first) or permanent: true. Online-only OneDrive files are reported apart (they take no disk space).";
+empty_recycle_bin (ask first) or permanent: true. Online-only OneDrive files are reported apart (they take no disk space). \
+Results that read better as a picture carry an optional `chart` hint (chart type, fields to plot); draw it if you can render charts.";
 
 /// Name of the Claude Code skill folder (`~/.claude/skills/<name>/SKILL.md`).
 pub const SKILL_NAME: &str = "rapidfind";

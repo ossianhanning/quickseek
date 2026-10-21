@@ -69,7 +69,7 @@ pub fn list() -> Value {
             "description": format!("What is using disk space: answers \"what has eaten my D: drive\" / \"what is taking space on C:\". Disk usage breakdown (like TreeSize/WinDirStat, but instant from the index): the biggest folders and files under a path, \
     with size, share of the parent and file count, expanded `depth` levels. Without `path`, starts at the drives (with their capacity and free space). \
     With `query`, only matching files count (e.g. `*.mp4` shows where videos take space; `folder: wfn:node_modules` where node_modules are); \
-    a matched folder counts with everything inside it. {SYNTAX}"),
+    a matched folder counts with everything inside it. May carry a `chart` hint (treemap or bar chart). {SYNTAX}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -89,7 +89,7 @@ pub fn list() -> Value {
             "description": "What changed / grew: answers \"why is my disk filling up\", \"what got bigger this week\", \"where did 20 GB go since yesterday\", \"did the cleanup work\". \
     Compares folder sizes now with a daily snapshot (kept for 31 days daily, then weekly and monthly) or a named save point, and lists the folders and files under `path` \
     by how much they grew or shrank, with sizes then and now and each drive's free space then and now. `depth` follows the biggest changes further down. \
-    Snapshots only hold folders of 10 MB or more, so smaller folders show up as new. With `list_snapshots: true` it only lists the snapshots there are.",
+    Snapshots only hold folders of 10 MB or more, so smaller folders show up as new. With `list_snapshots: true` it only lists the snapshots there are. `timeline` has sizes in every snapshot for a trend chart (see the `chart` hint).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -160,7 +160,7 @@ pub fn list() -> Value {
 }
 
 pub fn call(be: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, String> {
-    match name {
+    let r = match name {
         "search_files" => search_files(be, args),
         "folder_sizes" => folder_sizes(be, args),
         "folder_growth" => folder_growth(be, args),
@@ -169,7 +169,8 @@ pub fn call(be: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Str
         "delete_paths" => delete_paths(be, args),
         "empty_recycle_bin" => empty_recycle_bin(args),
         _ => Err(format!("unknown tool: {name}")),
-    }
+    }?;
+    Ok(crate::charts::annotate(name, args, r))
 }
 
 // ---- helpers -------------------------------------------------------------------
@@ -793,6 +794,13 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
             None => ("(all drives)".to_string(), roots),
         };
         let change = level.size as i64 - level.before as i64;
+        let children = g.rows(be, &level, 0)?;
+        let timeline = timeline(
+            be,
+            &list,
+            (path != "(all drives)").then_some((&path, level.size)),
+            &children,
+        );
         Ok::<_, String>(json!({
             "path": path,
             "compared_with": snap(base),
@@ -801,13 +809,65 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
             "size_now": fmt::size(level.size),
             "change": change,
             "change_human": signed(change),
-            "children": g.rows(be, &level, 0)?,
+            "children": children,
+            "timeline": timeline,
             "note": "Sizes come from the index now and from the snapshot then; folders under 10 MB aren't in snapshots. Free space can also change from things outside the index (shadow copies, page file, other drives' data).",
         }))
     })();
     let _ = be.compare("");
     be.tree_close();
     res
+}
+
+/// Sizes in every snapshot (and now) of `path` and the folders that changed
+/// most, for a line chart: `{times, series: [{path, sizes}]}`, sizes in bytes,
+/// null where a snapshot doesn't have the folder. Null with under 3 snapshots.
+fn timeline(
+    be: &mut dyn Backend,
+    snaps: &[rapidfind_core::history::SnapInfo],
+    path: Option<(&String, u64)>,
+    children: &Value,
+) -> Value {
+    if snaps.len() < 3 {
+        return Value::Null;
+    }
+    let mut picked: Vec<(String, u64)> =
+        path.map(|(p, now)| (p.clone(), now)).into_iter().collect();
+    let mut kids: Vec<&Value> = children
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["type"] == "folder" && c["change"].as_i64().unwrap_or(0) != 0)
+        .collect();
+    kids.sort_by_key(|c| std::cmp::Reverse(c["change"].as_i64().unwrap_or(0).unsigned_abs()));
+    picked.extend(
+        kids.iter()
+            .take(5)
+            .filter_map(|c| Some((c["path"].as_str()?.to_string(), c["size_now"].as_u64()?))),
+    );
+    if picked.is_empty() {
+        return Value::Null;
+    }
+    let Ok(s) = be.series(&picked.iter().map(|p| p.0.clone()).collect::<Vec<_>>()) else {
+        return Value::Null;
+    };
+    let mut times: Vec<String> = s.snaps.iter().map(|x| unix_time(x.time)).collect();
+    times.push("now".into());
+    let series: Vec<Value> = s
+        .rows
+        .iter()
+        .zip(&picked)
+        .map(|(row, (_, now))| {
+            let sizes: Vec<Value> = row
+                .sizes
+                .iter()
+                .map(|&v| if v == u64::MAX { Value::Null } else { json!(v) })
+                .chain([json!(now)])
+                .collect();
+            json!({ "path": row.path, "sizes": sizes })
+        })
+        .collect();
+    json!({ "times": times, "series": series })
 }
 
 /// Problems the service reports for its volumes, e.g. an index it can't
@@ -1450,7 +1510,7 @@ mod tests {
         eng.history().unwrap().save(&s).unwrap();
         std::fs::write(dir.join("grows").join("c.bin"), vec![1u8; 4000]).unwrap();
         let eng = engine(&dir);
-        let mut be = rapidfind_core::ipc::Local::new(eng);
+        let mut be = rapidfind_core::ipc::Local::new(eng.clone());
         let v = call(&mut be, "folder_growth", &json!({ "list_snapshots": true })).unwrap();
         assert_eq!(v["snapshots"][0]["save_point"], json!("before"), "{v}");
         let p = dir.to_string_lossy().to_string();
@@ -1467,7 +1527,26 @@ mod tests {
                 (Some("grows"), Some(4000))
             );
             assert_eq!(kids[0]["children"][0]["name"], json!("c.bin"));
+            assert!(v["timeline"].is_null(), "one snapshot: no timeline");
         }
+        // With three snapshots: sizes over time for the path and what changed, ending with now.
+        for _ in 0..2 {
+            s.time += 86_400;
+            s.name.clear();
+            eng.history().unwrap().save(&s).unwrap();
+        }
+        let v = call(&mut be, "folder_growth", &json!({ "path": p, "days": 3 })).unwrap();
+        let tl = &v["timeline"];
+        assert_eq!(tl["times"].as_array().unwrap().len(), 4, "{v}");
+        assert_eq!(tl["times"][3], json!("now"));
+        assert_eq!(tl["series"][0]["path"], json!(p));
+        assert_eq!(
+            tl["series"][0]["sizes"],
+            json!([1500, 1500, 1500, 5500]),
+            "{v}"
+        );
+        assert!(tl["series"][1]["path"].as_str().unwrap().ends_with("grows"));
+        assert!(v["chart"].as_str().unwrap().contains("line chart"), "{v}");
         assert!(call(&mut be, "folder_growth", &json!({ "since": "nonsense" })).is_err());
         assert_eq!(parse_date("1970-01-02"), Some(86_400));
         assert_eq!(parse_date("2026-10-20"), Some(1_792_454_400));
