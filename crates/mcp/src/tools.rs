@@ -683,7 +683,14 @@ impl Growth {
     fn rows(&self, be: &mut dyn Backend, level: &TreeLevel, depth: u64) -> Result<Value, String> {
         let mut out = Vec::new();
         let mut listed = 0i64;
-        let changed: Vec<&TreeRow> = level.rows.iter().filter(|r| r.change() != 0).collect();
+        // Biggest change first, growing or shrinking (the tree sorts by signed change).
+        let mut changed: Vec<&TreeRow> = level.rows.iter().filter(|r| r.change() != 0).collect();
+        changed.sort_by(|a, b| {
+            b.change()
+                .unsigned_abs()
+                .cmp(&a.change().unsigned_abs())
+                .then_with(|| a.name.cmp(&b.name))
+        });
         for r in changed.iter().take(self.limit as usize) {
             listed += r.change();
             let mut o = json!({
@@ -798,6 +805,7 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
         let timeline = timeline(
             be,
             &list,
+            &base.id,
             (path != "(all drives)").then_some((&path, level.size)),
             &children,
         );
@@ -805,8 +813,10 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
             "path": path,
             "compared_with": snap(base),
             "days_ago": ((now - base.time) as f64 / 86_400.0 * 10.0).round() / 10.0,
-            "size_then": fmt::size(level.before),
-            "size_now": fmt::size(level.size),
+            "size_then": level.before,
+            "size_now": level.size,
+            "then_human": fmt::size(level.before),
+            "now_human": fmt::size(level.size),
             "change": change,
             "change_human": signed(change),
             "children": children,
@@ -820,15 +830,30 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
 }
 
 /// Sizes in every snapshot (and now) of `path` and the folders that changed
-/// most, for a line chart: `{times, series: [{path, sizes}]}`, sizes in bytes,
-/// null where a snapshot doesn't have the folder. Null with under 3 snapshots.
+/// most, for a line chart: `{times, compared, series: [{path, sizes}]}`, sizes
+/// in bytes (`compared`: index of the snapshot compared with),
+/// null where a snapshot doesn't have the folder. Null with under 2 snapshots (at different times).
 fn timeline(
     be: &mut dyn Backend,
     snaps: &[rapidfind_core::history::SnapInfo],
+    base: &str,
     path: Option<(&String, u64)>,
     children: &Value,
 ) -> Value {
-    if snaps.len() < 3 {
+    // One point per time shown (a daily snapshot and a save point can share a
+    // minute): the compared snapshot if it's one of them, else the latest.
+    let mut keep: Vec<usize> = Vec::new();
+    for (i, x) in snaps.iter().enumerate() {
+        match keep.last() {
+            Some(&j) if unix_time(snaps[j].time) == unix_time(x.time) => {
+                if snaps[j].id != base {
+                    *keep.last_mut().unwrap() = i;
+                }
+            }
+            _ => keep.push(i),
+        }
+    }
+    if keep.len() < 2 {
         return Value::Null;
     }
     let mut picked: Vec<(String, u64)> =
@@ -851,23 +876,27 @@ fn timeline(
     let Ok(s) = be.series(&picked.iter().map(|p| p.0.clone()).collect::<Vec<_>>()) else {
         return Value::Null;
     };
-    let mut times: Vec<String> = s.snaps.iter().map(|x| unix_time(x.time)).collect();
+    let mut times: Vec<String> = keep.iter().map(|&i| unix_time(s.snaps[i].time)).collect();
     times.push("now".into());
+    let compared = keep.iter().position(|&i| s.snaps[i].id == base);
     let series: Vec<Value> = s
         .rows
         .iter()
         .zip(&picked)
         .map(|(row, (_, now))| {
-            let sizes: Vec<Value> = row
-                .sizes
+            let sizes: Vec<Value> = keep
                 .iter()
-                .map(|&v| if v == u64::MAX { Value::Null } else { json!(v) })
+                .map(|&i| match row.sizes.get(i) {
+                    Some(&v) if v != u64::MAX => json!(v),
+                    _ => Value::Null,
+                })
                 .chain([json!(now)])
                 .collect();
             json!({ "path": row.path, "sizes": sizes })
         })
         .collect();
-    json!({ "times": times, "series": series })
+    // Same bytes as size_then (at `compared`) and size_now (the last point).
+    json!({ "times": times, "compared": compared, "series": series })
 }
 
 /// Problems the service reports for its volumes, e.g. an index it can't
@@ -1489,6 +1518,9 @@ mod tests {
         std::fs::create_dir_all(dir.join("same")).unwrap();
         std::fs::write(dir.join("grows").join("a.bin"), vec![1u8; 1000]).unwrap();
         std::fs::write(dir.join("same").join("b.bin"), vec![1u8; 500]).unwrap();
+        std::fs::create_dir_all(dir.join("shrinks")).unwrap();
+        std::fs::write(dir.join("shrinks").join("big.bin"), vec![1u8; 9000]).unwrap();
+        std::fs::write(dir.join("shrinks").join("keep.bin"), vec![1u8; 100]).unwrap();
         let engine = |d: &std::path::Path| {
             let e = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(
                 &d.to_string_lossy(),
@@ -1509,6 +1541,7 @@ mod tests {
         s.time -= 3 * 86_400;
         eng.history().unwrap().save(&s).unwrap();
         std::fs::write(dir.join("grows").join("c.bin"), vec![1u8; 4000]).unwrap();
+        std::fs::remove_file(dir.join("shrinks").join("big.bin")).unwrap();
         let eng = engine(&dir);
         let mut be = rapidfind_core::ipc::Local::new(eng.clone());
         let v = call(&mut be, "folder_growth", &json!({ "list_snapshots": true })).unwrap();
@@ -1519,33 +1552,76 @@ mod tests {
             json!({ "path": p, "since": "before" }),
         ] {
             let v = call(&mut be, "folder_growth", &args).unwrap();
-            assert_eq!(v["change"], json!(4000), "{v}");
-            let kids = v["children"].as_array().unwrap();
-            assert_eq!(kids.len(), 1, "unchanged folders are left out: {v}");
+            assert_eq!(v["change"], json!(-5000), "{v}");
             assert_eq!(
-                (kids[0]["name"].as_str(), kids[0]["change"].as_i64()),
-                (Some("grows"), Some(4000))
+                (v["size_then"].as_u64(), v["size_now"].as_u64()),
+                (Some(10600), Some(5600))
             );
-            assert_eq!(kids[0]["children"][0]["name"], json!("c.bin"));
+            let kids = v["children"].as_array().unwrap();
+            assert_eq!(kids.len(), 2, "unchanged folders are left out: {v}");
+            // Biggest change first, also when it's a shrink.
+            let k: Vec<_> = kids
+                .iter()
+                .map(|k| (k["name"].as_str(), k["change"].as_i64()))
+                .collect();
+            assert_eq!(
+                k,
+                [(Some("shrinks"), Some(-9000)), (Some("grows"), Some(4000))]
+            );
+            assert_eq!(kids[1]["children"][0]["name"], json!("c.bin"));
             assert!(v["timeline"].is_null(), "one snapshot: no timeline");
         }
         // With three snapshots: sizes over time for the path and what changed, ending with now.
-        for _ in 0..2 {
-            s.time += 86_400;
-            s.name.clear();
+        // A save point taken at the same moment as a daily snapshot is one point.
+        for name in ["", "", "same minute"] {
+            if name.is_empty() {
+                s.time += 86_400;
+            }
+            s.name = name.into();
             eng.history().unwrap().save(&s).unwrap();
         }
-        let v = call(&mut be, "folder_growth", &json!({ "path": p, "days": 3 })).unwrap();
+        assert_eq!(eng.history().unwrap().list().len(), 4);
+        let v = call(
+            &mut be,
+            "folder_growth",
+            &json!({ "path": p, "since": "before", "limit": 1 }),
+        )
+        .unwrap();
         let tl = &v["timeline"];
-        assert_eq!(tl["times"].as_array().unwrap().len(), 4, "{v}");
-        assert_eq!(tl["times"][3], json!("now"));
+        let times = tl["times"].as_array().unwrap();
+        assert_eq!(times.len(), 4, "{v}");
+        assert_eq!(
+            times.iter().collect::<HashSet<_>>().len(),
+            4,
+            "unique times: {v}"
+        );
+        assert_eq!(times[3], json!("now"));
         assert_eq!(tl["series"][0]["path"], json!(p));
         assert_eq!(
             tl["series"][0]["sizes"],
-            json!([1500, 1500, 1500, 5500]),
+            json!([10600, 10600, 10600, 5600]),
             "{v}"
         );
-        assert!(tl["series"][1]["path"].as_str().unwrap().ends_with("grows"));
+        // The chart and the summary use the same bytes.
+        let at = |i: usize| tl["series"][0]["sizes"][i].as_u64();
+        assert_eq!(
+            at(tl["compared"].as_u64().unwrap() as usize),
+            v["size_then"].as_u64()
+        );
+        assert_eq!(at(3), v["size_now"].as_u64());
+        assert!(
+            tl["series"][1]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("shrinks"),
+            "{v}"
+        );
+        let kids = v["children"].as_array().unwrap();
+        assert_eq!(
+            (kids[0]["name"].as_str(), kids[1]["change"].as_i64()),
+            (Some("shrinks"), Some(4000)),
+            "the rest: {v}"
+        );
         assert!(v["chart"].as_str().unwrap().contains("line chart"), "{v}");
         assert!(call(&mut be, "folder_growth", &json!({ "since": "nonsense" })).is_err());
         assert_eq!(parse_date("1970-01-02"), Some(86_400));
