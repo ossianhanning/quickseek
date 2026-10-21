@@ -89,7 +89,12 @@ pub struct Node {
 
 impl Node {
     pub fn node_ref(&self) -> NodeRef {
-        NodeRef { vol: self.row.vol.clone(), idx: self.row.idx, epoch: self.row.epoch, path: self.row.full_path() }
+        NodeRef {
+            vol: self.row.vol.clone(),
+            idx: self.row.idx,
+            epoch: self.row.epoch,
+            path: self.row.full_path(),
+        }
     }
 
     pub fn expandable(&self) -> bool {
@@ -97,7 +102,11 @@ impl Node {
     }
 
     pub fn fraction(&self) -> f64 {
-        if self.parent_size == 0 { 0.0 } else { (self.row.size as f64 / self.parent_size as f64).clamp(0.0, 1.0) }
+        if self.parent_size == 0 {
+            0.0
+        } else {
+            (self.row.size as f64 / self.parent_size as f64).clamp(0.0, 1.0)
+        }
     }
 
     pub fn path(&self) -> String {
@@ -106,7 +115,8 @@ impl Node {
 
     /// The bar's "then" share of the parent (now), when comparing.
     pub fn before_fraction(&self) -> Option<f64> {
-        (self.row.has_before && self.parent_size > 0).then(|| (self.row.before as f64 / self.parent_size as f64).clamp(0.0, 1.0))
+        (self.row.has_before && self.parent_size > 0)
+            .then(|| (self.row.before as f64 / self.parent_size as f64).clamp(0.0, 1.0))
     }
 }
 
@@ -128,26 +138,48 @@ impl Model {
             .into_iter()
             .map(|r| {
                 let parent_size = if r.capacity > 0 { r.capacity } else { size };
-                Node { row: r, depth: 0, expanded: false, parent_size, deleting: false }
+                Node {
+                    row: r,
+                    depth: 0,
+                    expanded: false,
+                    parent_size,
+                    deleting: false,
+                }
             })
             .collect();
     }
 
     /// Inserts `children` under node `i` (marking it expanded).
     pub fn expand(&mut self, i: usize, children: Vec<TreeRow>) {
-        let Some(n) = self.nodes.get_mut(i) else { return };
+        let Some(n) = self.nodes.get_mut(i) else {
+            return;
+        };
         n.expanded = true;
         let (depth, size) = (n.depth + 1, n.row.size);
-        let new: Vec<Node> = children.into_iter().map(|r| Node { row: r, depth, expanded: false, parent_size: size, deleting: false }).collect();
+        let new: Vec<Node> = children
+            .into_iter()
+            .map(|r| Node {
+                row: r,
+                depth,
+                expanded: false,
+                parent_size: size,
+                deleting: false,
+            })
+            .collect();
         self.nodes.splice(i + 1..i + 1, new);
     }
 
     /// Removes everything below node `i`.
     pub fn collapse(&mut self, i: usize) {
-        let Some(n) = self.nodes.get_mut(i) else { return };
+        let Some(n) = self.nodes.get_mut(i) else {
+            return;
+        };
         n.expanded = false;
         let d = n.depth;
-        let end = self.nodes[i + 1..].iter().position(|x| x.depth <= d).map_or(self.nodes.len(), |p| i + 1 + p);
+        let end = self.nodes[i + 1..]
+            .iter()
+            .position(|x| x.depth <= d)
+            .map_or(self.nodes.len(), |p| i + 1 + p);
         self.nodes.drain(i + 1..end);
     }
 
@@ -158,7 +190,11 @@ impl Model {
 
     /// Paths of expanded nodes, parents first (to restore after a rebuild).
     pub fn expanded_paths(&self) -> Vec<String> {
-        self.nodes.iter().filter(|n| n.expanded).map(Node::path).collect()
+        self.nodes
+            .iter()
+            .filter(|n| n.expanded)
+            .map(Node::path)
+            .collect()
     }
 
     /// Marks the nodes at `paths` as being deleted and takes their size and
@@ -167,12 +203,21 @@ impl Model {
     pub fn mark_deleting(&mut self, paths: &[String]) -> u64 {
         let mut freed = 0;
         for p in paths {
-            let Some(i) = self.find(p).filter(|&i| !self.nodes[i].deleting) else { continue };
+            let Some(i) = self.find(p).filter(|&i| !self.nodes[i].deleting) else {
+                continue;
+            };
             // Inside a folder already being deleted: already counted.
             if self.ancestors(i).iter().any(|&a| self.nodes[a].deleting) {
                 continue;
             }
-            let (size, files) = (self.nodes[i].row.size, if self.nodes[i].row.is_dir { self.nodes[i].row.files } else { 1 });
+            let (size, files) = (
+                self.nodes[i].row.size,
+                if self.nodes[i].row.is_dir {
+                    self.nodes[i].row.files
+                } else {
+                    1
+                },
+            );
             self.nodes[i].deleting = true;
             for a in self.ancestors(i) {
                 let r = &mut self.nodes[a].row;
@@ -199,13 +244,18 @@ impl Model {
 
     pub fn find(&self, path: &str) -> Option<usize> {
         let p = path.trim_end_matches('\\');
-        self.nodes.iter().position(|n| n.path().trim_end_matches('\\').eq_ignore_ascii_case(p))
+        self.nodes
+            .iter()
+            .position(|n| n.path().trim_end_matches('\\').eq_ignore_ascii_case(p))
     }
 }
 
 /// Is `path` this node's path or inside it?
 pub fn contains(node_path: &str, path: &str) -> bool {
-    let (a, b) = (node_path.trim_end_matches('\\').to_lowercase(), path.trim_end_matches('\\').to_lowercase());
+    let (a, b) = (
+        node_path.trim_end_matches('\\').to_lowercase(),
+        path.trim_end_matches('\\').to_lowercase(),
+    );
     b == a || (b.starts_with(&a) && b.as_bytes().get(a.len()) == Some(&b'\\'))
 }
 
@@ -213,7 +263,12 @@ pub fn cell_text(n: &Node, col: i32) -> String {
     let r = &n.row;
     match col {
         0 if n.deleting => format!("{}   (deleting…)", r.name),
-        0 if r.capacity > 0 => format!("{}   {} free of {}", r.name, fmt::size(r.free), fmt::size(r.capacity)),
+        0 if r.capacity > 0 => format!(
+            "{}   {} free of {}",
+            r.name,
+            fmt::size(r.free),
+            fmt::size(r.capacity)
+        ),
         0 => r.name.clone(),
         1 if r.has_size || !r.is_dir => fmt::size(r.size),
         2 => format!("{:.1} %", n.fraction() * 100.0),
@@ -232,12 +287,32 @@ pub fn cell_text(n: &Node, col: i32) -> String {
 
 /// Rectangle of column `col` in row `i` (header order, horizontally scrolled).
 pub fn cell_rect(list: HWND, i: usize, col: i32) -> RECT {
-    let mut row = RECT { left: LVIR_BOUNDS as i32, top: 0, right: 0, bottom: 0 };
+    let mut row = RECT {
+        left: LVIR_BOUNDS as i32,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     send(list, LVM_GETITEMRECT, i, &mut row as *mut _ as isize);
     let header = send(list, LVM_GETHEADER, 0, 0) as HWND;
-    let mut h = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    send(header, HDM_GETITEMRECT, col as usize, &mut h as *mut _ as isize);
-    RECT { left: row.left + h.left, top: row.top, right: row.left + h.right, bottom: row.bottom }
+    let mut h = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    send(
+        header,
+        HDM_GETITEMRECT,
+        col as usize,
+        &mut h as *mut _ as isize,
+    );
+    RECT {
+        left: row.left + h.left,
+        top: row.top,
+        right: row.left + h.right,
+        bottom: row.bottom,
+    }
 }
 
 /// Indent step and the +/− box's horizontal span within a name cell.
@@ -260,9 +335,19 @@ pub struct Paint {
 fn colors(p: &Paint) -> (COLORREF, COLORREF) {
     unsafe {
         if p.classic_sel {
-            (GetSysColor(COLOR_HIGHLIGHT), GetSysColor(COLOR_HIGHLIGHTTEXT))
+            (
+                GetSysColor(COLOR_HIGHLIGHT),
+                GetSysColor(COLOR_HIGHLIGHTTEXT),
+            )
         } else {
-            (GetSysColor(COLOR_WINDOW), GetSysColor(if p.dim { COLOR_GRAYTEXT } else { COLOR_WINDOWTEXT }))
+            (
+                GetSysColor(COLOR_WINDOW),
+                GetSysColor(if p.dim {
+                    COLOR_GRAYTEXT
+                } else {
+                    COLOR_WINDOWTEXT
+                }),
+            )
         }
     }
 }
@@ -282,7 +367,16 @@ fn text_at(hdc: HDC, s: &str, x: i32, rc: &RECT, right_align: bool) -> i32 {
         GetTextExtentPoint32W(hdc, w16.as_ptr(), w16.len() as i32, &mut sz);
         let x = if right_align { rc.right - sz.cx } else { x };
         let y = rc.top + (rc.bottom - rc.top - sz.cy) / 2;
-        ExtTextOutW(hdc, x, y, ETO_CLIPPED, rc, w16.as_ptr(), w16.len() as u32, null());
+        ExtTextOutW(
+            hdc,
+            x,
+            y,
+            ETO_CLIPPED,
+            rc,
+            w16.as_ptr(),
+            w16.len() as u32,
+            null(),
+        );
         x + sz.cx
     }
 }
@@ -319,18 +413,32 @@ pub fn draw_name(list: HWND, p: &Paint, n: &Node, rc: RECT, icon: i32, image_lis
         }
         let sz = GetSystemMetricsForDpi(SM_CXSMICON, w::dpi(list) as u32);
         let ix = gx2 + px(list, 2);
-        ImageList_Draw(image_list as HIMAGELIST, icon, p.hdc, ix, cy - sz / 2, ILD_TRANSPARENT);
+        ImageList_Draw(
+            image_list as HIMAGELIST,
+            icon,
+            p.hdc,
+            ix,
+            cy - sz / 2,
+            ILD_TRANSPARENT,
+        );
         SetBkMode(p.hdc, TRANSPARENT as i32);
         SetTextColor(p.hdc, fg);
         let old = SelectObject(p.hdc, if n.row.matched { p.bold } else { p.font } as _);
-        let text_rc = RECT { left: ix + sz + px(list, 4), ..rc };
+        let text_rc = RECT {
+            left: ix + sz + px(list, 4),
+            ..rc
+        };
         let end = text_at(p.hdc, &n.row.name, text_rc.left, &text_rc, false);
         SelectObject(p.hdc, p.font as _);
         if n.deleting {
             text_at(p.hdc, "   deleting…", end, &text_rc, false);
         } else if n.row.capacity > 0 {
             SetTextColor(p.hdc, if p.classic_sel { fg } else { 0x0070_7070 });
-            let extra = format!("   {} free of {}", fmt::size(n.row.free), fmt::size(n.row.capacity));
+            let extra = format!(
+                "   {} free of {}",
+                fmt::size(n.row.free),
+                fmt::size(n.row.capacity)
+            );
             text_at(p.hdc, &extra, end, &text_rc, false);
         }
         SelectObject(p.hdc, old);
@@ -346,12 +454,23 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
         }
         let pad = px(list, 3);
         let text_w = px(list, 52);
-        let track = RECT { left: rc.left + pad * 2, top: rc.top + pad, right: (rc.right - text_w).max(rc.left + pad * 2), bottom: rc.bottom - pad };
+        let track = RECT {
+            left: rc.left + pad * 2,
+            top: rc.top + pad,
+            right: (rc.right - text_w).max(rc.left + pad * 2),
+            bottom: rc.bottom - pad,
+        };
         fill(p.hdc, &track, 0x00EC_E8E4);
         let span = (track.right - track.left) as f64;
         let w = (span * n.fraction()).round() as i32;
         // Folders in a stronger blue than files; roots (share of the disk) in teal.
-        let c: COLORREF = if n.row.capacity > 0 { 0x0098_8A00 } else if n.row.is_dir { 0x00D7_7800 } else { 0x00F0_B060 };
+        let c: COLORREF = if n.row.capacity > 0 {
+            0x0098_8A00
+        } else if n.row.is_dir {
+            0x00D7_7800
+        } else {
+            0x00F0_B060
+        };
         match n.before_fraction() {
             // Comparing: solid bar up to the smaller of then and now, the
             // growth in red, and a dashed outline where shrunk space was.
@@ -359,15 +478,36 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
                 let bw = (span * bf).round() as i32;
                 let common = w.min(bw);
                 if common > 0 {
-                    fill(p.hdc, &RECT { right: track.left + common, ..track }, c);
+                    fill(
+                        p.hdc,
+                        &RECT {
+                            right: track.left + common,
+                            ..track
+                        },
+                        c,
+                    );
                 }
                 if w > bw {
-                    fill(p.hdc, &RECT { left: track.left + bw, right: track.left + w, ..track }, GROW);
+                    fill(
+                        p.hdc,
+                        &RECT {
+                            left: track.left + bw,
+                            right: track.left + w,
+                            ..track
+                        },
+                        GROW,
+                    );
                 } else if bw > w {
                     let pen = CreatePen(PS_DOT, 1, SHRINK);
                     let old_pen = SelectObject(p.hdc, pen as _);
                     let old_brush = SelectObject(p.hdc, GetStockObject(NULL_BRUSH));
-                    Rectangle(p.hdc, track.left + w, track.top, track.left + bw, track.bottom);
+                    Rectangle(
+                        p.hdc,
+                        track.left + w,
+                        track.top,
+                        track.left + bw,
+                        track.bottom,
+                    );
                     SelectObject(p.hdc, old_pen);
                     SelectObject(p.hdc, old_brush);
                     DeleteObject(pen as _);
@@ -382,14 +522,31 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
                     DeleteObject(pen as _);
                 }
             }
-            None if w > 0 => fill(p.hdc, &RECT { right: track.left + w, ..track }, c),
+            None if w > 0 => fill(
+                p.hdc,
+                &RECT {
+                    right: track.left + w,
+                    ..track
+                },
+                c,
+            ),
             None => {}
         }
         SetBkMode(p.hdc, TRANSPARENT as i32);
         SetTextColor(p.hdc, fg);
         let old = SelectObject(p.hdc, p.font as _);
-        let text_rc = RECT { left: track.right, right: rc.right - pad * 2, ..rc };
-        text_at(p.hdc, &format!("{:.1} %", n.fraction() * 100.0), 0, &text_rc, true);
+        let text_rc = RECT {
+            left: track.right,
+            right: rc.right - pad * 2,
+            ..rc
+        };
+        text_at(
+            p.hdc,
+            &format!("{:.1} %", n.fraction() * 100.0),
+            0,
+            &text_rc,
+            true,
+        );
         SelectObject(p.hdc, old);
     }
 }
@@ -406,11 +563,42 @@ pub fn draw_change(list: HWND, p: &Paint, n: &Node, rc: RECT) {
         }
         let d = n.row.change();
         SetBkMode(p.hdc, TRANSPARENT as i32);
-        SetTextColor(p.hdc, if p.classic_sel { fg } else if d > 0 { GROW } else if d < 0 { SHRINK } else { 0x0080_8080 });
-        let old = SelectObject(p.hdc, if d.unsigned_abs() >= 1 << 30 { p.bold } else { p.font } as _);
+        SetTextColor(
+            p.hdc,
+            if p.classic_sel {
+                fg
+            } else if d > 0 {
+                GROW
+            } else if d < 0 {
+                SHRINK
+            } else {
+                0x0080_8080
+            },
+        );
+        let old = SelectObject(
+            p.hdc,
+            if d.unsigned_abs() >= 1 << 30 {
+                p.bold
+            } else {
+                p.font
+            } as _,
+        );
         let pad = px(list, 6);
-        let text = if n.row.changed { format!("{} new", signed_size(d)) } else { signed_size(d) };
-        text_at(p.hdc, &text, 0, &RECT { right: rc.right - pad, ..rc }, true);
+        let text = if n.row.changed {
+            format!("{} new", signed_size(d))
+        } else {
+            signed_size(d)
+        };
+        text_at(
+            p.hdc,
+            &text,
+            0,
+            &RECT {
+                right: rc.right - pad,
+                ..rc
+            },
+            true,
+        );
         SelectObject(p.hdc, old);
     }
 }
@@ -424,7 +612,10 @@ pub fn draw_trend(list: HWND, p: &Paint, n: &Node, rc: RECT, series: Option<&[u6
             fill(p.hdc, &rc, bg);
         }
         let Some(series) = series else { return };
-        let mut v: Vec<u64> = series.iter().map(|&x| if x == u64::MAX { 0 } else { x }).collect();
+        let mut v: Vec<u64> = series
+            .iter()
+            .map(|&x| if x == u64::MAX { 0 } else { x })
+            .collect();
         v.push(n.row.size);
         if v.len() < 2 {
             return;
@@ -436,11 +627,24 @@ pub fn draw_trend(list: HWND, p: &Paint, n: &Node, rc: RECT, series: Option<&[u6
         let pts: Vec<POINT> = v
             .iter()
             .enumerate()
-            .map(|(i, &x)| POINT { x: x0 + ((x1 - x0) as f64 * i as f64 / (v.len() - 1) as f64) as i32, y: y1 - (((x - lo) as f64 / span) * (y1 - y0) as f64) as i32 })
+            .map(|(i, &x)| POINT {
+                x: x0 + ((x1 - x0) as f64 * i as f64 / (v.len() - 1) as f64) as i32,
+                y: y1 - (((x - lo) as f64 / span) * (y1 - y0) as f64) as i32,
+            })
             .collect();
         let rising = v.last() > v.first();
         let flat = hi - lo < (hi / 100).max(1 << 20);
-        let pen = CreatePen(PS_SOLID, px(list, 2).max(1), if flat { 0x0080_8780 } else if rising { GROW } else { SHRINK });
+        let pen = CreatePen(
+            PS_SOLID,
+            px(list, 2).max(1),
+            if flat {
+                0x0080_8780
+            } else if rising {
+                GROW
+            } else {
+                SHRINK
+            },
+        );
         let old = SelectObject(p.hdc, pen as _);
         Polyline(p.hdc, pts.as_ptr(), pts.len() as i32);
         SelectObject(p.hdc, old);
@@ -456,18 +660,45 @@ mod tests {
     use super::*;
 
     fn row(name: &str, dir: &str, size: u64, is_dir: bool) -> TreeRow {
-        TreeRow { name: name.into(), dir: dir.into(), size, is_dir, has_children: is_dir, has_size: true, ..Default::default() }
+        TreeRow {
+            name: name.into(),
+            dir: dir.into(),
+            size,
+            is_dir,
+            has_children: is_dir,
+            has_size: true,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn expand_collapse_and_paths() {
         let mut m = Model::default();
-        m.set_roots(100, 3, vec![TreeRow { capacity: 400, ..row("C:", "", 100, true) }, row("D:", "", 50, true)]);
+        m.set_roots(
+            100,
+            3,
+            vec![
+                TreeRow {
+                    capacity: 400,
+                    ..row("C:", "", 100, true)
+                },
+                row("D:", "", 50, true),
+            ],
+        );
         assert_eq!(m.nodes[0].parent_size, 400); // a root's bar is its share of the disk
         assert_eq!(m.nodes[1].parent_size, 100);
-        m.expand(0, vec![row("Users", r"C:\", 80, true), row("pagefile.sys", r"C:\", 20, false)]);
+        m.expand(
+            0,
+            vec![
+                row("Users", r"C:\", 80, true),
+                row("pagefile.sys", r"C:\", 20, false),
+            ],
+        );
         m.expand(1, vec![row("me", r"C:\Users", 60, true)]);
-        assert_eq!(m.nodes.iter().map(|n| n.depth).collect::<Vec<_>>(), [0, 1, 2, 1, 0]);
+        assert_eq!(
+            m.nodes.iter().map(|n| n.depth).collect::<Vec<_>>(),
+            [0, 1, 2, 1, 0]
+        );
         assert_eq!(m.nodes[2].path(), r"C:\Users\me");
         assert_eq!(m.nodes[2].parent_size, 80);
         assert!((m.nodes[1].fraction() - 0.8).abs() < 1e-9);
@@ -477,13 +708,28 @@ mod tests {
         assert_eq!(m.find(r"c:\users"), Some(1));
         m.collapse(0);
         assert_eq!(m.nodes.len(), 2);
-        assert!(contains(r"C:\Users", r"c:\users\me\x") && !contains(r"C:\Use", r"C:\Users") && contains(r"C:\", r"C:\a"));
+        assert!(
+            contains(r"C:\Users", r"c:\users\me\x")
+                && !contains(r"C:\Use", r"C:\Users")
+                && contains(r"C:\", r"C:\a")
+        );
         assert_eq!(cell_text(&m.nodes[0], 2), "25.0 %");
         assert_eq!(column_sort(3), Some(TreeSort::Files));
         assert_eq!(sort_from(sort_name(TreeSort::Modified)), TreeSort::Modified);
         assert_eq!(sort_from(sort_name(TreeSort::Change)), TreeSort::Change);
-        assert_eq!((signed_size(5 << 30), signed_size(-(3 << 20)), signed_size(0)), ("+5.0 GB".into(), "\u{2212}3.0 MB".into(), "0 B".into()));
-        m.nodes[0].row = TreeRow { has_before: true, before: 200, ..m.nodes[0].row.clone() };
+        assert_eq!(
+            (
+                signed_size(5 << 30),
+                signed_size(-(3 << 20)),
+                signed_size(0)
+            ),
+            ("+5.0 GB".into(), "\u{2212}3.0 MB".into(), "0 B".into())
+        );
+        m.nodes[0].row = TreeRow {
+            has_before: true,
+            before: 200,
+            ..m.nodes[0].row.clone()
+        };
         assert_eq!(m.nodes[0].before_fraction(), Some(0.5));
         assert_eq!(cell_text(&m.nodes[0], 6), "\u{2212}100 B");
     }
@@ -491,13 +737,46 @@ mod tests {
     #[test]
     fn deleting_takes_sizes_off_at_once() {
         let mut m = Model::default();
-        m.set_roots(100, 10, vec![TreeRow { files: 10, ..row("C:", "", 100, true) }]);
-        m.expand(0, vec![TreeRow { files: 8, ..row("Users", r"C:\", 80, true) }, row("pagefile.sys", r"C:\", 20, false)]);
-        m.expand(1, vec![TreeRow { files: 5, ..row("me", r"C:\Users", 60, true) }]);
+        m.set_roots(
+            100,
+            10,
+            vec![TreeRow {
+                files: 10,
+                ..row("C:", "", 100, true)
+            }],
+        );
+        m.expand(
+            0,
+            vec![
+                TreeRow {
+                    files: 8,
+                    ..row("Users", r"C:\", 80, true)
+                },
+                row("pagefile.sys", r"C:\", 20, false),
+            ],
+        );
+        m.expand(
+            1,
+            vec![TreeRow {
+                files: 5,
+                ..row("me", r"C:\Users", 60, true)
+            }],
+        );
         // me, and a path inside it (counted once), and one that isn't shown.
-        let freed = m.mark_deleting(&[r"C:\Users\me".into(), r"C:\Users\me\x".into(), r"C:\gone".into()]);
+        let freed = m.mark_deleting(&[
+            r"C:\Users\me".into(),
+            r"C:\Users\me\x".into(),
+            r"C:\gone".into(),
+        ]);
         assert_eq!(freed, 60);
-        assert_eq!((m.nodes[0].row.size, m.nodes[1].row.size, m.nodes[2].row.size), (40, 20, 60));
+        assert_eq!(
+            (
+                m.nodes[0].row.size,
+                m.nodes[1].row.size,
+                m.nodes[2].row.size
+            ),
+            (40, 20, 60)
+        );
         assert_eq!((m.nodes[0].row.files, m.nodes[1].row.files), (5, 3));
         assert_eq!((m.size, m.files), (40, 5));
         assert!(m.nodes[2].deleting && !m.nodes[1].deleting);

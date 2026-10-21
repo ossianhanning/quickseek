@@ -54,22 +54,54 @@ pub fn parse_records(mut b: &[u8], mut f: impl FnMut(UsnRecord)) {
                 let nlen = u16le(r, 56) as usize;
                 let noff = u16le(r, 58) as usize;
                 let (f, p) = (u64le(r, 8), u64le(r, 16));
-                Some((f as u128, p as u128, u64le(r, 24) as i64, u64le(r, 32) as i64, u32le(r, 40), u32le(r, 52), noff, nlen))
+                Some((
+                    f as u128,
+                    p as u128,
+                    u64le(r, 24) as i64,
+                    u64le(r, 32) as i64,
+                    u32le(r, 40),
+                    u32le(r, 52),
+                    noff,
+                    nlen,
+                ))
             }
             // V3 uses 128-bit ids; on NTFS the low 64 bits are the classic FRN.
             3 if len >= 76 => {
                 let nlen = u16le(r, 72) as usize;
                 let noff = u16le(r, 74) as usize;
-                Some((u128le(8), u128le(24), u64le(r, 40) as i64, u64le(r, 48) as i64, u32le(r, 56), u32le(r, 68), noff, nlen))
+                Some((
+                    u128le(8),
+                    u128le(24),
+                    u64le(r, 40) as i64,
+                    u64le(r, 48) as i64,
+                    u32le(r, 56),
+                    u32le(r, 68),
+                    noff,
+                    nlen,
+                ))
             }
             _ => None,
         };
         if let Some((frn128, parent128, usn, timestamp, reason, attrs, noff, nlen)) = parsed
             && noff + nlen <= len
         {
-            let it = r[noff..noff + nlen].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
-            let name: String = char::decode_utf16(it).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).collect();
-            f(UsnRecord { frn: frn128 as u64, parent: parent128 as u64, frn128, parent128, usn, timestamp, reason, attrs, name });
+            let it = r[noff..noff + nlen]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]));
+            let name: String = char::decode_utf16(it)
+                .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+                .collect();
+            f(UsnRecord {
+                frn: frn128 as u64,
+                parent: parent128 as u64,
+                frn128,
+                parent128,
+                usn,
+                timestamp,
+                reason,
+                attrs,
+                name,
+            });
         }
         b = &b[len..];
     }
@@ -88,7 +120,11 @@ pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 /// and without sizes/timestamps, but needs no knowledge of the on-disk format.
 pub fn scan_enum(h: &Handle) -> io::Result<Scan> {
     let mut scan = Scan::default();
-    let mut q = MftEnumDataV0 { start_frn: 0, low_usn: 0, high_usn: i64::MAX };
+    let mut q = MftEnumDataV0 {
+        start_frn: 0,
+        low_usn: 0,
+        high_usn: i64::MAX,
+    };
     let mut buf = vec![0u64; 1 << 17]; // 1 MiB, 8-byte aligned
     loop {
         let res = unsafe {
@@ -137,7 +173,12 @@ pub fn scan_enum(h: &Handle) -> io::Result<Scan> {
     if scan.meta.len() <= root {
         scan.meta.resize(root + 1, Meta::default());
     }
-    scan.meta[root] = Meta { in_use: true, is_dir: true, attrs: FILE_ATTRIBUTE_DIRECTORY, ..Default::default() };
+    scan.meta[root] = Meta {
+        in_use: true,
+        is_dir: true,
+        attrs: FILE_ATTRIBUTE_DIRECTORY,
+        ..Default::default()
+    };
     Ok(scan)
 }
 
@@ -175,16 +216,31 @@ pub fn scan_from_records(records: &[UsnRecord], root_id: u128) -> (Scan, HashMap
             attrs: r.attrs,
             ..Default::default()
         };
-        scan.names.push(ScanName { record: rec, parent, off: scan.strings.len() as u32, len: r.name.len() as u32 });
+        scan.names.push(ScanName {
+            record: rec,
+            parent,
+            off: scan.strings.len() as u32,
+            len: r.name.len() as u32,
+        });
         scan.strings.extend_from_slice(r.name.as_bytes());
     }
     let root = super::ROOT_RECORD as usize;
     if scan.meta.len() <= root {
         scan.meta.resize(root + 1, Meta::default());
     }
-    scan.meta[root] = Meta { in_use: true, is_dir: true, attrs: FILE_ATTRIBUTE_DIRECTORY, ..Default::default() };
+    scan.meta[root] = Meta {
+        in_use: true,
+        is_dir: true,
+        attrs: FILE_ATTRIBUTE_DIRECTORY,
+        ..Default::default()
+    };
     // The root's own name entry so Index::from_scan finds it.
-    scan.names.push(ScanName { record: super::ROOT_RECORD, parent: super::ROOT_RECORD, off: scan.strings.len() as u32, len: 1 });
+    scan.names.push(ScanName {
+        record: super::ROOT_RECORD,
+        parent: super::ROOT_RECORD,
+        off: scan.strings.len() as u32,
+        len: 1,
+    });
     scan.strings.push(b'.');
     (scan, map)
 }
@@ -192,12 +248,25 @@ pub fn scan_from_records(records: &[UsnRecord], root_id: u128) -> (Scan, HashMap
 /// ReFS (or any volume with 128-bit file ids): enumerates via
 /// FSCTL_ENUM_USN_DATA asking for V3 records.
 pub fn scan_enum_v3(h: &Handle, root_id: u128) -> io::Result<(Scan, HashMap<u128, u32>)> {
-    let mut q = MftEnumDataV1 { start_frn: 0, low_usn: 0, high_usn: i64::MAX, min_major_version: 2, max_major_version: 3 };
+    let mut q = MftEnumDataV1 {
+        start_frn: 0,
+        low_usn: 0,
+        high_usn: i64::MAX,
+        min_major_version: 2,
+        max_major_version: 3,
+    };
     let mut buf = vec![0u64; 1 << 17];
     let mut records = Vec::new();
     loop {
         let res = unsafe {
-            win::ioctl(h, FSCTL_ENUM_USN_DATA, &q as *const _ as *const _, size_of::<MftEnumDataV1>(), buf.as_mut_ptr() as *mut _, buf.len() * 8)
+            win::ioctl(
+                h,
+                FSCTL_ENUM_USN_DATA,
+                &q as *const _ as *const _,
+                size_of::<MftEnumDataV1>(),
+                buf.as_mut_ptr() as *mut _,
+                buf.len() * 8,
+            )
         };
         let n = match res {
             Ok(n) => n as usize,
@@ -238,21 +307,44 @@ mod tests {
     #[test]
     fn dense_scan_from_128_bit_ids() {
         let root: u128 = 1 << 100;
-        let mk = |f: u128, p: u128, attrs: u32, name: &str| UsnRecord { frn128: f, parent128: p, attrs, name: name.into(), ..Default::default() };
+        let mk = |f: u128, p: u128, attrs: u32, name: &str| UsnRecord {
+            frn128: f,
+            parent128: p,
+            attrs,
+            name: name.into(),
+            ..Default::default()
+        };
         // Child listed before its parent: ids are still resolved.
-        let recs = [mk(30 << 64, 20 << 64, 0x20, "file.txt"), mk(20 << 64, root, 0x10, "dir")];
+        let recs = [
+            mk(30 << 64, 20 << 64, 0x20, "file.txt"),
+            mk(20 << 64, root, 0x10, "dir"),
+        ];
         let (scan, map) = scan_from_records(&recs, root);
         let ix = crate::index::Index::from_scan('R', &scan);
-        let f = (0..ix.entries.len() as u32).find(|&i| ix.name(i) == "file.txt").unwrap();
+        let f = (0..ix.entries.len() as u32)
+            .find(|&i| ix.name(i) == "file.txt")
+            .unwrap();
         assert_eq!(ix.path(f), r"R:\dir\file.txt");
         assert_eq!(map[&root], crate::ntfs::ROOT_RECORD);
     }
 
     #[test]
     fn parses_v2_records() {
-        let buf = [v2((2 << 48) | 100, 5, 0x100, "a.txt"), v2(101, 100, 0x200, "ünï")].concat();
+        let buf = [
+            v2((2 << 48) | 100, 5, 0x100, "a.txt"),
+            v2(101, 100, 0x200, "ünï"),
+        ]
+        .concat();
         let mut got = Vec::new();
-        parse_records(&buf, |r| got.push((r.record(), r.seq(), r.parent_record(), r.reason, r.name)));
-        assert_eq!(got, vec![(100, 2, 5, 0x100, "a.txt".into()), (101, 0, 100, 0x200, "ünï".into())]);
+        parse_records(&buf, |r| {
+            got.push((r.record(), r.seq(), r.parent_record(), r.reason, r.name))
+        });
+        assert_eq!(
+            got,
+            vec![
+                (100, 2, 5, 0x100, "a.txt".into()),
+                (101, 0, 100, 0x200, "ünï".into())
+            ]
+        );
     }
 }

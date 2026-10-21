@@ -43,7 +43,12 @@ impl Builder {
             self.meta.resize(r as usize + 1, Meta::default());
         }
         self.meta[r as usize] = m;
-        self.s.names.push(ScanName { record: r, parent, off: self.s.strings.len() as u32, len: name.len() as u32 });
+        self.s.names.push(ScanName {
+            record: r,
+            parent,
+            off: self.s.strings.len() as u32,
+            len: name.len() as u32,
+        });
         self.s.strings.extend_from_slice(name.as_bytes());
         r
     }
@@ -52,12 +57,27 @@ impl Builder {
         let mut cur = String::new();
         let mut parent = 5;
         for comp in path.split('\\') {
-            cur = if cur.is_empty() { comp.to_string() } else { format!("{cur}\\{comp}") };
+            cur = if cur.is_empty() {
+                comp.to_string()
+            } else {
+                format!("{cur}\\{comp}")
+            };
             if let Some(&(_, r)) = self.dirs.iter().find(|(p, _)| *p == cur) {
                 parent = r;
                 continue;
             }
-            let r = self.push(parent, comp, Meta { in_use: true, is_dir: true, attrs: 0x10, modified: BASE_TIME, created: BASE_TIME, ..Default::default() });
+            let r = self.push(
+                parent,
+                comp,
+                Meta {
+                    in_use: true,
+                    is_dir: true,
+                    attrs: 0x10,
+                    modified: BASE_TIME,
+                    created: BASE_TIME,
+                    ..Default::default()
+                },
+            );
             self.dirs.push((cur.clone(), r));
             parent = r;
         }
@@ -67,21 +87,61 @@ impl Builder {
 
 /// The known files plus `filler` generated ones spread over the same folders.
 pub fn sample_index(letter: char, filler: usize) -> Index {
-    let mut b = Builder { s: Scan { has_sizes: true, ..Default::default() }, meta: vec![Meta::default(); 6], rec: 24, dirs: Vec::new() };
-    b.meta[5] = Meta { in_use: true, is_dir: true, attrs: 0x10, ..Default::default() };
-    b.s.names.push(ScanName { record: 5, parent: 5, off: 0, len: 1 });
+    let mut b = Builder {
+        s: Scan {
+            has_sizes: true,
+            ..Default::default()
+        },
+        meta: vec![Meta::default(); 6],
+        rec: 24,
+        dirs: Vec::new(),
+    };
+    b.meta[5] = Meta {
+        in_use: true,
+        is_dir: true,
+        attrs: 0x10,
+        ..Default::default()
+    };
+    b.s.names.push(ScanName {
+        record: 5,
+        parent: 5,
+        off: 0,
+        len: 1,
+    });
     b.s.strings.push(b'.');
     for &(folder, name, size, age) in KNOWN {
         let p = b.dir(folder);
         let t = BASE_TIME - age * DAY;
-        b.push(p, name, Meta { in_use: true, attrs: 0x20, size, modified: t, created: t - DAY, ..Default::default() });
+        b.push(
+            p,
+            name,
+            Meta {
+                in_use: true,
+                attrs: 0x20,
+                size,
+                modified: t,
+                created: t - DAY,
+                ..Default::default()
+            },
+        );
     }
     let exts = ["txt", "log", "rs", "png", "dll", "json"];
     for i in 0..filler {
         let p = b.dir(KNOWN[i % KNOWN.len()].0);
         let name = format!("file{i:06}.{}", exts[i % exts.len()]);
         let t = BASE_TIME - (i as i64 % 900) * DAY;
-        b.push(p, &name, Meta { in_use: true, attrs: 0x20, size: (i as u64 * 7919) % 5_000_000, modified: t, created: t, ..Default::default() });
+        b.push(
+            p,
+            &name,
+            Meta {
+                in_use: true,
+                attrs: 0x20,
+                size: (i as u64 * 7919) % 5_000_000,
+                modified: t,
+                created: t,
+                ..Default::default()
+            },
+        );
     }
     b.s.meta = b.meta;
     let mut ix = Index::from_scan(letter, &b.s);
@@ -117,7 +177,9 @@ pub fn seed_history(engine: &Engine) {
     // Adds `delta` to the folder named `name` and all its ancestors.
     fn adjust(s: &mut Snapshot, name: &str, delta: i64) {
         for v in &mut s.volumes {
-            let Some(mut i) = v.folders.iter().position(|f| f.name == name) else { continue };
+            let Some(mut i) = v.folders.iter().position(|f| f.name == name) else {
+                continue;
+            };
             loop {
                 let f = &mut v.folders[i];
                 f.size = (f.size as i64 + delta).max(0) as u64;
@@ -132,7 +194,11 @@ pub fn seed_history(engine: &Engine) {
     for days in [30i64, 21, 14, 10, 7, 5, 3, 2, 1] {
         let mut s = now_snap.clone();
         s.time = now_snap.time - days * 86_400;
-        s.name = if days == 10 { "before cleanup".into() } else { String::new() };
+        s.name = if days == 10 {
+            "before cleanup".into()
+        } else {
+            String::new()
+        };
         adjust(&mut s, "Videos", -(3_500_000_000 * days / 30));
         if days > 3 {
             adjust(&mut s, "Downloads", 2_000_000_000);

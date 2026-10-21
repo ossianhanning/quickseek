@@ -73,7 +73,10 @@ mod tests {
 
     #[test]
     fn strips_diacritics() {
-        assert_eq!(fold_mode("Ångström Café NAÏVE", FoldMode::StripDiacritics), "angstrom cafe naive");
+        assert_eq!(
+            fold_mode("Ångström Café NAÏVE", FoldMode::StripDiacritics),
+            "angstrom cafe naive"
+        );
         // Precomposed and decomposed input fold identically.
         assert_eq!(fold_mode("e\u{301}", FoldMode::StripDiacritics), "e");
         assert_eq!(fold_mode("日本語", FoldMode::StripDiacritics), "日本語");

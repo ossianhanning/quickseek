@@ -19,7 +19,14 @@ pub struct Args {
 }
 
 pub fn parse(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { silent: false, uninstall: false, purge: false, launch: true, opts: install::Options::defaults(), mcp_choice: None };
+    let mut a = Args {
+        silent: false,
+        uninstall: false,
+        purge: false,
+        launch: true,
+        opts: install::Options::defaults(),
+        mcp_choice: None,
+    };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.to_ascii_lowercase().trim_start_matches(['-', '/']) {
@@ -40,7 +47,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             "no-mcp" => a.mcp_choice = Some(false),
             "mcp-clients" => {
                 let list = it.next().ok_or("--mcp-clients needs a list")?;
-                a.opts.mcp = list.split(',').map(|c| reg::Client::from_id(c.trim()).ok_or(format!("unknown client {c:?}"))).collect::<Result<_, _>>()?;
+                a.opts.mcp = list
+                    .split(',')
+                    .map(|c| reg::Client::from_id(c.trim()).ok_or(format!("unknown client {c:?}")))
+                    .collect::<Result<_, _>>()?;
                 a.mcp_choice = Some(true);
             }
             other => return Err(format!("unknown option --{other}")),
@@ -64,8 +74,15 @@ pub fn running_as_system() -> bool {
 }
 
 pub fn log_line(s: &str) {
-    let p = LOG.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("rapidfind-setup.log"));
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+    let p = LOG
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join("rapidfind-setup.log"));
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+    {
         let _ = writeln!(f, "{s}");
     }
 }
@@ -83,7 +100,11 @@ mod tests {
         let a = p("/S --dir D:\\Apps\\rf --no-path");
         assert!(a.silent && !a.opts.path && a.opts.service);
         assert_eq!(a.opts.dir, PathBuf::from(r"D:\Apps\rf"));
-        assert_eq!(a.opts.mcp.is_empty(), running_as_system() || !reg::ALL.iter().any(|c| c.detected()), "silent installs connect detected clients");
+        assert_eq!(
+            a.opts.mcp.is_empty(),
+            running_as_system() || !reg::ALL.iter().any(|c| c.detected()),
+            "silent installs connect detected clients"
+        );
         assert!(p("--silent --no-mcp").opts.mcp.is_empty());
         let a = p("--silent --mcp-clients cursor,claude-code");
         assert_eq!(a.opts.mcp, [reg::Client::Cursor, reg::Client::ClaudeCode]);

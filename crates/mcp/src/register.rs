@@ -26,7 +26,14 @@ pub enum Client {
     Windsurf,
 }
 
-pub const ALL: [Client; 6] = [Client::ClaudeCode, Client::ClaudeDesktop, Client::Cursor, Client::VsCode, Client::VsCodeInsiders, Client::Windsurf];
+pub const ALL: [Client; 6] = [
+    Client::ClaudeCode,
+    Client::ClaudeDesktop,
+    Client::Cursor,
+    Client::VsCode,
+    Client::VsCodeInsiders,
+    Client::Windsurf,
+];
 
 /// How a client keeps its servers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,8 +85,14 @@ impl Client {
             Client::ClaudeDesktop => appdata?.join("Claude").join("claude_desktop_config.json"),
             Client::Cursor => home?.join(".cursor").join("mcp.json"),
             Client::VsCode => appdata?.join("Code").join("User").join("mcp.json"),
-            Client::VsCodeInsiders => appdata?.join("Code - Insiders").join("User").join("mcp.json"),
-            Client::Windsurf => home?.join(".codeium").join("windsurf").join("mcp_config.json"),
+            Client::VsCodeInsiders => appdata?
+                .join("Code - Insiders")
+                .join("User")
+                .join("mcp.json"),
+            Client::Windsurf => home?
+                .join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json"),
         })
     }
 
@@ -93,8 +106,13 @@ impl Client {
     /// Is the client installed (its config folder exists)?
     pub fn detected(self) -> bool {
         match self {
-            Client::ClaudeCode => claude_cli().is_some() || self.config_path().is_some_and(|p| p.exists()),
-            _ => self.config_path().and_then(|p| p.parent().map(Path::to_path_buf)).is_some_and(|d| d.is_dir()),
+            Client::ClaudeCode => {
+                claude_cli().is_some() || self.config_path().is_some_and(|p| p.exists())
+            }
+            _ => self
+                .config_path()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+                .is_some_and(|d| d.is_dir()),
         }
     }
 }
@@ -115,15 +133,27 @@ pub struct Status {
 
 /// Per-user install folder (no admin): `%LOCALAPPDATA%\Programs\rapidfind`.
 pub fn user_dir() -> PathBuf {
-    env_path("LOCALAPPDATA").unwrap_or_else(std::env::temp_dir).join("Programs").join("rapidfind")
+    env_path("LOCALAPPDATA")
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Programs")
+        .join("rapidfind")
 }
 
 /// A folder that won't be rebuilt or cleaned under the client's feet:
 /// Program Files or the per-user Programs folder (not a build directory).
 pub fn is_stable_dir(dir: &Path) -> bool {
     let d = dir.to_string_lossy().to_lowercase();
-    let under = |v: &str| env_path(v).is_some_and(|p| d.starts_with(&p.to_string_lossy().to_lowercase()));
-    under("ProgramFiles") || under("ProgramW6432") || d.starts_with(&user_dir().parent().unwrap().to_string_lossy().to_lowercase())
+    let under =
+        |v: &str| env_path(v).is_some_and(|p| d.starts_with(&p.to_string_lossy().to_lowercase()));
+    under("ProgramFiles")
+        || under("ProgramW6432")
+        || d.starts_with(
+            &user_dir()
+                .parent()
+                .unwrap()
+                .to_string_lossy()
+                .to_lowercase(),
+        )
 }
 
 /// The `rapidfind-mcp.exe` to register: `src` itself when it already lives in
@@ -135,9 +165,16 @@ pub fn stable_exe(src: &Path) -> Result<PathBuf, String> {
     let dir = user_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     let dst = dir.join(EXE);
-    let same = std::fs::read(&dst).ok().is_some_and(|d| std::fs::read(src).ok().is_some_and(|s| s == d));
+    let same = std::fs::read(&dst)
+        .ok()
+        .is_some_and(|d| std::fs::read(src).ok().is_some_and(|s| s == d));
     if !same {
-        std::fs::copy(src, &dst).map_err(|e| format!("copying to {} (is a client running it? close it and retry): {e}", dst.display()))?;
+        std::fs::copy(src, &dst).map_err(|e| {
+            format!(
+                "copying to {} (is a client running it? close it and retry): {e}",
+                dst.display()
+            )
+        })?;
     }
     Ok(dst)
 }
@@ -177,30 +214,61 @@ fn read_json(path: &Path) -> Result<Option<Map<String, Value>>, String> {
     }
     match serde_json::from_str::<Value>(text) {
         Ok(Value::Object(m)) => Ok(Some(m)),
-        Ok(_) => Err(format!("{} isn't a JSON object; edit it by hand", path.display())),
-        Err(e) => Err(format!("{} isn't plain JSON ({e}); comments or trailing commas? Add the server by hand", path.display())),
+        Ok(_) => Err(format!(
+            "{} isn't a JSON object; edit it by hand",
+            path.display()
+        )),
+        Err(e) => Err(format!(
+            "{} isn't plain JSON ({e}); comments or trailing commas? Add the server by hand",
+            path.display()
+        )),
     }
 }
 
 fn registered_in(m: &Map<String, Value>, format: Format) -> Option<String> {
-    m.get(key(format))?.get(NAME)?.get("command")?.as_str().map(String::from)
+    m.get(key(format))?
+        .get(NAME)?
+        .get("command")?
+        .as_str()
+        .map(String::from)
 }
 
 /// Adds (or replaces) our entry in a JSON config file.
 pub fn add_to_file(path: &Path, format_vscode: bool, exe: &Path) -> Result<(), String> {
-    let format = if format_vscode { Format::VsCode } else { Format::McpServers };
+    let format = if format_vscode {
+        Format::VsCode
+    } else {
+        Format::McpServers
+    };
     let mut m = read_json(path)?.unwrap_or_default();
-    let servers = m.entry(key(format)).or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(servers) = servers else { return Err(format!("\"{}\" in {} isn't an object", key(format), path.display())) };
+    let servers = m
+        .entry(key(format))
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(servers) = servers else {
+        return Err(format!(
+            "\"{}\" in {} isn't an object",
+            key(format),
+            path.display()
+        ));
+    };
     servers.insert(NAME.into(), entry(format, exe));
     write_json(path, &m)
 }
 
 /// Removes our entry from a JSON config file (other servers stay).
 pub fn remove_from_file(path: &Path, format_vscode: bool) -> Result<bool, String> {
-    let format = if format_vscode { Format::VsCode } else { Format::McpServers };
-    let Some(mut m) = read_json(path)? else { return Ok(false) };
-    let removed = m.get_mut(key(format)).and_then(Value::as_object_mut).is_some_and(|s| s.remove(NAME).is_some());
+    let format = if format_vscode {
+        Format::VsCode
+    } else {
+        Format::McpServers
+    };
+    let Some(mut m) = read_json(path)? else {
+        return Ok(false);
+    };
+    let removed = m
+        .get_mut(key(format))
+        .and_then(Value::as_object_mut)
+        .is_some_and(|s| s.remove(NAME).is_some());
     if removed {
         write_json(path, &m)?;
     }
@@ -256,8 +324,16 @@ fn claude(args: &[&str]) -> Result<String, String> {
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("running {}: {e}", cli.display()))?;
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    if out.status.success() { Ok(text) } else { Err(format!("claude {}: {}", args.join(" "), text.trim())) }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(format!("claude {}: {}", args.join(" "), text.trim()))
+    }
 }
 
 /// Claude Code's user-scope registration, read from `~/.claude.json`.
@@ -271,7 +347,13 @@ fn claude_code_registered() -> Option<String> {
 /// `~/.claude/skills/rapidfind-disk-space/SKILL.md`: Claude Code loads it by
 /// itself when a request is about disk space or finding files.
 pub fn skill_path() -> Option<PathBuf> {
-    Some(env_path("USERPROFILE")?.join(".claude").join("skills").join(crate::guide::SKILL_NAME).join("SKILL.md"))
+    Some(
+        env_path("USERPROFILE")?
+            .join(".claude")
+            .join("skills")
+            .join(crate::guide::SKILL_NAME)
+            .join("SKILL.md"),
+    )
 }
 
 pub fn skill_installed() -> bool {
@@ -280,12 +362,15 @@ pub fn skill_installed() -> bool {
 
 pub fn install_skill() -> Result<(), String> {
     let p = skill_path().ok_or("no profile folder")?;
-    std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| format!("creating {}: {e}", p.display()))?;
+    std::fs::create_dir_all(p.parent().unwrap())
+        .map_err(|e| format!("creating {}: {e}", p.display()))?;
     std::fs::write(&p, crate::guide::SKILL_MD).map_err(|e| format!("writing {}: {e}", p.display()))
 }
 
 pub fn remove_skill() -> Result<bool, String> {
-    let Some(p) = skill_path() else { return Ok(false) };
+    let Some(p) = skill_path() else {
+        return Ok(false);
+    };
     if !p.exists() {
         return Ok(false);
     }
@@ -307,7 +392,13 @@ pub fn status(c: Client) -> Status {
         },
     };
     let skill = c == Client::ClaudeCode && skill_installed();
-    Status { client: c, detected, registered, problem, skill }
+    Status {
+        client: c,
+        detected,
+        registered,
+        problem,
+        skill,
+    }
 }
 
 pub fn status_all() -> Vec<Status> {
@@ -320,10 +411,22 @@ pub fn register(c: Client, exe: &Path) -> Result<(), String> {
         Client::ClaudeCode => {
             // Replace any older registration (a different path).
             let _ = claude(&["mcp", "remove", "--scope", "user", NAME]);
-            claude(&["mcp", "add", "--scope", "user", NAME, "--", &exe.to_string_lossy()])?;
+            claude(&[
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                NAME,
+                "--",
+                &exe.to_string_lossy(),
+            ])?;
             install_skill()
         }
-        _ => add_to_file(&c.config_path().ok_or("no profile folder")?, c.format() == Format::VsCode, exe),
+        _ => add_to_file(
+            &c.config_path().ok_or("no profile folder")?,
+            c.format() == Format::VsCode,
+            exe,
+        ),
     }
 }
 
@@ -337,17 +440,24 @@ pub fn unregister(c: Client) -> Result<bool, String> {
             }
             claude(&["mcp", "remove", "--scope", "user", NAME]).map(|_| true)
         }
-        _ => remove_from_file(&c.config_path().ok_or("no profile folder")?, c.format() == Format::VsCode),
+        _ => remove_from_file(
+            &c.config_path().ok_or("no profile folder")?,
+            c.format() == Format::VsCode,
+        ),
     }
 }
 
 /// What to tell the user after registering with `c`.
 pub fn restart_hint(c: Client) -> &'static str {
     match c {
-        Client::ClaudeCode => "new Claude Code sessions have it, with the rapidfind skill (`/mcp` lists the server)",
+        Client::ClaudeCode => {
+            "new Claude Code sessions have it, with the rapidfind skill (`/mcp` lists the server)"
+        }
         Client::ClaudeDesktop => "quit Claude Desktop (tray icon → Quit) and start it again",
         Client::Cursor => "Cursor picks it up in Settings → MCP (toggle it on if needed)",
-        Client::VsCode | Client::VsCodeInsiders => "start it from the MCP view or `MCP: List Servers` in VS Code (agent mode)",
+        Client::VsCode | Client::VsCodeInsiders => {
+            "start it from the MCP view or `MCP: List Servers` in VS Code (agent mode)"
+        }
         Client::Windsurf => "refresh MCP servers in Windsurf's Cascade panel",
     }
 }
@@ -373,8 +483,15 @@ mod tests {
         let text = std::fs::read_to_string(&p).unwrap();
         let v: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["mcpServers"]["unity"]["url"], "http://x");
-        assert_eq!(v["mcpServers"]["rapidfind"]["command"], exe.to_string_lossy().as_ref());
-        assert!(text.find("zeta").unwrap() < text.find("mcpServers").unwrap() && text.find("mcpServers").unwrap() < text.find("alpha").unwrap(), "key order kept: {text}");
+        assert_eq!(
+            v["mcpServers"]["rapidfind"]["command"],
+            exe.to_string_lossy().as_ref()
+        );
+        assert!(
+            text.find("zeta").unwrap() < text.find("mcpServers").unwrap()
+                && text.find("mcpServers").unwrap() < text.find("alpha").unwrap(),
+            "key order kept: {text}"
+        );
         assert!(d.join("mcp.json.rapidfind-backup").exists());
         // Re-registering replaces, removing leaves the rest.
         add_to_file(&p, false, Path::new(r"D:\other\rapidfind-mcp.exe")).unwrap();
@@ -396,7 +513,11 @@ mod tests {
         let c = d.join("commented.json");
         let original = "{ // my servers\n \"servers\": {} }";
         std::fs::write(&c, original).unwrap();
-        assert!(add_to_file(&c, true, Path::new(r"C:\x.exe")).unwrap_err().contains("isn't plain JSON"));
+        assert!(
+            add_to_file(&c, true, Path::new(r"C:\x.exe"))
+                .unwrap_err()
+                .contains("isn't plain JSON")
+        );
         assert_eq!(std::fs::read_to_string(&c).unwrap(), original);
         let bom = d.join("bom.json");
         std::fs::write(&bom, "\u{feff}{}").unwrap();
@@ -407,7 +528,9 @@ mod tests {
     #[test]
     fn stable_dirs_and_ids() {
         assert!(is_stable_dir(&user_dir()));
-        assert!(!is_stable_dir(Path::new(r"S:\dev\rapidfind\target\release")));
+        assert!(!is_stable_dir(Path::new(
+            r"S:\dev\rapidfind\target\release"
+        )));
         if let Some(pf) = env_path("ProgramFiles") {
             assert!(is_stable_dir(&pf.join("rapidfind")));
         }

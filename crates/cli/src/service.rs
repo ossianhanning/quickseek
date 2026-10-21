@@ -27,8 +27,8 @@ use anyhow::{Context, bail};
 use rapidfind_core::engine::{Engine, EngineOptions};
 use rapidfind_core::{ipc, persist, upgrade};
 use windows_service::service::{
-    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceInfo,
-    ServiceStartType, ServiceState, ServiceStatus, ServiceType,
+    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
+    ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -39,7 +39,9 @@ const DISPLAY: &str = "rapidfind file index";
 const DESCRIPTION: &str = "Indexes NTFS volumes from the MFT and USN journal and answers filename searches over \\\\.\\pipe\\rapidfind.";
 
 pub fn home() -> PathBuf {
-    let base = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+    let base = std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
     base.join("rapidfind")
 }
 
@@ -48,7 +50,8 @@ fn installed_exe() -> PathBuf {
 }
 
 fn manager(access: ServiceManagerAccess) -> anyhow::Result<ServiceManager> {
-    ServiceManager::local_computer(None::<&str>, access).context("can't open the Service Control Manager (run elevated)")
+    ServiceManager::local_computer(None::<&str>, access)
+        .context("can't open the Service Control Manager (run elevated)")
 }
 
 /// When this binary isn't the installed one (a development build): copies
@@ -58,9 +61,13 @@ fn sync_install_dir() -> anyhow::Result<bool> {
     if std::env::var_os(upgrade::NO_SYNC_ENV).is_some() {
         return Ok(false);
     }
-    let Some(dir) = upgrade::install_dir() else { return Ok(false) };
+    let Some(dir) = upgrade::install_dir() else {
+        return Ok(false);
+    };
     let me = std::env::current_exe()?;
-    let Some(src) = me.parent() else { return Ok(false) };
+    let Some(src) = me.parent() else {
+        return Ok(false);
+    };
     if upgrade::same_dir(src, &dir) {
         return Ok(false);
     }
@@ -99,7 +106,12 @@ pub fn install() -> anyhow::Result<()> {
     let src = std::env::current_exe()?;
     let dst = installed_exe();
     if src != dst {
-        std::fs::copy(&src, &dst).with_context(|| format!("copying binary to {} (is the service running? stop it first)", dst.display()))?;
+        std::fs::copy(&src, &dst).with_context(|| {
+            format!(
+                "copying binary to {} (is the service running? stop it first)",
+                dst.display()
+            )
+        })?;
     }
     let synced = sync_install_dir()?;
     let m = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
@@ -115,10 +127,16 @@ pub fn install() -> anyhow::Result<()> {
         account_name: None, // LocalSystem
         account_password: None,
     };
-    let svc = m.create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START).context("creating service")?;
+    let svc = m
+        .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
+        .context("creating service")?;
     svc.set_description(DESCRIPTION)?;
     svc.start(&[] as &[&OsStr]).context("starting service")?;
-    println!("installed and started service '{NAME}' ({}, {})", dst.display(), ipc::BUILD);
+    println!(
+        "installed and started service '{NAME}' ({}, {})",
+        dst.display(),
+        ipc::BUILD
+    );
     if synced {
         retire_old_programs();
     }
@@ -127,11 +145,15 @@ pub fn install() -> anyhow::Result<()> {
 
 /// Copies the current binary over the installed one (stopping/restarting the service).
 pub fn update() -> anyhow::Result<()> {
-    let was_running = matches!(query_state()?, Some(ServiceState::Running | ServiceState::StartPending));
+    let was_running = matches!(
+        query_state()?,
+        Some(ServiceState::Running | ServiceState::StartPending)
+    );
     if was_running {
         stop()?;
     }
-    let changed = std::fs::read(installed_exe()).ok() != Some(std::fs::read(std::env::current_exe()?)?);
+    let changed =
+        std::fs::read(installed_exe()).ok() != Some(std::fs::read(std::env::current_exe()?)?);
     // SERVICE_STOPPED is reported before the process has exited, so the old
     // binary can stay locked for a moment.
     let mut tries = 0;
@@ -156,14 +178,20 @@ pub fn update() -> anyhow::Result<()> {
 pub fn uninstall() -> anyhow::Result<()> {
     let m = manager(ServiceManagerAccess::CONNECT)?;
     let svc = m
-        .open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE)
+        .open_service(
+            NAME,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+        )
         .context("opening service (is it installed?)")?;
     if svc.query_status()?.current_state != ServiceState::Stopped {
         let _ = svc.stop();
         wait_for(&svc, ServiceState::Stopped)?;
     }
     svc.delete()?;
-    println!("uninstalled service '{NAME}' (index files left in {})", home().display());
+    println!(
+        "uninstalled service '{NAME}' (index files left in {})",
+        home().display()
+    );
     Ok(())
 }
 
@@ -210,14 +238,19 @@ define_windows_service!(ffi_service_main, service_main);
 
 /// Entry point for `rapidfind service run`, invoked by the SCM.
 pub fn run() -> anyhow::Result<()> {
-    service_dispatcher::start(NAME, ffi_service_main).context("not started by the Service Control Manager (use `rapidfind service start`)")
+    service_dispatcher::start(NAME, ffi_service_main)
+        .context("not started by the Service Control Manager (use `rapidfind service start`)")
 }
 
 fn init_logging() {
     let dir = home();
     let _ = ipc::create_private_dir(&dir);
     let mut b = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("service.log")) {
+    if let Ok(f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("service.log"))
+    {
         b.target(env_logger::Target::Pipe(Box::new(f)));
     }
     let _ = b.try_init();
@@ -225,8 +258,16 @@ fn init_logging() {
 
 fn service_main(_args: Vec<OsString>) {
     init_logging();
-    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-    log::info!("rapidfind service {} starting ({exe}, protocol v{}-v{}, pid {})", ipc::BUILD, ipc::MIN_PROTOCOL, ipc::PROTOCOL, std::process::id());
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    log::info!(
+        "rapidfind service {} starting ({exe}, protocol v{}-v{}, pid {})",
+        ipc::BUILD,
+        ipc::MIN_PROTOCOL,
+        ipc::PROTOCOL,
+        std::process::id()
+    );
     if let Err(e) = run_service() {
         log::error!("service failed: {e:#}");
     }
@@ -274,30 +315,37 @@ fn run_service() -> anyhow::Result<()> {
     engine.enable_history(home().join("history"));
     let slot: Arc<OnceLock<Arc<Engine>>> = Arc::new(OnceLock::new());
     let _ = slot.set(engine.clone());
-    let server = std::thread::Builder::new().name("pipe".into()).spawn(move || {
-        if let Err(e) = ipc::serve(ipc::engine_handler(slot)) {
-            log::error!("pipe server failed: {e} (is another process holding {}?)", ipc::PIPE_NAME);
-        }
-    })?;
+    let server = std::thread::Builder::new()
+        .name("pipe".into())
+        .spawn(move || {
+            if let Err(e) = ipc::serve(ipc::engine_handler(slot)) {
+                log::error!(
+                    "pipe server failed: {e} (is another process holding {}?)",
+                    ipc::PIPE_NAME
+                );
+            }
+        })?;
 
     let eng = engine.clone();
-    std::thread::Builder::new().name("volumes".into()).spawn(move || {
-        log::info!("loading indexes");
-        eng.sync_volumes();
-        if let Err(err) = eng.save_all(rapidfind_core::engine::SAVE_THRESHOLD) {
-            log::error!("save failed: {err:#}");
-        }
-        log::info!("ready");
-        loop {
-            std::thread::sleep(Duration::from_secs(3));
-            eng.sync_if_changed();
-            eng.maybe_snapshot();
-            // Volumes rebuilt by that sync (u64::MAX = never saved) get saved right away.
-            if let Err(err) = eng.save_all(u64::MAX) {
+    std::thread::Builder::new()
+        .name("volumes".into())
+        .spawn(move || {
+            log::info!("loading indexes");
+            eng.sync_volumes();
+            if let Err(err) = eng.save_all(rapidfind_core::engine::SAVE_THRESHOLD) {
                 log::error!("save failed: {err:#}");
             }
-        }
-    })?;
+            log::info!("ready");
+            loop {
+                std::thread::sleep(Duration::from_secs(3));
+                eng.sync_if_changed();
+                eng.maybe_snapshot();
+                // Volumes rebuilt by that sync (u64::MAX = never saved) get saved right away.
+                if let Err(err) = eng.save_all(u64::MAX) {
+                    log::error!("save failed: {err:#}");
+                }
+            }
+        })?;
 
     // Wait for stop (or the pipe server dying, which makes the service useless).
     loop {
@@ -305,13 +353,21 @@ fn run_service() -> anyhow::Result<()> {
             break;
         }
     }
-    handle.set_service_status(status(ServiceState::StopPending, ServiceControlAccept::empty(), Duration::from_secs(60)))?;
+    handle.set_service_status(status(
+        ServiceState::StopPending,
+        ServiceControlAccept::empty(),
+        Duration::from_secs(60),
+    ))?;
     log::info!("saving indexes");
     if let Err(err) = engine.save_all(1) {
         log::error!("save failed: {err:#}");
     }
     log::info!("stopped");
-    handle.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty(), Duration::ZERO))?;
+    handle.set_service_status(status(
+        ServiceState::Stopped,
+        ServiceControlAccept::empty(),
+        Duration::ZERO,
+    ))?;
     // Journal watcher threads are blocked in the kernel; just exit.
     std::process::exit(0);
 }

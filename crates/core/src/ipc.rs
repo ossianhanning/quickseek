@@ -34,21 +34,27 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE, LocalFree};
-use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+use windows_sys::Win32::Foundation::{
+    ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE, LocalFree,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-use windows_sys::Win32::Storage::FileSystem::{CreateDirectoryW, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateDirectoryW, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
 };
 
 use crate::config::Config;
 use crate::engine::Engine;
+use crate::history::SnapInfo;
 use crate::ntfs::win::wide;
 use crate::query::SearchFlags;
 use crate::search::{Hit, ResultSet, SearchOptions, SortKey};
-use crate::history::SnapInfo;
 use crate::tree::{NodeRef, Tree, TreeLevel, TreeRow, TreeSort};
 
 pub const PIPE_NAME: &str = r"\\.\pipe\rapidfind";
@@ -79,34 +85,66 @@ const CLIENT_ACCESS: u32 = 0x0010_0083;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
-    Search { query: String, flags: SearchFlags, sort: SortKey, descending: bool, page: u32 },
-    Fetch { offset: u64, count: u32 },
+    Search {
+        query: String,
+        flags: SearchFlags,
+        sort: SortKey,
+        descending: bool,
+        page: u32,
+    },
+    Fetch {
+        offset: u64,
+        count: u32,
+    },
     Status,
     GetConfig,
     SetConfig(String),
     RecordRun(String),
     /// Opens a folder-size tree (only over `query`'s matches if non-empty)
     /// and returns the volume roots.
-    Tree { query: String, flags: SearchFlags, sort: TreeSort, descending: bool },
+    Tree {
+        query: String,
+        flags: SearchFlags,
+        sort: TreeSort,
+        descending: bool,
+    },
     /// Children of a folder in the open tree.
-    Children { node: NodeRef, sort: TreeSort, descending: bool, offset: u64, count: u32 },
+    Children {
+        node: NodeRef,
+        sort: TreeSort,
+        descending: bool,
+        offset: u64,
+        count: u32,
+    },
     /// Frees the open tree.
     TreeClose,
     /// Rows of the current result set in a fixed order (its sort order when
     /// first asked); positions stay valid across [`Request::DropRows`]. For
     /// content search, which the client does.
-    Snapshot { offset: u64, count: u32 },
+    Snapshot {
+        offset: u64,
+        count: u32,
+    },
     /// Removes snapshot positions from the result set; answers with its
     /// first `page` rows.
-    DropRows { positions: Vec<u32>, page: u32 },
+    DropRows {
+        positions: Vec<u32>,
+        page: u32,
+    },
     /// Folder-size snapshots, oldest first.
     History,
     /// Takes a snapshot now, named (a save point).
-    SavePoint { name: String },
+    SavePoint {
+        name: String,
+    },
     /// Compare the open tree (and later ones) with snapshot `id`; empty = stop.
-    Compare { id: String },
+    Compare {
+        id: String,
+    },
     /// Sizes of these folders in every snapshot.
-    Series { paths: Vec<String> },
+    Series {
+        paths: Vec<String>,
+    },
 }
 
 /// One folder's size in every snapshot (aligned with [`SeriesReply::snaps`]).
@@ -212,7 +250,10 @@ impl W {
 struct R<'a>(&'a [u8]);
 
 fn bad(what: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("malformed message: {what}"))
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("malformed message: {what}"),
+    )
 }
 
 impl R<'_> {
@@ -269,14 +310,21 @@ fn request_known(ver: u8, kind: u8) -> bool {
 
 impl Request {
     pub fn encode(&self) -> Vec<u8> {
-        self.encode_for(PROTOCOL).expect("the newest protocol has every request")
+        self.encode_for(PROTOCOL)
+            .expect("the newest protocol has every request")
     }
 
     /// Encodes in protocol `ver`; fails if that version doesn't have this request.
     pub fn encode_for(&self, ver: u8) -> io::Result<Vec<u8>> {
         let mut w = W(vec![ver]);
         match self {
-            Request::Search { query, flags, sort, descending, page } => {
+            Request::Search {
+                query,
+                flags,
+                sort,
+                descending,
+                page,
+            } => {
                 w.u8(1);
                 w.u8(flags.bits());
                 w.u8(sort_to_u8(*sort));
@@ -299,14 +347,25 @@ impl Request {
                 w.u8(6);
                 w.str(p);
             }
-            Request::Tree { query, flags, sort, descending } => {
+            Request::Tree {
+                query,
+                flags,
+                sort,
+                descending,
+            } => {
                 w.u8(7);
                 w.u8(flags.bits());
                 w.u8(sort.to_u8());
                 w.u8(*descending as u8);
                 w.str(query);
             }
-            Request::Children { node, sort, descending, offset, count } => {
+            Request::Children {
+                node,
+                sort,
+                descending,
+                offset,
+                count,
+            } => {
                 w.u8(8);
                 w.str(&node.vol);
                 w.u32(node.idx);
@@ -349,7 +408,12 @@ impl Request {
             }
         }
         if !request_known(ver, w.0[1]) {
-            return Err(io::Error::new(io::ErrorKind::Unsupported, format!("the rapidfind service is too old for this (it speaks protocol v{ver}); update rapidfind")));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "the rapidfind service is too old for this (it speaks protocol v{ver}); update rapidfind"
+                ),
+            ));
         }
         Ok(w.0)
     }
@@ -372,53 +436,86 @@ impl Request {
         if !request_known(ver, kind) {
             return Err(bad("request kind"));
         }
-        Ok((ver, match kind {
-            1 => {
-                let flags = SearchFlags::from_bits(r.u8()?);
-                let sort = sort_from_u8(r.u8()?)?;
-                let descending = r.u8()? != 0;
-                let page = r.u32()?;
-                Request::Search { query: r.str()?, flags, sort, descending, page }
-            }
-            2 => Request::Fetch { offset: r.u64()?, count: r.u32()? },
-            3 => Request::Status,
-            4 => Request::GetConfig,
-            5 => Request::SetConfig(r.str()?),
-            6 => Request::RecordRun(r.str()?),
-            7 => {
-                let flags = SearchFlags::from_bits(r.u8()?);
-                let sort = TreeSort::from_u8(r.u8()?).ok_or_else(|| bad("tree sort"))?;
-                let descending = r.u8()? != 0;
-                Request::Tree { query: r.str()?, flags, sort, descending }
-            }
-            8 => {
-                let node = NodeRef { vol: r.str()?, idx: r.u32()?, epoch: r.u64()?, path: r.str()? };
-                let sort = TreeSort::from_u8(r.u8()?).ok_or_else(|| bad("tree sort"))?;
-                Request::Children { node, sort, descending: r.u8()? != 0, offset: r.u64()?, count: r.u32()? }
-            }
-            9 => Request::TreeClose,
-            10 => Request::Snapshot { offset: r.u64()?, count: r.u32()? },
-            12 => Request::History,
-            13 => Request::SavePoint { name: r.str()? },
-            14 => Request::Compare { id: r.str()? },
-            15 => {
-                let n = r.u32()? as usize;
-                if n > r.0.len() / 4 {
-                    return Err(bad("truncated"));
+        Ok((
+            ver,
+            match kind {
+                1 => {
+                    let flags = SearchFlags::from_bits(r.u8()?);
+                    let sort = sort_from_u8(r.u8()?)?;
+                    let descending = r.u8()? != 0;
+                    let page = r.u32()?;
+                    Request::Search {
+                        query: r.str()?,
+                        flags,
+                        sort,
+                        descending,
+                        page,
+                    }
                 }
-                Request::Series { paths: (0..n).map(|_| r.str()).collect::<io::Result<_>>()? }
-            }
-            11 => {
-                let page = r.u32()?;
-                let n = r.u32()? as usize;
-                if n > r.0.len() / 4 {
-                    return Err(bad("truncated"));
+                2 => Request::Fetch {
+                    offset: r.u64()?,
+                    count: r.u32()?,
+                },
+                3 => Request::Status,
+                4 => Request::GetConfig,
+                5 => Request::SetConfig(r.str()?),
+                6 => Request::RecordRun(r.str()?),
+                7 => {
+                    let flags = SearchFlags::from_bits(r.u8()?);
+                    let sort = TreeSort::from_u8(r.u8()?).ok_or_else(|| bad("tree sort"))?;
+                    let descending = r.u8()? != 0;
+                    Request::Tree {
+                        query: r.str()?,
+                        flags,
+                        sort,
+                        descending,
+                    }
                 }
-                let positions = (0..n).map(|_| r.u32()).collect::<io::Result<_>>()?;
-                Request::DropRows { positions, page }
-            }
-            _ => return Err(bad("request kind")),
-        }))
+                8 => {
+                    let node = NodeRef {
+                        vol: r.str()?,
+                        idx: r.u32()?,
+                        epoch: r.u64()?,
+                        path: r.str()?,
+                    };
+                    let sort = TreeSort::from_u8(r.u8()?).ok_or_else(|| bad("tree sort"))?;
+                    Request::Children {
+                        node,
+                        sort,
+                        descending: r.u8()? != 0,
+                        offset: r.u64()?,
+                        count: r.u32()?,
+                    }
+                }
+                9 => Request::TreeClose,
+                10 => Request::Snapshot {
+                    offset: r.u64()?,
+                    count: r.u32()?,
+                },
+                12 => Request::History,
+                13 => Request::SavePoint { name: r.str()? },
+                14 => Request::Compare { id: r.str()? },
+                15 => {
+                    let n = r.u32()? as usize;
+                    if n > r.0.len() / 4 {
+                        return Err(bad("truncated"));
+                    }
+                    Request::Series {
+                        paths: (0..n).map(|_| r.str()).collect::<io::Result<_>>()?,
+                    }
+                }
+                11 => {
+                    let page = r.u32()?;
+                    let n = r.u32()? as usize;
+                    if n > r.0.len() / 4 {
+                        return Err(bad("truncated"));
+                    }
+                    let positions = (0..n).map(|_| r.u32()).collect::<io::Result<_>>()?;
+                    Request::DropRows { positions, page }
+                }
+                _ => return Err(bad("request kind")),
+            },
+        ))
     }
 }
 
@@ -431,7 +528,8 @@ impl Response {
     /// doesn't have become errors (its clients never ask for them).
     pub fn encode_for(&self, ver: u8) -> Vec<u8> {
         if ver < 4 && matches!(self, Response::Snapshots(_) | Response::Series(_)) {
-            return Response::Error("not available in this client's protocol version".into()).encode_for(ver);
+            return Response::Error("not available in this client's protocol version".into())
+                .encode_for(ver);
         }
         let mut w = W(vec![ver]);
         match self {
@@ -498,7 +596,11 @@ impl Response {
                     w.u64(r.cloud);
                     w.u64(r.files);
                     w.u64(r.modified as u64);
-                    let f = r.is_dir as u8 | (r.has_children as u8) << 1 | (r.has_size as u8) << 2 | (r.matched as u8) << 3 | (r.hardlink as u8) << 4;
+                    let f = r.is_dir as u8
+                        | (r.has_children as u8) << 1
+                        | (r.has_size as u8) << 2
+                        | (r.matched as u8) << 3
+                        | (r.hardlink as u8) << 4;
                     if history {
                         w.u8(f | (r.has_before as u8) << 5 | (r.changed as u8) << 6);
                         w.u64(r.before);
@@ -545,21 +647,40 @@ impl Response {
     pub fn decode_for(b: &[u8], ver: u8) -> io::Result<Response> {
         let mut r = R(b);
         if r.u8()? != ver {
-            return Err(bad("protocol version (client and service versions differ?)"));
+            return Err(bad(
+                "protocol version (client and service versions differ?)",
+            ));
         }
         let history = ver >= 4;
         Ok(match r.u8()? {
             1 => {
-                let (total, offset, elapsed_us, generation) = (r.u64()?, r.u64()?, r.u64()?, r.u64()?);
+                let (total, offset, elapsed_us, generation) =
+                    (r.u64()?, r.u64()?, r.u64()?, r.u64()?);
                 let n = r.u32()? as usize;
                 let mut rows = Vec::with_capacity(n.min(1 << 16));
                 for _ in 0..n {
                     let (name, dir) = (r.str()?, r.str()?);
                     let (size, modified, created) = (r.u64()?, r.u64()? as i64, r.u64()? as i64);
                     let (attrs, run_count, flags) = (r.u32()?, r.u32()?, r.u8()?);
-                    rows.push(Row { name, dir, size, modified, created, attrs, run_count, is_dir: flags & 1 != 0, has_size: flags & 2 != 0 });
+                    rows.push(Row {
+                        name,
+                        dir,
+                        size,
+                        modified,
+                        created,
+                        attrs,
+                        run_count,
+                        is_dir: flags & 1 != 0,
+                        has_size: flags & 2 != 0,
+                    });
                 }
-                Response::Page(Page { total, offset, elapsed_us, generation, rows })
+                Response::Page(Page {
+                    total,
+                    offset,
+                    elapsed_us,
+                    generation,
+                    rows,
+                })
             }
             2 => {
                 let ready = r.u8()? != 0;
@@ -567,16 +688,34 @@ impl Response {
                 let n = r.u32()? as usize;
                 let mut volumes = Vec::with_capacity(n.min(64));
                 for _ in 0..n {
-                    volumes.push(VolumeInfo { key: r.str()?, kind: r.str()?, entries: r.u64()?, ready: r.u8()? != 0, state: r.str()? });
+                    volumes.push(VolumeInfo {
+                        key: r.str()?,
+                        kind: r.str()?,
+                        entries: r.u64()?,
+                        ready: r.u8()? != 0,
+                        state: r.str()?,
+                    });
                 }
-                Response::Status(StatusInfo { ready, generation, volumes })
+                Response::Status(StatusInfo {
+                    ready,
+                    generation,
+                    volumes,
+                })
             }
             3 => Response::Error(r.str()?),
             4 => Response::Config(r.str()?),
             5 => Response::Count(r.u32()?),
             6 => Response::Ok,
             7 => {
-                let mut l = TreeLevel { size: r.u64()?, cloud: r.u64()?, files: r.u64()?, total: r.u64()?, before: 0, has_before: false, rows: Vec::new() };
+                let mut l = TreeLevel {
+                    size: r.u64()?,
+                    cloud: r.u64()?,
+                    files: r.u64()?,
+                    total: r.u64()?,
+                    before: 0,
+                    has_before: false,
+                    rows: Vec::new(),
+                };
                 if history {
                     (l.before, l.has_before) = (r.u64()?, r.u8()? != 0);
                 }
@@ -584,8 +723,13 @@ impl Response {
                 l.rows.reserve(n.min(1 << 16));
                 for _ in 0..n {
                     let (name, dir) = (r.str()?, r.str()?);
-                    let (size, cloud, files, modified, f) = (r.u64()?, r.u64()?, r.u64()?, r.u64()? as i64, r.u8()?);
-                    let (before, free_before) = if history { (r.u64()?, r.u64()?) } else { (0, 0) };
+                    let (size, cloud, files, modified, f) =
+                        (r.u64()?, r.u64()?, r.u64()?, r.u64()? as i64, r.u8()?);
+                    let (before, free_before) = if history {
+                        (r.u64()?, r.u64()?)
+                    } else {
+                        (0, 0)
+                    };
                     l.rows.push(TreeRow {
                         before,
                         free_before,
@@ -652,7 +796,17 @@ fn snaps_in(r: &mut R) -> io::Result<Vec<SnapInfo>> {
     if n > r.0.len() / 12 {
         return Err(bad("truncated"));
     }
-    (0..n).map(|_| Ok(SnapInfo { id: r.str()?, time: r.u64()? as i64, name: r.str()?, folders: r.u64()?, bytes: r.u64()? })).collect()
+    (0..n)
+        .map(|_| {
+            Ok(SnapInfo {
+                id: r.str()?,
+                time: r.u64()? as i64,
+                name: r.str()?,
+                folders: r.u64()?,
+                bytes: r.u64()?,
+            })
+        })
+        .collect()
 }
 
 pub fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
@@ -668,7 +822,14 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
     match r.read_exact(&mut len) {
         Ok(()) => {}
-        Err(e) if matches!(e.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe) => return Ok(None),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(e) => return Err(e),
     }
     let len = u32::from_le_bytes(len);
@@ -693,7 +854,10 @@ pub struct VersionMismatch {
 
 impl std::fmt::Display for VersionMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "this program (rapidfind {BUILD}, protocol v{MIN_PROTOCOL}-v{PROTOCOL}) and the rapidfind service")?;
+        write!(
+            f,
+            "this program (rapidfind {BUILD}, protocol v{MIN_PROTOCOL}-v{PROTOCOL}) and the rapidfind service"
+        )?;
         match (&self.service_build, self.service) {
             (Some(b), Some((lo, hi))) => write!(f, " ({b}, protocol v{lo}-v{hi})")?,
             (None, Some((lo, hi))) if lo == hi => write!(f, " (protocol v{lo})")?,
@@ -713,7 +877,13 @@ pub fn is_version_mismatch(e: &io::Error) -> bool {
 }
 
 fn mismatch(service: Option<(u8, u8)>, service_build: Option<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::Unsupported, VersionMismatch { service, service_build })
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        VersionMismatch {
+            service,
+            service_build,
+        },
+    )
 }
 
 /// What a client sends first: `HELLO, min, max, build, program`.
@@ -728,12 +898,20 @@ fn hello(program: &str) -> Vec<u8> {
 /// Returns the answer and the chosen version.
 fn answer_hello(frame: &[u8]) -> (Vec<u8>, u8) {
     let mut r = R(&frame[1..]);
-    let parsed = (|| -> io::Result<(u8, u8, String, String)> { Ok((r.u8()?, r.u8()?, r.str()?, r.str()?)) })();
+    let parsed = (|| -> io::Result<(u8, u8, String, String)> {
+        Ok((r.u8()?, r.u8()?, r.str()?, r.str()?))
+    })();
     let (lo, hi, build, program) = parsed.unwrap_or((0, 0, "?".into(), "?".into()));
     let chosen = hi.min(PROTOCOL);
-    let chosen = if chosen >= lo.max(MIN_PROTOCOL) { chosen } else { 0 };
+    let chosen = if chosen >= lo.max(MIN_PROTOCOL) {
+        chosen
+    } else {
+        0
+    };
     if chosen == 0 {
-        log::warn!("{program} {build} (protocol v{lo}-v{hi}) can't talk to this service ({BUILD}, v{MIN_PROTOCOL}-v{PROTOCOL}); update it");
+        log::warn!(
+            "{program} {build} (protocol v{lo}-v{hi}) can't talk to this service ({BUILD}, v{MIN_PROTOCOL}-v{PROTOCOL}); update it"
+        );
     } else if build != BUILD {
         log::info!("{program} {build} connected (protocol v{chosen}; this service is {BUILD})");
     } else {
@@ -779,7 +957,9 @@ fn rows(eng: &Engine, hits: &[Hit]) -> Vec<Row> {
     let runs = eng.runs();
     eng.with_indexes(|ixs| {
         hits.iter()
-            .filter(|h| (h.vol as usize) < ixs.len() && (h.idx as usize) < ixs[h.vol as usize].entries.len())
+            .filter(|h| {
+                (h.vol as usize) < ixs.len() && (h.idx as usize) < ixs[h.vol as usize].entries.len()
+            })
             .map(|h| {
                 let ix = ixs[h.vol as usize];
                 let e = &ix.entries[h.idx as usize];
@@ -790,7 +970,9 @@ fn rows(eng: &Engine, hits: &[Hit]) -> Vec<Row> {
                     modified: e.modified,
                     created: ix.created(h.idx).unwrap_or(0),
                     attrs: e.attrs(),
-                    run_count: runs.get(ix.volume_serial, ix.record(h.idx)).map_or(0, |r| r.count),
+                    run_count: runs
+                        .get(ix.volume_serial, ix.record(h.idx))
+                        .map_or(0, |r| r.count),
                     is_dir: e.is_dir(),
                     has_size: ix.has_sizes,
                 }
@@ -815,20 +997,42 @@ impl Session {
                 volumes: eng
                     .status()
                     .into_iter()
-                    .map(|v| VolumeInfo { key: v.key, kind: v.kind.label().into(), entries: v.entries, ready: v.ready, state: v.state })
+                    .map(|v| VolumeInfo {
+                        key: v.key,
+                        kind: v.kind.label().into(),
+                        entries: v.entries,
+                        ready: v.ready,
+                        state: v.state,
+                    })
                     .collect(),
             }),
-            Request::Search { query, flags, sort, descending, page } => {
+            Request::Search {
+                query,
+                flags,
+                sort,
+                descending,
+                page,
+            } => {
                 let t = Instant::now();
                 let generation = eng.generation();
-                let opts = SearchOptions { sort: *sort, descending: *descending, limit: (*page).max(1) as usize };
+                let opts = SearchOptions {
+                    sort: *sort,
+                    descending: *descending,
+                    limit: (*page).max(1) as usize,
+                };
                 match eng.query(query, *flags, &opts) {
                     Ok(rs) => {
                         let first = rows(eng, rs.first_page());
                         let total = rs.total as u64;
                         self.rs = Some(rs);
                         self.generation = generation;
-                        Response::Page(Page { total, offset: 0, elapsed_us: t.elapsed().as_micros() as u64, generation, rows: first })
+                        Response::Page(Page {
+                            total,
+                            offset: 0,
+                            elapsed_us: t.elapsed().as_micros() as u64,
+                            generation,
+                            rows: first,
+                        })
                     }
                     Err(e) => {
                         self.rs = None;
@@ -837,9 +1041,13 @@ impl Session {
                 }
             }
             Request::Fetch { offset, count } => {
-                let Some(rs) = self.rs.as_mut() else { return Response::Error("no search yet".into()) };
+                let Some(rs) = self.rs.as_mut() else {
+                    return Response::Error("no search yet".into());
+                };
                 let t = Instant::now();
-                let page = eng.with_indexes(|ixs| rs.page(ixs, *offset as usize, (*count).min(100_000) as usize));
+                let page = eng.with_indexes(|ixs| {
+                    rs.page(ixs, *offset as usize, (*count).min(100_000) as usize)
+                });
                 match page {
                     Ok(hits) => Response::Page(Page {
                         total: rs.total as u64,
@@ -852,9 +1060,13 @@ impl Session {
                 }
             }
             Request::Snapshot { offset, count } => {
-                let Some(rs) = self.rs.as_mut() else { return Response::Error("no search yet".into()) };
+                let Some(rs) = self.rs.as_mut() else {
+                    return Response::Error("no search yet".into());
+                };
                 let t = Instant::now();
-                match eng.with_indexes(|ixs| rs.snapshot_page(ixs, *offset as usize, (*count).min(100_000) as usize)) {
+                match eng.with_indexes(|ixs| {
+                    rs.snapshot_page(ixs, *offset as usize, (*count).min(100_000) as usize)
+                }) {
                     Ok((total, hits)) => Response::Page(Page {
                         total: total as u64,
                         offset: *offset,
@@ -866,7 +1078,9 @@ impl Session {
                 }
             }
             Request::DropRows { positions, page } => {
-                let Some(rs) = self.rs.as_mut() else { return Response::Error("no search yet".into()) };
+                let Some(rs) = self.rs.as_mut() else {
+                    return Response::Error("no search yet".into());
+                };
                 let t = Instant::now();
                 let res = eng.with_indexes(|ixs| {
                     rs.drop_positions(ixs, positions)?;
@@ -883,7 +1097,9 @@ impl Session {
                     Err(_) => Response::Error(STALE.into()),
                 }
             }
-            Request::GetConfig => Response::Config(serde_json::to_string_pretty(&eng.config()).unwrap()),
+            Request::GetConfig => {
+                Response::Config(serde_json::to_string_pretty(&eng.config()).unwrap())
+            }
             Request::SetConfig(json) => match serde_json::from_str::<Config>(json) {
                 Ok(c) => match eng.set_config(c) {
                     Ok(()) => Response::Ok,
@@ -895,17 +1111,30 @@ impl Session {
                 Some(n) => Response::Count(n),
                 None => Response::Error(format!("not indexed: {path}")),
             },
-            Request::Tree { query, flags, sort, descending } => {
+            Request::Tree {
+                query,
+                flags,
+                sort,
+                descending,
+            } => {
                 self.tree = None; // free the old one before building
                 let tree = Tree::build(eng, query, *flags).and_then(|mut t| {
-                    let roots = t.children(eng, &NodeRef::default(), *sort, *descending, 0, usize::MAX)?;
+                    let roots =
+                        t.children(eng, &NodeRef::default(), *sort, *descending, 0, usize::MAX)?;
                     Ok((t, roots))
                 });
                 match tree {
                     Ok((mut t, mut roots)) => {
                         if self.compare.is_some() {
                             t.base = self.compare.clone();
-                            match t.children(eng, &NodeRef::default(), *sort, *descending, 0, usize::MAX) {
+                            match t.children(
+                                eng,
+                                &NodeRef::default(),
+                                *sort,
+                                *descending,
+                                0,
+                                usize::MAX,
+                            ) {
                                 Ok(r) => roots = r,
                                 Err(e) => return Response::Error(e),
                             }
@@ -916,9 +1145,24 @@ impl Session {
                     Err(e) => Response::Error(e),
                 }
             }
-            Request::Children { node, sort, descending, offset, count } => {
-                let Some(t) = self.tree.as_mut() else { return Response::Error("no tree open".into()) };
-                match t.children(eng, node, *sort, *descending, *offset as usize, *count as usize) {
+            Request::Children {
+                node,
+                sort,
+                descending,
+                offset,
+                count,
+            } => {
+                let Some(t) = self.tree.as_mut() else {
+                    return Response::Error("no tree open".into());
+                };
+                match t.children(
+                    eng,
+                    node,
+                    *sort,
+                    *descending,
+                    *offset as usize,
+                    *count as usize,
+                ) {
                     Ok(l) => Response::Tree(l),
                     Err(e) => Response::Error(e),
                 }
@@ -931,7 +1175,11 @@ impl Session {
                 Some(h) => Response::Snapshots(h.list()),
                 None => Response::Error(NO_HISTORY.into()),
             },
-            Request::SavePoint { name } => match eng.take_snapshot(if name.trim().is_empty() { "save point" } else { name.trim() }) {
+            Request::SavePoint { name } => match eng.take_snapshot(if name.trim().is_empty() {
+                "save point"
+            } else {
+                name.trim()
+            }) {
                 Ok(info) => Response::Snapshots(vec![info]),
                 Err(e) => Response::Error(e),
             },
@@ -939,7 +1187,9 @@ impl Session {
                 if id.is_empty() {
                     self.compare = None;
                 } else {
-                    let Some(h) = eng.history() else { return Response::Error(NO_HISTORY.into()) };
+                    let Some(h) = eng.history() else {
+                        return Response::Error(NO_HISTORY.into());
+                    };
                     match h.paths(id) {
                         Ok(m) => self.compare = Some(m),
                         Err(e) => return Response::Error(format!("snapshot {id}: {e}")),
@@ -967,11 +1217,26 @@ impl Sd {
     fn new(sddl: &str) -> io::Result<Sd> {
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
         let s = wide(sddl);
-        let ok = unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(s.as_ptr(), SDDL_REVISION_1, &mut sd, null_mut()) };
-        if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(Sd(sd)) }
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                s.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                null_mut(),
+            )
+        };
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Sd(sd))
+        }
     }
     fn attrs(&self) -> SECURITY_ATTRIBUTES {
-        SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: self.0, bInheritHandle: 0 }
+        SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: self.0,
+            bInheritHandle: 0,
+        }
     }
 }
 
@@ -1004,7 +1269,12 @@ fn create_instance(pipe_name: &str, sa: &SECURITY_ATTRIBUTES, first: bool) -> io
     let h = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 },
+            PIPE_ACCESS_DUPLEX
+                | if first {
+                    FILE_FLAG_FIRST_PIPE_INSTANCE
+                } else {
+                    0
+                },
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             1 << 16,
@@ -1021,7 +1291,11 @@ fn create_instance(pipe_name: &str, sa: &SECURITY_ATTRIBUTES, first: bool) -> io
 
 /// Makes a request handler for one new connection, given the client's
 /// identity (when it could be captured).
-pub type HandlerFactory = Arc<dyn Fn(Option<crate::ntfs::win::Token>) -> Box<dyn FnMut(&Request) -> Response + Send> + Send + Sync>;
+pub type HandlerFactory = Arc<
+    dyn Fn(Option<crate::ntfs::win::Token>) -> Box<dyn FnMut(&Request) -> Response + Send>
+        + Send
+        + Sync,
+>;
 
 /// A factory serving `engine` (once it is set) with a [`Session`] per client.
 /// The client's identity is handed to the engine for network folders.
@@ -1072,7 +1346,11 @@ pub fn serve_on(pipe_name: &str, factory: HandlerFactory) -> io::Result<()> {
                     match Request::decode_any(&frame) {
                         Ok((ver, req)) => handler(&req).encode_for(ver),
                         Err(e) => {
-                            let ver = frame.first().copied().filter(|v| (MIN_PROTOCOL..=PROTOCOL).contains(v)).unwrap_or(PROTOCOL);
+                            let ver = frame
+                                .first()
+                                .copied()
+                                .filter(|v| (MIN_PROTOCOL..=PROTOCOL).contains(v))
+                                .unwrap_or(PROTOCOL);
                             Response::Error(e.to_string()).encode_for(ver)
                         }
                     }
@@ -1131,19 +1409,37 @@ impl Client {
     /// [`VersionMismatch`] (see [`is_version_mismatch`]) if there is none.
     pub fn connect_to(pipe_name: &str) -> io::Result<Client> {
         let mut c = Self::open(pipe_name)?;
-        let program = std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default();
+        let program = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_default();
         write_frame(&mut c.pipe, &hello(&program))?;
-        let frame = read_frame(&mut c.pipe)?.ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "service closed the connection"))?;
+        let frame = read_frame(&mut c.pipe)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "service closed the connection",
+            )
+        })?;
         (c.ver, c.service_build) = read_hello_answer(&frame)?;
         Ok(c)
     }
 
     fn open(pipe_name: &str) -> io::Result<Client> {
-        let open = || std::fs::OpenOptions::new().access_mode(CLIENT_ACCESS).open(pipe_name);
+        let open = || {
+            std::fs::OpenOptions::new()
+                .access_mode(CLIENT_ACCESS)
+                .open(pipe_name)
+        };
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             match open() {
-                Ok(pipe) => return Ok(Client { pipe, ver: PROTOCOL, service_build: None }),
+                Ok(pipe) => {
+                    return Ok(Client {
+                        pipe,
+                        ver: PROTOCOL,
+                        service_build: None,
+                    });
+                }
                 // All instances busy: wait for one.
                 Err(e) if e.raw_os_error() == Some(231) && Instant::now() < deadline => {
                     let name = wide(pipe_name);
@@ -1166,7 +1462,12 @@ impl Client {
 
     pub fn call(&mut self, req: &Request) -> io::Result<Response> {
         write_frame(&mut self.pipe, &req.encode_for(self.ver)?)?;
-        let frame = read_frame(&mut self.pipe)?.ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "service closed the connection"))?;
+        let frame = read_frame(&mut self.pipe)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "service closed the connection",
+            )
+        })?;
         match frame.first() {
             Some(&v) if v != self.ver => Err(mismatch(Some((v, v)), self.service_build.clone())),
             _ => Response::decode_for(&frame, self.ver),
@@ -1185,8 +1486,21 @@ pub trait Backend: Send {
         Ok(())
     }
 
-    fn search(&mut self, query: &str, flags: SearchFlags, sort: SortKey, descending: bool, page: u32) -> Result<Page, String> {
-        match self.call(&Request::Search { query: query.into(), flags, sort, descending, page }) {
+    fn search(
+        &mut self,
+        query: &str,
+        flags: SearchFlags,
+        sort: SortKey,
+        descending: bool,
+        page: u32,
+    ) -> Result<Page, String> {
+        match self.call(&Request::Search {
+            query: query.into(),
+            flags,
+            sort,
+            descending,
+            page,
+        }) {
             Ok(Response::Page(p)) => Ok(p),
             Ok(Response::Error(e)) => Err(e),
             Ok(_) => Err("unexpected response".into()),
@@ -1251,12 +1565,36 @@ pub trait Backend: Send {
     }
 
     /// Opens a folder-size tree; returns the volume roots.
-    fn tree(&mut self, query: &str, flags: SearchFlags, sort: TreeSort, descending: bool) -> Result<TreeLevel, String> {
-        tree_reply(self.call(&Request::Tree { query: query.into(), flags, sort, descending }))
+    fn tree(
+        &mut self,
+        query: &str,
+        flags: SearchFlags,
+        sort: TreeSort,
+        descending: bool,
+    ) -> Result<TreeLevel, String> {
+        tree_reply(self.call(&Request::Tree {
+            query: query.into(),
+            flags,
+            sort,
+            descending,
+        }))
     }
 
-    fn children(&mut self, node: &NodeRef, sort: TreeSort, descending: bool, offset: u64, count: u32) -> Result<TreeLevel, String> {
-        tree_reply(self.call(&Request::Children { node: node.clone(), sort, descending, offset, count }))
+    fn children(
+        &mut self,
+        node: &NodeRef,
+        sort: TreeSort,
+        descending: bool,
+        offset: u64,
+        count: u32,
+    ) -> Result<TreeLevel, String> {
+        tree_reply(self.call(&Request::Children {
+            node: node.clone(),
+            sort,
+            descending,
+            offset,
+            count,
+        }))
     }
 
     fn tree_close(&mut self) {
@@ -1268,7 +1606,9 @@ pub trait Backend: Send {
     }
 
     fn save_point(&mut self, name: &str) -> Result<SnapInfo, String> {
-        snaps_reply(self.call(&Request::SavePoint { name: name.into() }))?.pop().ok_or_else(|| "no snapshot".into())
+        snaps_reply(self.call(&Request::SavePoint { name: name.into() }))?
+            .pop()
+            .ok_or_else(|| "no snapshot".into())
     }
 
     /// Compare the tree with snapshot `id` (empty: stop comparing).
@@ -1282,7 +1622,9 @@ pub trait Backend: Send {
     }
 
     fn series(&mut self, paths: &[String]) -> Result<SeriesReply, String> {
-        match self.call(&Request::Series { paths: paths.to_vec() }) {
+        match self.call(&Request::Series {
+            paths: paths.to_vec(),
+        }) {
             Ok(Response::Series(s)) => Ok(s),
             Ok(Response::Error(e)) => Err(e),
             Ok(_) => Err("unexpected response".into()),
@@ -1325,7 +1667,10 @@ pub struct Local {
 
 impl Local {
     pub fn new(engine: Arc<Engine>) -> Local {
-        Local { engine, session: Session::default() }
+        Local {
+            engine,
+            session: Session::default(),
+        }
     }
 }
 
@@ -1362,33 +1707,74 @@ mod tests {
         for req in [
             Request::Search {
                 query: "ext:rs ünï \"a b\"".into(),
-                flags: SearchFlags { case: true, regex: true, ..Default::default() },
+                flags: SearchFlags {
+                    case: true,
+                    regex: true,
+                    ..Default::default()
+                },
                 sort: SortKey::RunCount,
                 descending: true,
                 page: 123,
             },
-            Request::Search { query: String::new(), flags: SearchFlags::default(), sort: SortKey::Name, descending: false, page: 0 },
-            Request::Fetch { offset: 1 << 40, count: 77 },
+            Request::Search {
+                query: String::new(),
+                flags: SearchFlags::default(),
+                sort: SortKey::Name,
+                descending: false,
+                page: 0,
+            },
+            Request::Fetch {
+                offset: 1 << 40,
+                count: 77,
+            },
             Request::Status,
             Request::GetConfig,
             Request::SetConfig("{}".into()),
             Request::RecordRun(r"C:\x".into()),
-            Request::Tree { query: "*.mp4".into(), flags: SearchFlags { path: true, ..Default::default() }, sort: TreeSort::Files, descending: true },
+            Request::Tree {
+                query: "*.mp4".into(),
+                flags: SearchFlags {
+                    path: true,
+                    ..Default::default()
+                },
+                sort: TreeSort::Files,
+                descending: true,
+            },
             Request::Children {
-                node: NodeRef { vol: r"\\nas\share".into(), idx: 7, epoch: 3, path: r"C:\Users".into() },
+                node: NodeRef {
+                    vol: r"\\nas\share".into(),
+                    idx: 7,
+                    epoch: 3,
+                    path: r"C:\Users".into(),
+                },
                 sort: TreeSort::Modified,
                 descending: false,
                 offset: 10,
                 count: 500,
             },
             Request::TreeClose,
-            Request::Snapshot { offset: 5, count: 4096 },
-            Request::DropRows { positions: vec![0, 7, u32::MAX], page: 512 },
-            Request::DropRows { positions: Vec::new(), page: 0 },
+            Request::Snapshot {
+                offset: 5,
+                count: 4096,
+            },
+            Request::DropRows {
+                positions: vec![0, 7, u32::MAX],
+                page: 512,
+            },
+            Request::DropRows {
+                positions: Vec::new(),
+                page: 0,
+            },
             Request::History,
-            Request::SavePoint { name: "before cleanup".into() },
-            Request::Compare { id: "1760000000-a".into() },
-            Request::Series { paths: vec![r"C:\Users".into(), "D:".into()] },
+            Request::SavePoint {
+                name: "before cleanup".into(),
+            },
+            Request::Compare {
+                id: "1760000000-a".into(),
+            },
+            Request::Series {
+                paths: vec![r"C:\Users".into(), "D:".into()],
+            },
         ] {
             assert_eq!(Request::decode(&req.encode()).unwrap(), req);
         }
@@ -1402,14 +1788,34 @@ mod tests {
             elapsed_us: 1234,
             generation: 99,
             rows: vec![
-                Row { name: "a.txt".into(), dir: r"C:\Users\me".into(), size: 10, modified: -1, created: 5, attrs: 0x20, run_count: 3, is_dir: false, has_size: true },
-                Row { name: "C:".into(), is_dir: true, ..Default::default() },
+                Row {
+                    name: "a.txt".into(),
+                    dir: r"C:\Users\me".into(),
+                    size: 10,
+                    modified: -1,
+                    created: 5,
+                    attrs: 0x20,
+                    run_count: 3,
+                    is_dir: false,
+                    has_size: true,
+                },
+                Row {
+                    name: "C:".into(),
+                    is_dir: true,
+                    ..Default::default()
+                },
             ],
         });
         let status = Response::Status(StatusInfo {
             ready: true,
             generation: 7,
-            volumes: vec![VolumeInfo { key: "C".into(), kind: "NTFS".into(), entries: 3, ready: true, state: "ready".into() }],
+            volumes: vec![VolumeInfo {
+                key: "C".into(),
+                kind: "NTFS".into(),
+                entries: 3,
+                ready: true,
+                state: "ready".into(),
+            }],
         });
         let tree = Response::Tree(TreeLevel {
             size: 1 << 40,
@@ -1419,23 +1825,76 @@ mod tests {
             before: 3,
             has_before: true,
             rows: vec![
-                TreeRow { name: "C:".into(), size: 5, files: 2, is_dir: true, has_children: true, has_size: true, vol: "C".into(), idx: 9, epoch: 1, capacity: 100, free: 40, before: 4, has_before: true, free_before: 50, ..Default::default() },
-                TreeRow { name: "a.mp4".into(), dir: r"C:\v".into(), size: 3, files: 1, modified: -5, matched: true, cloud: 9, hardlink: true, ..Default::default() },
+                TreeRow {
+                    name: "C:".into(),
+                    size: 5,
+                    files: 2,
+                    is_dir: true,
+                    has_children: true,
+                    has_size: true,
+                    vol: "C".into(),
+                    idx: 9,
+                    epoch: 1,
+                    capacity: 100,
+                    free: 40,
+                    before: 4,
+                    has_before: true,
+                    free_before: 50,
+                    ..Default::default()
+                },
+                TreeRow {
+                    name: "a.mp4".into(),
+                    dir: r"C:\v".into(),
+                    size: 3,
+                    files: 1,
+                    modified: -5,
+                    matched: true,
+                    cloud: 9,
+                    hardlink: true,
+                    ..Default::default()
+                },
             ],
         });
-        let snaps = Response::Snapshots(vec![SnapInfo { id: "1760000000-s".into(), time: 1_760_000_000, name: "before cleanup".into(), folders: 12, bytes: 3456 }]);
+        let snaps = Response::Snapshots(vec![SnapInfo {
+            id: "1760000000-s".into(),
+            time: 1_760_000_000,
+            name: "before cleanup".into(),
+            folders: 12,
+            bytes: 3456,
+        }]);
         let series = Response::Series(SeriesReply {
-            snaps: vec![SnapInfo { id: "1-a".into(), time: 1, ..Default::default() }],
-            rows: vec![SeriesRow { path: r"C:\x".into(), sizes: vec![5, u64::MAX], free: vec![] }],
+            snaps: vec![SnapInfo {
+                id: "1-a".into(),
+                time: 1,
+                ..Default::default()
+            }],
+            rows: vec![SeriesRow {
+                path: r"C:\x".into(),
+                sizes: vec![5, u64::MAX],
+                free: vec![],
+            }],
         });
-        let all = [page, status, Response::Error("bad size: x".into()), Response::Config("{}".into()), Response::Count(4), Response::Ok, tree, snaps, series];
+        let all = [
+            page,
+            status,
+            Response::Error("bad size: x".into()),
+            Response::Config("{}".into()),
+            Response::Count(4),
+            Response::Ok,
+            tree,
+            snaps,
+            series,
+        ];
         let mut wire = Vec::new();
         for r in &all {
             write_frame(&mut wire, &r.encode()).unwrap();
         }
         let mut rd = &wire[..];
         for r in &all {
-            assert_eq!(&Response::decode(&read_frame(&mut rd).unwrap().unwrap()).unwrap(), r);
+            assert_eq!(
+                &Response::decode(&read_frame(&mut rd).unwrap().unwrap()).unwrap(),
+                r
+            );
         }
         assert_eq!(read_frame(&mut rd).unwrap(), None);
     }
@@ -1451,7 +1910,11 @@ mod tests {
 
     #[test]
     fn full_paths() {
-        let r = |name: &str, dir: &str| Row { name: name.into(), dir: dir.into(), ..Default::default() };
+        let r = |name: &str, dir: &str| Row {
+            name: name.into(),
+            dir: dir.into(),
+            ..Default::default()
+        };
         assert_eq!(r("C:", "").full_path(), r"C:\");
         assert_eq!(r("x", r"C:\").full_path(), r"C:\x");
         assert_eq!(r("x", r"C:\a").full_path(), r"C:\a\x");
@@ -1462,20 +1925,35 @@ mod tests {
         let mut ix = sample();
         ix.volume_serial = 3;
         let mut be = Local::new(Arc::new(Engine::from_indexes(vec![ix])));
-        let p = be.search("", SearchFlags::default(), SortKey::Name, false, 2).unwrap();
+        let p = be
+            .search("", SearchFlags::default(), SortKey::Name, false, 2)
+            .unwrap();
         assert_eq!((p.total, p.rows.len()), (7, 2));
         let p2 = be.fetch(2, 10).unwrap();
         let names: Vec<_> = p2.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["notepad.exe", "notes.txt", "Report.PDF", "Users", "Windows"]);
+        assert_eq!(
+            names,
+            ["notepad.exe", "notes.txt", "Report.PDF", "Users", "Windows"]
+        );
         assert_eq!(p2.rows[0].full_path(), r"C:\Windows\notepad.exe");
         assert_eq!(be.record_run(r"C:\Windows\notepad.exe"), Some(1));
-        let p = be.search("notepad", SearchFlags::default(), SortKey::Name, false, 10).unwrap();
+        let p = be
+            .search("notepad", SearchFlags::default(), SortKey::Name, false, 10)
+            .unwrap();
         assert_eq!(p.rows[0].run_count, 1);
         let mut c = be.get_config().unwrap();
         c.exclude_files = vec!["*.exe".into()];
         be.set_config(&c).unwrap();
-        assert_eq!(be.search("notepad", SearchFlags::default(), SortKey::Name, false, 10).unwrap().total, 0);
-        assert!(be.search("size:x", SearchFlags::default(), SortKey::Name, false, 10).is_err());
+        assert_eq!(
+            be.search("notepad", SearchFlags::default(), SortKey::Name, false, 10)
+                .unwrap()
+                .total,
+            0
+        );
+        assert!(
+            be.search("size:x", SearchFlags::default(), SortKey::Name, false, 10)
+                .is_err()
+        );
         assert!(be.generation().is_some());
     }
 
@@ -1483,7 +1961,8 @@ mod tests {
     #[test]
     fn session_history_compare_series() {
         use crate::index::tests::by_name;
-        let dir = std::env::temp_dir().join(format!("rapidfind-ipc-history-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rapidfind-ipc-history-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let eng = Arc::new(Engine::from_indexes(vec![sample()]));
         let mut be = Local::new(eng.clone());
@@ -1493,7 +1972,12 @@ mod tests {
         // sample() folders are tiny: the threshold would drop them, so snapshot with none.
         let mut t = Tree::build(&eng, "", SearchFlags::default()).unwrap();
         let s = t.snapshot(&eng, "before", 0, 100).unwrap();
-        let paths: Vec<String> = s.paths().get(r"C:\Users\Me").map(|x| x.to_string()).into_iter().collect();
+        let paths: Vec<String> = s
+            .paths()
+            .get(r"C:\Users\Me")
+            .map(|x| x.to_string())
+            .into_iter()
+            .collect();
         assert_eq!(paths, ["1024"]);
         let saved = eng.history().unwrap().save(&s).unwrap();
         assert_eq!(be.history().unwrap(), std::slice::from_ref(&saved));
@@ -1505,20 +1989,40 @@ mod tests {
             ix.add_link(90, 0, me, "big.bin", 0x20, 5000, i64::MAX / 2, 0);
         }
         be.compare(&saved.id).unwrap();
-        let roots = be.tree("", SearchFlags::default(), TreeSort::Change, true).unwrap();
+        let roots = be
+            .tree("", SearchFlags::default(), TreeSort::Change, true)
+            .unwrap();
         let c = &roots.rows[0];
         assert!(c.has_before && c.change() == 5000, "{c:?}");
-        let l = be.children(&NodeRef { path: r"C:\Users\Me".into(), ..Default::default() }, TreeSort::Change, true, 0, 10).unwrap();
+        let l = be
+            .children(
+                &NodeRef {
+                    path: r"C:\Users\Me".into(),
+                    ..Default::default()
+                },
+                TreeSort::Change,
+                true,
+                0,
+                10,
+            )
+            .unwrap();
         assert_eq!(l.rows[0].name, "big.bin");
         assert!(l.rows[0].changed && l.rows[0].change() == 5000);
         assert_eq!((l.before, l.has_before), (1024, true));
         let notes = l.rows.iter().find(|r| r.name == "notes.txt").unwrap();
         assert_eq!(notes.change(), 0);
-        let series = be.series(&[r"C:\Users\Me".into(), r"C:\Nope".into()]).unwrap();
+        let series = be
+            .series(&[r"C:\Users\Me".into(), r"C:\Nope".into()])
+            .unwrap();
         assert_eq!(series.snaps.len(), 1);
-        assert_eq!((series.rows[0].sizes[0], series.rows[1].sizes[0]), (1024, u64::MAX));
+        assert_eq!(
+            (series.rows[0].sizes[0], series.rows[1].sizes[0]),
+            (1024, u64::MAX)
+        );
         be.compare("").unwrap();
-        let plain = be.tree("", SearchFlags::default(), TreeSort::Size, true).unwrap();
+        let plain = be
+            .tree("", SearchFlags::default(), TreeSort::Size, true)
+            .unwrap();
         assert!(!plain.rows[0].has_before);
         assert!(be.compare("123-a").is_err());
         let sp = be.save_point("after").unwrap();
@@ -1529,17 +2033,43 @@ mod tests {
     #[test]
     fn session_tree() {
         let mut be = Local::new(Arc::new(Engine::from_indexes(vec![sample()])));
-        let none = NodeRef { path: "C:".into(), ..Default::default() };
+        let none = NodeRef {
+            path: "C:".into(),
+            ..Default::default()
+        };
         assert!(be.children(&none, TreeSort::Size, true, 0, 10).is_err()); // no tree yet
-        let roots = be.tree("", SearchFlags::default(), TreeSort::Size, true).unwrap();
+        let roots = be
+            .tree("", SearchFlags::default(), TreeSort::Size, true)
+            .unwrap();
         assert_eq!(roots.rows[0].full_path(), r"C:\");
         let r = &roots.rows[0];
-        let l = be.children(&NodeRef { vol: r.vol.clone(), idx: r.idx, epoch: r.epoch, path: r.full_path() }, TreeSort::Size, true, 0, 10).unwrap();
-        assert_eq!(l.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Users", "Windows"]);
+        let l = be
+            .children(
+                &NodeRef {
+                    vol: r.vol.clone(),
+                    idx: r.idx,
+                    epoch: r.epoch,
+                    path: r.full_path(),
+                },
+                TreeSort::Size,
+                true,
+                0,
+                10,
+            )
+            .unwrap();
+        assert_eq!(
+            l.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["Users", "Windows"]
+        );
         assert_eq!(l.rows[0].full_path(), r"C:\Users");
-        let f = be.tree("ext:exe", SearchFlags::default(), TreeSort::Size, true).unwrap();
+        let f = be
+            .tree("ext:exe", SearchFlags::default(), TreeSort::Size, true)
+            .unwrap();
         assert_eq!(f.rows[0].size, 200);
-        assert!(be.tree("size:bad", SearchFlags::default(), TreeSort::Size, true).is_err());
+        assert!(
+            be.tree("size:bad", SearchFlags::default(), TreeSort::Size, true)
+                .is_err()
+        );
         be.tree_close();
         assert!(be.children(&none, TreeSort::Size, true, 0, 10).is_err());
     }
@@ -1560,16 +2090,42 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         };
         // Before the engine is set: loading.
-        assert_eq!(c.call(&Request::Status).unwrap(), Response::Status(StatusInfo::default()));
-        let search = Request::Search { query: "note".into(), flags: SearchFlags::default(), sort: SortKey::Name, descending: false, page: 1 };
+        assert_eq!(
+            c.call(&Request::Status).unwrap(),
+            Response::Status(StatusInfo::default())
+        );
+        let search = Request::Search {
+            query: "note".into(),
+            flags: SearchFlags::default(),
+            sort: SortKey::Name,
+            descending: false,
+            page: 1,
+        };
         assert_eq!(c.call(&search).unwrap(), Response::Error(LOADING.into()));
         let _ = engine.set(Arc::new(Engine::from_indexes(vec![sample()])));
-        let Response::Page(p) = c.call(&search).unwrap() else { panic!() };
+        let Response::Page(p) = c.call(&search).unwrap() else {
+            panic!()
+        };
         assert_eq!((p.total, p.rows.len()), (2, 1));
         // A second client is served concurrently by another instance, with its own session.
         let mut c2 = Client::connect_to(&name).unwrap();
-        assert!(matches!(c2.call(&Request::Fetch { offset: 0, count: 1 }).unwrap(), Response::Error(_)));
-        let Response::Page(p) = c.call(&Request::Fetch { offset: 1, count: 5 }).unwrap() else { panic!() };
+        assert!(matches!(
+            c2.call(&Request::Fetch {
+                offset: 0,
+                count: 1
+            })
+            .unwrap(),
+            Response::Error(_)
+        ));
+        let Response::Page(p) = c
+            .call(&Request::Fetch {
+                offset: 1,
+                count: 5,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(p.rows[0].name, "notes.txt");
         assert_eq!((c.protocol(), c.service_build()), (PROTOCOL, Some(BUILD)));
     }
@@ -1582,15 +2138,48 @@ mod tests {
             total: 1,
             before: 3,
             has_before: true,
-            rows: vec![TreeRow { name: "C:".into(), size: 9, is_dir: true, has_children: true, before: 4, has_before: true, changed: true, free_before: 5, ..Default::default() }],
+            rows: vec![TreeRow {
+                name: "C:".into(),
+                size: 9,
+                is_dir: true,
+                has_children: true,
+                before: 4,
+                has_before: true,
+                changed: true,
+                free_before: 5,
+                ..Default::default()
+            }],
             ..Default::default()
         });
-        let Response::Tree(back) = Response::decode_for(&tree.encode_for(3), 3).unwrap() else { panic!() };
-        assert_eq!((back.size, back.has_before, back.rows[0].name.as_str(), back.rows[0].has_children, back.rows[0].has_before), (9, false, "C:", true, false));
-        assert_eq!(Response::decode_for(&Response::Snapshots(vec![]).encode_for(3), 3).unwrap(), Response::Error("not available in this client's protocol version".into()));
+        let Response::Tree(back) = Response::decode_for(&tree.encode_for(3), 3).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            (
+                back.size,
+                back.has_before,
+                back.rows[0].name.as_str(),
+                back.rows[0].has_children,
+                back.rows[0].has_before
+            ),
+            (9, false, "C:", true, false)
+        );
+        assert_eq!(
+            Response::decode_for(&Response::Snapshots(vec![]).encode_for(3), 3).unwrap(),
+            Response::Error("not available in this client's protocol version".into())
+        );
         assert!(Request::History.encode_for(3).is_err());
-        let s = Request::Search { query: "x".into(), flags: SearchFlags::default(), sort: SortKey::Size, descending: true, page: 9 };
-        assert_eq!(Request::decode_any(&s.encode_for(3).unwrap()).unwrap(), (3, s));
+        let s = Request::Search {
+            query: "x".into(),
+            flags: SearchFlags::default(),
+            sort: SortKey::Size,
+            descending: true,
+            page: 9,
+        };
+        assert_eq!(
+            Request::decode_any(&s.encode_for(3).unwrap()).unwrap(),
+            (3, s)
+        );
         // A v3 frame with a v4-only kind, or versions nobody speaks, are rejected.
         assert!(Request::decode_any(&[3, 12]).is_err());
         assert!(Request::decode_any(&[MIN_PROTOCOL - 1, 3]).is_err());
@@ -1604,7 +2193,9 @@ mod tests {
     fn connect_retry(name: &str) -> io::Result<Client> {
         for _ in 0..100 {
             match Client::connect_to(name) {
-                Err(e) if e.raw_os_error() == Some(2) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) if e.raw_os_error() == Some(2) => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
                 r => return r,
             }
         }
@@ -1616,23 +2207,35 @@ mod tests {
         // A v3 service rejects anything else (the hello too) with a v3 error.
         let name = format!(r"\\.\pipe\rapidfind-test-v3-{}", std::process::id());
         fake_service(&name, |f| match Request::decode_any(f) {
-            Ok((3, Request::Status)) => Response::Status(StatusInfo { ready: true, ..Default::default() }).encode_for(3),
+            Ok((3, Request::Status)) => Response::Status(StatusInfo {
+                ready: true,
+                ..Default::default()
+            })
+            .encode_for(3),
             _ => Response::Error("malformed message: protocol version".into()).encode_for(3),
         });
         let mut c = connect_retry(&name).unwrap();
         assert_eq!((c.protocol(), c.service_build()), (3, None));
         assert!(matches!(c.call(&Request::Status).unwrap(), Response::Status(s) if s.ready));
         // What v3 doesn't have fails cleanly, without a round trip.
-        assert!(c.call(&Request::History).is_err_and(|e| !is_version_mismatch(&e)));
+        assert!(
+            c.call(&Request::History)
+                .is_err_and(|e| !is_version_mismatch(&e))
+        );
     }
 
     #[test]
     fn incompatible_service_is_a_version_mismatch() {
         let name = format!(r"\\.\pipe\rapidfind-test-v9-{}", std::process::id());
-        fake_service(&name, |_| Response::Error("malformed message: protocol version".into()).encode_for(9));
+        fake_service(&name, |_| {
+            Response::Error("malformed message: protocol version".into()).encode_for(9)
+        });
         let e = connect_retry(&name).err().unwrap();
         assert!(is_version_mismatch(&e), "{e}");
-        assert!(e.to_string().contains("different versions") && e.to_string().contains("v9"), "{e}");
+        assert!(
+            e.to_string().contains("different versions") && e.to_string().contains("v9"),
+            "{e}"
+        );
         // A newer service that does hellos but dropped our versions says so (and its build).
         let name = format!(r"\\.\pipe\rapidfind-test-v9h-{}", std::process::id());
         fake_service(&name, |_| {
@@ -1641,9 +2244,14 @@ mod tests {
             w.0
         });
         let e = connect_retry(&name).err().unwrap();
-        assert!(is_version_mismatch(&e) && e.to_string().contains("9.0.0+abc"), "{e}");
+        assert!(
+            is_version_mismatch(&e) && e.to_string().contains("9.0.0+abc"),
+            "{e}"
+        );
         // Not running is not a mismatch.
-        let e = Client::connect_to(r"\\.\pipe\rapidfind-test-nobody-here").err().unwrap();
+        let e = Client::connect_to(r"\\.\pipe\rapidfind-test-nobody-here")
+            .err()
+            .unwrap();
         assert!(!is_version_mismatch(&e));
     }
 
@@ -1658,16 +2266,26 @@ mod tests {
         std::thread::spawn(move || serve_on(&server_name, engine_handler(engine)));
         connect_retry(&name).unwrap();
         let mut raw = Client::open(&name).unwrap();
-        let tree = Request::Tree { query: String::new(), flags: SearchFlags::default(), sort: TreeSort::Size, descending: true };
+        let tree = Request::Tree {
+            query: String::new(),
+            flags: SearchFlags::default(),
+            sort: TreeSort::Size,
+            descending: true,
+        };
         write_frame(&mut raw.pipe, &tree.encode_for(3).unwrap()).unwrap();
         let f = read_frame(&mut raw.pipe).unwrap().unwrap();
-        assert!(matches!(Response::decode_for(&f, 3).unwrap(), Response::Tree(l) if l.rows[0].name == "C:"));
+        assert!(
+            matches!(Response::decode_for(&f, 3).unwrap(), Response::Tree(l) if l.rows[0].name == "C:")
+        );
         // A hello from a client speaking v2-v3 gets v3.
         let mut w = W(vec![HELLO, 2, 3]);
         w.str("0.0.9");
         w.str("old-gui");
         write_frame(&mut raw.pipe, &w.0).unwrap();
-        assert_eq!(read_hello_answer(&read_frame(&mut raw.pipe).unwrap().unwrap()).unwrap(), (3, Some(BUILD.to_string())));
+        assert_eq!(
+            read_hello_answer(&read_frame(&mut raw.pipe).unwrap().unwrap()).unwrap(),
+            (3, Some(BUILD.to_string()))
+        );
         // And a v9 request gets an error in our version: the client sees the mismatch.
         write_frame(&mut raw.pipe, &[9, 3]).unwrap();
         assert_eq!(read_frame(&mut raw.pipe).unwrap().unwrap()[0], PROTOCOL);

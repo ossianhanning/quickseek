@@ -10,8 +10,8 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, GetLogicalDrives, GetVolumeInformationW, OPEN_EXISTING, ReadFile,
+    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetLogicalDrives, GetVolumeInformationW, OPEN_EXISTING, ReadFile,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
 
@@ -61,8 +61,13 @@ fn create(path: &str, access: u32, flags: u32) -> io::Result<Handle> {
 
 /// Opens `\\.\C:` for raw reads / FSCTLs. Requires administrator rights.
 pub fn open_volume(letter: char, flags: u32) -> io::Result<Handle> {
-    create(&format!("\\\\.\\{letter}:"), GENERIC_READ, flags)
-        .or_else(|_| create(&format!("\\\\.\\{letter}:"), GENERIC_READ | GENERIC_WRITE, flags))
+    create(&format!("\\\\.\\{letter}:"), GENERIC_READ, flags).or_else(|_| {
+        create(
+            &format!("\\\\.\\{letter}:"),
+            GENERIC_READ | GENERIC_WRITE,
+            flags,
+        )
+    })
 }
 
 /// Opens `\\.\PhysicalDriveN` for raw reads. Requires administrator rights.
@@ -76,10 +81,21 @@ const IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: u32 = 0x0056_0000;
 pub fn volume_disk_extent(h: &Handle) -> io::Result<(u32, u64)> {
     // VOLUME_DISK_EXTENTS with room for a few extents.
     let mut buf = [0u64; 1 + 3 * 4];
-    unsafe { ioctl(h, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, null(), 0, buf.as_mut_ptr() as *mut _, size_of_val(&buf))? };
+    unsafe {
+        ioctl(
+            h,
+            IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+            null(),
+            0,
+            buf.as_mut_ptr() as *mut _,
+            size_of_val(&buf),
+        )?
+    };
     let count = buf[0] as u32;
     if count != 1 {
-        return Err(io::Error::other(format!("volume spans {count} disk extents")));
+        return Err(io::Error::other(format!(
+            "volume spans {count} disk extents"
+        )));
     }
     Ok((buf[1] as u32, buf[2]))
 }
@@ -127,15 +143,7 @@ pub fn read_at(h: &Handle, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
     ov.Anonymous.Anonymous.Offset = offset as u32;
     ov.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
     let mut read = 0u32;
-    let ok = unsafe {
-        ReadFile(
-            h.0,
-            buf.as_mut_ptr(),
-            buf.len() as u32,
-            &mut read,
-            &mut ov,
-        )
-    };
+    let ok = unsafe { ReadFile(h.0, buf.as_mut_ptr(), buf.len() as u32, &mut read, &mut ov) };
     if ok == 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -176,7 +184,12 @@ impl AlignedBuf {
 
 impl Drop for AlignedBuf {
     fn drop(&mut self) {
-        unsafe { dealloc(self.ptr, Layout::from_size_align(self.len, Self::ALIGN).unwrap()) };
+        unsafe {
+            dealloc(
+                self.ptr,
+                Layout::from_size_align(self.len, Self::ALIGN).unwrap(),
+            )
+        };
     }
 }
 
@@ -207,10 +220,19 @@ pub const DRIVE_FIXED: u32 = 3;
 
 /// 128-bit file id of a volume's root directory (FileIdInfo).
 pub fn root_file_id(letter: char) -> io::Result<u128> {
-    use windows_sys::Win32::Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
     let h = open_root_dir(letter)?;
     let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
-    let ok = unsafe { GetFileInformationByHandleEx(h.0, FileIdInfo, &mut info as *mut _ as *mut _, size_of::<FILE_ID_INFO>() as u32) };
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            h.0,
+            FileIdInfo,
+            &mut info as *mut _ as *mut _,
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -248,7 +270,8 @@ pub fn list_volumes() -> Vec<VolumeInfo> {
         };
         if ok != 0 {
             let n = fs.iter().position(|&c| c == 0).unwrap_or(fs.len());
-            let drive_type = unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(root.as_ptr()) };
+            let drive_type =
+                unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(root.as_ptr()) };
             out.push(VolumeInfo {
                 letter,
                 fs: String::from_utf16_lossy(&fs[..n]),
@@ -288,8 +311,8 @@ impl Token {
         use std::os::windows::io::AsRawHandle;
         let pipe = pipe.as_raw_handle();
         use windows_sys::Win32::Security::{
-            DuplicateTokenEx, RevertToSelf, SecurityImpersonation, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
-            TokenImpersonation,
+            DuplicateTokenEx, RevertToSelf, SecurityImpersonation, TOKEN_DUPLICATE,
+            TOKEN_IMPERSONATE, TOKEN_QUERY, TokenImpersonation,
         };
         use windows_sys::Win32::System::Pipes::ImpersonateNamedPipeClient;
         use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
@@ -298,13 +321,25 @@ impl Token {
                 return None;
             }
             let mut t: HANDLE = null_mut();
-            let ok = OpenThreadToken(GetCurrentThread(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_IMPERSONATE, 1, &mut t);
+            let ok = OpenThreadToken(
+                GetCurrentThread(),
+                TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_IMPERSONATE,
+                1,
+                &mut t,
+            );
             RevertToSelf();
             if ok == 0 {
                 return None;
             }
             let mut dup: HANDLE = null_mut();
-            let ok = DuplicateTokenEx(t, TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE, null(), SecurityImpersonation, TokenImpersonation, &mut dup);
+            let ok = DuplicateTokenEx(
+                t,
+                TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE,
+                null(),
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut dup,
+            );
             CloseHandle(t);
             (ok != 0).then_some(Token(dup))
         }
@@ -323,11 +358,20 @@ impl Token {
 /// Mapped drive paths (`Z:\data`) only exist in the user's session; turn them
 /// into UNC (`\server\share\data`) so the service can reach them.
 pub fn universal_path(path: &str) -> String {
-    use windows_sys::Win32::NetworkManagement::WNet::{UNIVERSAL_NAME_INFO_LEVEL, UNIVERSAL_NAME_INFOW, WNetGetUniversalNameW};
+    use windows_sys::Win32::NetworkManagement::WNet::{
+        UNIVERSAL_NAME_INFO_LEVEL, UNIVERSAL_NAME_INFOW, WNetGetUniversalNameW,
+    };
     let w = wide(path);
     let mut buf = vec![0u64; 512];
     let mut size = (buf.len() * 8) as u32;
-    let rc = unsafe { WNetGetUniversalNameW(w.as_ptr(), UNIVERSAL_NAME_INFO_LEVEL, buf.as_mut_ptr() as *mut _, &mut size) };
+    let rc = unsafe {
+        WNetGetUniversalNameW(
+            w.as_ptr(),
+            UNIVERSAL_NAME_INFO_LEVEL,
+            buf.as_mut_ptr() as *mut _,
+            &mut size,
+        )
+    };
     if rc != 0 {
         return path.to_string();
     }

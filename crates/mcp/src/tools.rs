@@ -35,7 +35,7 @@ pub fn list() -> Value {
             "name": "search_files",
             "title": "Search files",
             "description": format!("Find files and folders on this PC instantly: by name, path wildcards, extension, size, date or contents; the largest, oldest or duplicate files. Searches all indexed drives and network shares (an index of every file name, size and date; no disk scan). \
-Combine a free-form `query` with structured filters; they are ANDed. Folder sizes are the total of everything inside. {SYNTAX}"),
+    Combine a free-form `query` with structured filters; they are ANDed. Folder sizes are the total of everything inside. {SYNTAX}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -54,9 +54,9 @@ Combine a free-form `query` with structured filters; they are ANDed. Folder size
                     "offset": { "type": "integer", "minimum": 0, "default": 0 },
                     "match_case": { "type": "boolean", "default": false },
                     "content": { "type": "string", "description": "Only files whose contents contain this text (case-insensitive unless `match_case`). Slow compared to the rest: \
-narrow it down with `path`/`extensions`/`query` first. Reads at most 1 GB or 30 s per call, text-like files first and build/dependency folders skipped (files over 32 MB, binaries and online-only cloud files are skipped); \
-`content.complete` in the reply says whether every candidate was read. Word/Excel/PowerPoint documents are read through Windows' document filters. \
-`content:text` inside `query` works too." },
+    narrow it down with `path`/`extensions`/`query` first. Reads at most 1 GB or 30 s per call, text-like files first and build/dependency folders skipped (files over 32 MB, binaries and online-only cloud files are skipped); \
+    `content.complete` in the reply says whether every candidate was read. Word/Excel/PowerPoint documents are read through Windows' document filters. \
+    `content:text` inside `query` works too." },
                     "content_regex": { "type": "boolean", "default": false, "description": "`content` is a regular expression." },
                     "include_build_folders": { "type": "boolean", "default": false, "description": "Content search skips node_modules, target, .git, .venv, __pycache__, obj, dist, build and similar folders unless this is true." }
                 }
@@ -67,9 +67,9 @@ narrow it down with `path`/`extensions`/`query` first. Reads at most 1 GB or 30 
             "name": "folder_sizes",
             "title": "Folder sizes",
             "description": format!("What is using disk space: answers \"what has eaten my D: drive\" / \"what is taking space on C:\". Disk usage breakdown (like TreeSize/WinDirStat, but instant from the index): the biggest folders and files under a path, \
-with size, share of the parent and file count, expanded `depth` levels. Without `path`, starts at the drives (with their capacity and free space). \
-With `query`, only matching files count (e.g. `*.mp4` shows where videos take space; `folder: wfn:node_modules` where node_modules are); \
-a matched folder counts with everything inside it. {SYNTAX}"),
+    with size, share of the parent and file count, expanded `depth` levels. Without `path`, starts at the drives (with their capacity and free space). \
+    With `query`, only matching files count (e.g. `*.mp4` shows where videos take space; `folder: wfn:node_modules` where node_modules are); \
+    a matched folder counts with everything inside it. {SYNTAX}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -87,9 +87,9 @@ a matched folder counts with everything inside it. {SYNTAX}"),
             "name": "folder_growth",
             "title": "Folder growth",
             "description": "What changed / grew: answers \"why is my disk filling up\", \"what got bigger this week\", \"where did 20 GB go since yesterday\", \"did the cleanup work\". \
-Compares folder sizes now with a daily snapshot (kept for 31 days daily, then weekly and monthly) or a named save point, and lists the folders and files under `path` \
-by how much they grew or shrank, with sizes then and now and each drive's free space then and now. `depth` follows the biggest changes further down. \
-Snapshots only hold folders of 10 MB or more, so smaller folders show up as new. With `list_snapshots: true` it only lists the snapshots there are.",
+    Compares folder sizes now with a daily snapshot (kept for 31 days daily, then weekly and monthly) or a named save point, and lists the folders and files under `path` \
+    by how much they grew or shrank, with sizes then and now and each drive's free space then and now. `depth` follows the biggest changes further down. \
+    Snapshots only hold folders of 10 MB or more, so smaller folders show up as new. With `list_snapshots: true` it only lists the snapshots there are.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -114,9 +114,9 @@ Snapshots only hold folders of 10 MB or more, so smaller folders show up as new.
             "name": "cleanup_candidates",
             "title": "Cleanup candidates",
             "description": "Clean up / free disk space: finds space that can usually be reclaimed, by category: Recycle Bin, temp folders, build output and dependency folders \
-(node_modules, Rust target, __pycache__, ...), package manager caches, crash dumps, old Windows installations, big old downloads, huge logs and \
-same-size duplicates. Returns each category's total and its biggest items with paths, so you can review and then delete with delete_paths. \
-Nothing is deleted by this tool.",
+    (node_modules, Rust target, __pycache__, ...), package manager caches, crash dumps, old Windows installations, big old downloads, huge logs and \
+    same-size duplicates. Returns each category's total and its biggest items with paths, so you can review and then delete with delete_paths. \
+    Nothing is deleted by this tool.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -130,8 +130,8 @@ Nothing is deleted by this tool.",
             "name": "delete_paths",
             "title": "Delete files or folders",
             "description": "Deletes files or folders. By default they go to the Recycle Bin (recoverable; the space is freed when the bin is emptied). \
-`permanent: true` deletes immediately (required for network shares, which have no Recycle Bin). `dry_run: true` only reports what would happen \
-and how much space it is. Refuses volume roots, share roots, Windows system folders, Program Files, user profile roots and system files like pagefile.sys.",
+    `permanent: true` deletes immediately (required for network shares, which have no Recycle Bin). `dry_run: true` only reports what would happen \
+    and how much space it is. Refuses volume roots, share roots, Windows system folders, Program Files, user profile roots and system files like pagefile.sys.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -175,7 +175,10 @@ pub fn call(be: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Str
 // ---- helpers -------------------------------------------------------------------
 
 fn s<'a>(a: &'a Value, k: &str) -> Option<&'a str> {
-    a.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
+    a.get(k)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
 }
 
 fn n(a: &Value, k: &str, default: u64, max: u64) -> u64 {
@@ -228,7 +231,12 @@ pub fn build_query(a: &Value) -> String {
         parts.push(inside(p));
     }
     if let Some(exts) = a.get("extensions").and_then(Value::as_array) {
-        let list: Vec<&str> = exts.iter().filter_map(Value::as_str).map(|e| e.trim().trim_start_matches('.')).filter(|e| !e.is_empty()).collect();
+        let list: Vec<&str> = exts
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|e| e.trim().trim_start_matches('.'))
+            .filter(|e| !e.is_empty())
+            .collect();
         if !list.is_empty() {
             parts.push(format!("ext:{}", list.join(";")));
         }
@@ -272,14 +280,35 @@ fn search_files(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     let (sort, desc) = sort_arg(a, sized);
     let limit = n(a, "limit", 50, 1000).max(1) as u32;
     let offset = n(a, "offset", 0, u64::MAX);
-    let flags = SearchFlags { case: b(a, "match_case").unwrap_or(false), ..Default::default() };
+    let flags = SearchFlags {
+        case: b(a, "match_case").unwrap_or(false),
+        ..Default::default()
+    };
     let (q, mut cq) = content::split_query(&q, flags)?;
     if let Some(text) = s(a, "content") {
-        let one = ContentQuery::single(text, SearchFlags { regex: b(a, "content_regex").unwrap_or(false), ..flags })?;
-        cq.get_or_insert_with(ContentQuery::default).terms.extend(one.terms);
+        let one = ContentQuery::single(
+            text,
+            SearchFlags {
+                regex: b(a, "content_regex").unwrap_or(false),
+                ..flags
+            },
+        )?;
+        cq.get_or_insert_with(ContentQuery::default)
+            .terms
+            .extend(one.terms);
     }
     if let Some(cq) = cq {
-        return search_contents(be, &q, flags, sort, desc, offset, limit as usize, cq, b(a, "include_build_folders").unwrap_or(false));
+        return search_contents(
+            be,
+            &q,
+            flags,
+            sort,
+            desc,
+            offset,
+            limit as usize,
+            cq,
+            b(a, "include_build_folders").unwrap_or(false),
+        );
     }
     let mut page = be.search(&q, flags, sort, desc, limit)?;
     if offset > 0 {
@@ -307,11 +336,29 @@ const TEXT_EXT: &str = "ext:txt;md;markdown;rst;log;csv;tsv;json;jsonc;yaml;yml;
 pub const CONTENT_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[allow(clippy::too_many_arguments)]
-fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: SortKey, desc: bool, offset: u64, limit: usize, cq: ContentQuery, include_build: bool) -> Result<Value, String> {
-    let base = if include_build { format!("<{q} >") } else { format!("<{q} > {SKIP_DIRS}") };
+fn search_contents(
+    be: &mut dyn Backend,
+    q: &str,
+    flags: SearchFlags,
+    sort: SortKey,
+    desc: bool,
+    offset: u64,
+    limit: usize,
+    cq: ContentQuery,
+    include_build: bool,
+) -> Result<Value, String> {
+    let base = if include_build {
+        format!("<{q} >")
+    } else {
+        format!("<{q} > {SKIP_DIRS}")
+    };
     // Text-like files first, unless the caller chose extensions.
     let chose_ext = q.to_ascii_lowercase().contains("ext:");
-    let passes: Vec<String> = if chose_ext { vec![base.clone()] } else { vec![format!("{base} {TEXT_EXT}"), format!("{base} !{TEXT_EXT}")] };
+    let passes: Vec<String> = if chose_ext {
+        vec![base.clone()]
+    } else {
+        vec![format!("{base} {TEXT_EXT}"), format!("{base} !{TEXT_EXT}")]
+    };
     let cq = Arc::new(cq);
     let what = cq.describe();
     // One more than asked, to know whether there are more.
@@ -325,14 +372,38 @@ fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: Sort
         total += page.total;
         let left_bytes = CONTENT_BUDGET.saturating_sub(st.bytes);
         let left_time = CONTENT_TIME.saturating_sub(started.elapsed());
-        let opts = ContentOptions { max_size: CONTENT_MAX_FILE, byte_budget: Some(left_bytes.max(1)), time_limit: Some(left_time), ..Default::default() };
-        let (r, s) = content::matching_rows(&mut |r| be.call(r), cq.clone(), opts, Some(want - rows.len().min(want)))?;
+        let opts = ContentOptions {
+            max_size: CONTENT_MAX_FILE,
+            byte_budget: Some(left_bytes.max(1)),
+            time_limit: Some(left_time),
+            ..Default::default()
+        };
+        let (r, s) = content::matching_rows(
+            &mut |r| be.call(r),
+            cq.clone(),
+            opts,
+            Some(want - rows.len().min(want)),
+        )?;
         rows.extend(r);
-        for (dst, src) in [(&mut st.checked, s.checked), (&mut st.matched, s.matched), (&mut st.bytes, s.bytes), (&mut st.too_large, s.too_large), (&mut st.binary, s.binary), (&mut st.offline, s.offline), (&mut st.unreadable, s.unreadable)] {
+        for (dst, src) in [
+            (&mut st.checked, s.checked),
+            (&mut st.matched, s.matched),
+            (&mut st.bytes, s.bytes),
+            (&mut st.too_large, s.too_large),
+            (&mut st.binary, s.binary),
+            (&mut st.offline, s.offline),
+            (&mut st.unreadable, s.unreadable),
+        ] {
             *dst += src;
         }
         if s.budget_exhausted || s.timed_out || !s.done {
-            stopped = Some(if s.budget_exhausted { "budget" } else if s.timed_out { "time" } else { "enough" });
+            stopped = Some(if s.budget_exhausted {
+                "budget"
+            } else if s.timed_out {
+                "time"
+            } else {
+                "enough"
+            });
             break;
         }
     }
@@ -342,12 +413,22 @@ fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: Sort
         SortKey::Size => rows.sort_by_key(|r| r.size),
         SortKey::Modified => rows.sort_by_key(|r| r.modified),
         SortKey::Path => rows.sort_by_key(key),
-        _ => rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| key(a).cmp(&key(b)))),
+        _ => rows.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| key(a).cmp(&key(b)))
+        }),
     }
     if desc {
         rows.reverse();
     }
-    let shown: Vec<Value> = rows.iter().skip(offset as usize).take(limit).map(file_row).collect();
+    let shown: Vec<Value> = rows
+        .iter()
+        .skip(offset as usize)
+        .take(limit)
+        .map(file_row)
+        .collect();
     let has_more = rows.len() > offset as usize + limit || !complete;
     let mut info = json!({
         "contains": what,
@@ -360,16 +441,35 @@ fn search_contents(be: &mut dyn Backend, q: &str, flags: SearchFlags, sort: Sort
         "order": if chose_ext { "smallest files first" } else { "text-like files (source, documents, config) first, then the rest" },
     });
     if !include_build {
-        info["skipped_folders"] = json!("node_modules, target, .git, .venv, __pycache__, obj, dist, build and similar (include_build_folders: true searches them too)");
+        info["skipped_folders"] = json!(
+            "node_modules, target, .git, .venv, __pycache__, obj, dist, build and similar (include_build_folders: true searches them too)"
+        );
     }
     if !st.skipped().is_empty() {
         info["skipped"] = json!(st.skipped());
     }
-    let incomplete = |why: String| format!("NOT every file was searched: {why}, with {} of {} candidates checked. Results are incomplete; narrow it with `extensions` and a deeper `path` and search again.", st.checked, total);
+    let incomplete = |why: String| {
+        format!(
+            "NOT every file was searched: {why}, with {} of {} candidates checked. Results are incomplete; narrow it with `extensions` and a deeper `path` and search again.",
+            st.checked, total
+        )
+    };
     match stopped {
-        Some("budget") => info["note"] = json!(incomplete(format!("stopped after reading {} (the per-call limit)", fmt::size(CONTENT_BUDGET)))),
-        Some("time") => info["note"] = json!(incomplete(format!("stopped after {} s (the per-call limit)", CONTENT_TIME.as_secs()))),
-        Some(_) => info["note"] = json!("Stopped once enough matches were found; use `offset` for more."),
+        Some("budget") => {
+            info["note"] = json!(incomplete(format!(
+                "stopped after reading {} (the per-call limit)",
+                fmt::size(CONTENT_BUDGET)
+            )))
+        }
+        Some("time") => {
+            info["note"] = json!(incomplete(format!(
+                "stopped after {} s (the per-call limit)",
+                CONTENT_TIME.as_secs()
+            )))
+        }
+        Some(_) => {
+            info["note"] = json!("Stopped once enough matches were found; use `offset` for more.")
+        }
         None => {}
     }
     Ok(json!({
@@ -395,11 +495,20 @@ fn tree_sort(a: &Value) -> (TreeSort, bool) {
 }
 
 fn pct(part: u64, whole: u64) -> f64 {
-    if whole == 0 { 0.0 } else { (part as f64 * 1000.0 / whole as f64).round() / 10.0 }
+    if whole == 0 {
+        0.0
+    } else {
+        (part as f64 * 1000.0 / whole as f64).round() / 10.0
+    }
 }
 
 fn node_ref(r: &TreeRow) -> NodeRef {
-    NodeRef { vol: r.vol.clone(), idx: r.idx, epoch: r.epoch, path: r.full_path() }
+    NodeRef {
+        vol: r.vol.clone(),
+        idx: r.idx,
+        epoch: r.epoch,
+        path: r.full_path(),
+    }
 }
 
 struct Expand {
@@ -412,10 +521,21 @@ struct Expand {
 }
 
 impl Expand {
-    fn rows(&self, be: &mut dyn Backend, level: &TreeLevel, parent_size: u64, depth: u64) -> Result<Value, String> {
+    fn rows(
+        &self,
+        be: &mut dyn Backend,
+        level: &TreeLevel,
+        parent_size: u64,
+        depth: u64,
+    ) -> Result<Value, String> {
         let mut out = Vec::new();
         let mut listed = (0u64, 0u64);
-        for r in level.rows.iter().filter(|r| r.is_dir || !self.folders_only).take(self.limit as usize) {
+        for r in level
+            .rows
+            .iter()
+            .filter(|r| r.is_dir || !self.folders_only)
+            .take(self.limit as usize)
+        {
             listed.0 += r.size;
             listed.1 += 1;
             let mut o = json!({
@@ -449,14 +569,26 @@ impl Expand {
                 o["capacity_human"] = json!(fmt::size(r.capacity));
             }
             if r.is_dir && r.has_children && depth + 1 < self.depth {
-                let count = if self.folders_only { 100_000 } else { self.limit as u32 };
+                let count = if self.folders_only {
+                    100_000
+                } else {
+                    self.limit as u32
+                };
                 let l = be.children(&node_ref(r), self.sort, self.desc, 0, count)?;
                 o["children"] = self.rows(be, &l, r.size, depth + 1)?;
             }
             out.push(o);
         }
-        let shown = level.rows.iter().filter(|r| r.is_dir || !self.folders_only).count() as u64;
-        let total = if self.folders_only { shown } else { level.total };
+        let shown = level
+            .rows
+            .iter()
+            .filter(|r| r.is_dir || !self.folders_only)
+            .count() as u64;
+        let total = if self.folders_only {
+            shown
+        } else {
+            level.total
+        };
         if total > listed.1 {
             out.push(json!({
                 "name": format!("({} more)", total - listed.1),
@@ -473,15 +605,37 @@ fn folder_sizes(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     let (sort, desc) = tree_sort(a);
     let query = s(a, "query").unwrap_or("");
     let roots = be.tree(query, SearchFlags::default(), sort, desc)?;
-    let ex = Expand { depth: n(a, "depth", 1, 5).max(1), limit: n(a, "limit", 20, 200).max(1), folders_only: b(a, "folders_only").unwrap_or(false), sort, desc, filtered: !query.is_empty() };
+    let ex = Expand {
+        depth: n(a, "depth", 1, 5).max(1),
+        limit: n(a, "limit", 20, 200).max(1),
+        folders_only: b(a, "folders_only").unwrap_or(false),
+        sort,
+        desc,
+        filtered: !query.is_empty(),
+    };
     let res = (|| {
         Ok(match s(a, "path") {
             Some(p) => {
-                let count = if ex.folders_only { 100_000 } else { ex.limit as u32 };
-                let l = be.children(&NodeRef { path: p.to_string(), ..Default::default() }, sort, desc, 0, count)?;
+                let count = if ex.folders_only {
+                    100_000
+                } else {
+                    ex.limit as u32
+                };
+                let l = be.children(
+                    &NodeRef {
+                        path: p.to_string(),
+                        ..Default::default()
+                    },
+                    sort,
+                    desc,
+                    0,
+                    count,
+                )?;
                 json!({ "path": p, "size": l.size, "size_human": fmt::size(l.size), "files": l.files, "query": query, "children": ex.rows(be, &l, l.size, 0)? })
             }
-            None => json!({ "path": "(all drives)", "size": roots.size, "size_human": fmt::size(roots.size), "online_only": roots.cloud, "files": roots.files, "query": query, "children": ex.rows(be, &roots, roots.size, 0)? }),
+            None => {
+                json!({ "path": "(all drives)", "size": roots.size, "size_human": fmt::size(roots.size), "online_only": roots.cloud, "files": roots.files, "query": query, "children": ex.rows(be, &roots, roots.size, 0)? })
+            }
         })
     })();
     be.tree_close();
@@ -496,7 +650,11 @@ fn unix_time(t: i64) -> String {
 }
 
 fn signed(d: i64) -> String {
-    if d < 0 { format!("-{}", fmt::size(d.unsigned_abs())) } else { format!("+{}", fmt::size(d as u64)) }
+    if d < 0 {
+        format!("-{}", fmt::size(d.unsigned_abs()))
+    } else {
+        format!("+{}", fmt::size(d as u64))
+    }
 }
 
 /// `YYYY-MM-DD` as unix seconds at local-ish midnight (UTC; snapshots are a day apart, so close enough).
@@ -571,7 +729,11 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     let snap = |s: &rapidfind_core::history::SnapInfo| {
         let mut o = json!({ "id": s.id, "time": unix_time(s.time), "folders": s.folders });
         if s.is_save_point() {
-            o["save_point"] = json!(if s.name.is_empty() { "(unnamed)" } else { &s.name });
+            o["save_point"] = json!(if s.name.is_empty() {
+                "(unnamed)"
+            } else {
+                &s.name
+            });
         }
         o
     };
@@ -579,16 +741,27 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
         return Ok(json!({ "snapshots": list.iter().rev().map(snap).collect::<Vec<_>>() }));
     }
     if list.is_empty() {
-        return Err("no snapshots yet: the service takes one a day, the first soon after it starts".into());
+        return Err(
+            "no snapshots yet: the service takes one a day, the first soon after it starts".into(),
+        );
     }
     let now = rapidfind_core::history::now_unix();
     let base = match s(a, "since") {
-        Some(w) => match list.iter().find(|s| s.id == w || (!s.name.is_empty() && s.name.eq_ignore_ascii_case(w))) {
+        Some(w) => match list
+            .iter()
+            .find(|s| s.id == w || (!s.name.is_empty() && s.name.eq_ignore_ascii_case(w)))
+        {
             Some(s) => s,
             None => {
-                let t = parse_date(w).ok_or_else(|| format!("`since`: no save point called \"{w}\" and not a date like 2026-10-01"))?;
+                let t = parse_date(w).ok_or_else(|| {
+                    format!("`since`: no save point called \"{w}\" and not a date like 2026-10-01")
+                })?;
                 // The first snapshot of that day, else the closest.
-                list.iter().filter(|s| s.time >= t && s.time < t + 86_400).min_by_key(|s| s.time).or_else(|| list.iter().min_by_key(|s| (s.time - t).abs())).unwrap()
+                list.iter()
+                    .filter(|s| s.time >= t && s.time < t + 86_400)
+                    .min_by_key(|s| s.time)
+                    .or_else(|| list.iter().min_by_key(|s| (s.time - t).abs()))
+                    .unwrap()
             }
         },
         None => {
@@ -596,12 +769,27 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
             list.iter().min_by_key(|s| (s.time - target).abs()).unwrap()
         }
     };
-    let g = Growth { depth: n(a, "depth", 2, 4).max(1), limit: n(a, "limit", 10, 100).max(1) };
+    let g = Growth {
+        depth: n(a, "depth", 2, 4).max(1),
+        limit: n(a, "limit", 10, 100).max(1),
+    };
     be.compare(&base.id)?;
     let res = (|| {
         let roots = be.tree("", SearchFlags::default(), TreeSort::Change, true)?;
         let (path, level) = match s(a, "path") {
-            Some(p) => (p.to_string(), be.children(&NodeRef { path: p.to_string(), ..Default::default() }, TreeSort::Change, true, 0, 100_000)?),
+            Some(p) => (
+                p.to_string(),
+                be.children(
+                    &NodeRef {
+                        path: p.to_string(),
+                        ..Default::default()
+                    },
+                    TreeSort::Change,
+                    true,
+                    0,
+                    100_000,
+                )?,
+            ),
             None => ("(all drives)".to_string(), roots),
         };
         let change = level.size as i64 - level.before as i64;
@@ -626,7 +814,11 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
 /// save because the disk is full (searches still work; changes since the
 /// last save are lost if the service restarts before it can save).
 pub fn index_warnings(st: &StatusInfo) -> Vec<String> {
-    st.volumes.iter().filter(|v| v.state.contains(ipc::SAVE_FAILED)).map(|v| format!("{}: {}", v.key, v.state)).collect()
+    st.volumes
+        .iter()
+        .filter(|v| v.state.contains(ipc::SAVE_FAILED))
+        .map(|v| format!("{}: {}", v.key, v.state))
+        .collect()
 }
 
 fn disk_overview(be: &mut dyn Backend) -> Result<Value, String> {
@@ -639,7 +831,8 @@ fn disk_overview(be: &mut dyn Backend) -> Result<Value, String> {
         .iter()
         .map(|v| {
             let root = roots.rows.iter().find(|r| r.vol == v.key);
-            let mut o = json!({ "volume": v.key, "kind": v.kind, "state": v.state, "entries": v.entries });
+            let mut o =
+                json!({ "volume": v.key, "kind": v.kind, "state": v.state, "entries": v.entries });
             if let Some(r) = root {
                 o["indexed_size"] = json!(r.size);
                 o["indexed_size_human"] = json!(fmt::size(r.size));
@@ -677,7 +870,12 @@ struct Category {
 }
 
 const CATEGORIES: &[Category] = &[
-    Category { id: "recycle_bin", title: "Recycle Bin", query: r"folder: wfn:$Recycle.Bin", hint: "Use empty_recycle_bin." },
+    Category {
+        id: "recycle_bin",
+        title: "Recycle Bin",
+        query: r"folder: wfn:$Recycle.Bin",
+        hint: "Use empty_recycle_bin.",
+    },
     Category {
         id: "temp",
         title: "Temporary files",
@@ -714,7 +912,12 @@ const CATEGORIES: &[Category] = &[
         query: r"file: *\downloads\* size:>100mb dm:<last90days !attrib:O",
         hint: "Installers and archives that are usually not needed after use.",
     },
-    Category { id: "big_logs", title: "Large log files", query: r"file: ext:log;etl size:>50mb !attrib:O", hint: "Logs can usually be deleted; the app starts a new one." },
+    Category {
+        id: "big_logs",
+        title: "Large log files",
+        query: r"file: ext:log;etl size:>50mb !attrib:O",
+        hint: "Logs can usually be deleted; the app starts a new one.",
+    },
     Category {
         id: "system_files",
         title: "System files (informational)",
@@ -740,7 +943,11 @@ fn all_rows(be: &mut dyn Backend, q: &str) -> Result<Vec<Row>, String> {
 /// Drops rows inside other rows (a node_modules inside a node_modules),
 /// keeping size order; returns them with their total.
 fn top_level(rows: Vec<Row>) -> (Vec<Row>, u64) {
-    let mut by_path: Vec<(String, usize)> = rows.iter().enumerate().map(|(i, r)| (r.full_path().to_lowercase(), i)).collect();
+    let mut by_path: Vec<(String, usize)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.full_path().to_lowercase(), i))
+        .collect();
     by_path.sort();
     let mut keep = vec![false; rows.len()];
     let mut last: Option<String> = None;
@@ -753,7 +960,11 @@ fn top_level(rows: Vec<Row>) -> (Vec<Row>, u64) {
         keep[i] = true;
         last = Some(format!("{}\\", p.trim_end_matches('\\')));
     }
-    let kept: Vec<Row> = rows.into_iter().zip(keep).filter_map(|(r, k)| k.then_some(r)).collect();
+    let kept: Vec<Row> = rows
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(r, k)| k.then_some(r))
+        .collect();
     let total = kept.iter().map(|r| r.size).sum();
     (kept, total)
 }
@@ -788,11 +999,27 @@ fn cleanup_candidates(be: &mut dyn Backend, a: &Value) -> Result<Value, String> 
         }));
     }
     // Rust build output: `target` folders that contain a CACHEDIR.TAG.
-    let tags = be.search(&scoped("file: wfn:CACHEDIR.TAG"), SearchFlags::default(), SortKey::Name, false, 10_000)?;
+    let tags = be.search(
+        &scoped("file: wfn:CACHEDIR.TAG"),
+        SearchFlags::default(),
+        SortKey::Name,
+        false,
+        10_000,
+    )?;
     let dirs: HashSet<String> = tags.rows.iter().map(|r| r.dir.to_lowercase()).collect();
     if !dirs.is_empty() {
-        let targets = be.search(&scoped("folder: wfn:target"), SearchFlags::default(), SortKey::Size, true, 10_000)?;
-        let rows: Vec<&Row> = targets.rows.iter().filter(|r| dirs.contains(&r.full_path().to_lowercase())).collect();
+        let targets = be.search(
+            &scoped("folder: wfn:target"),
+            SearchFlags::default(),
+            SortKey::Size,
+            true,
+            10_000,
+        )?;
+        let rows: Vec<&Row> = targets
+            .rows
+            .iter()
+            .filter(|r| dirs.contains(&r.full_path().to_lowercase()))
+            .collect();
         let total: u64 = rows.iter().map(|r| r.size).sum();
         if total > 0 {
             grand += total;
@@ -808,12 +1035,21 @@ fn cleanup_candidates(be: &mut dyn Backend, a: &Value) -> Result<Value, String> 
         }
     }
     // Same-size big files: likely duplicates (verify before deleting).
-    let dupes = be.search(&scoped("file: sizedupe: size:>=100mb !attrib:O"), SearchFlags::default(), SortKey::Size, true, 5_000)?;
+    let dupes = be.search(
+        &scoped("file: sizedupe: size:>=100mb !attrib:O"),
+        SearchFlags::default(),
+        SortKey::Size,
+        true,
+        5_000,
+    )?;
     let mut groups: BTreeMap<std::cmp::Reverse<u64>, Vec<&Row>> = BTreeMap::new();
     for r in &dupes.rows {
         groups.entry(std::cmp::Reverse(r.size)).or_default().push(r);
     }
-    let reclaim: u64 = groups.iter().map(|(sz, g)| sz.0 * (g.len() as u64 - 1)).sum();
+    let reclaim: u64 = groups
+        .iter()
+        .map(|(sz, g)| sz.0 * (g.len() as u64 - 1))
+        .sum();
     if reclaim > 0 {
         cats.push(json!({
             "id": "same_size_files",
@@ -836,12 +1072,17 @@ fn cleanup_candidates(be: &mut dyn Backend, a: &Value) -> Result<Value, String> 
 // ---- deleting ------------------------------------------------------------------
 
 fn env_lower(k: &str) -> Option<String> {
-    std::env::var(k).ok().map(|v| v.trim_end_matches('\\').to_lowercase())
+    std::env::var(k)
+        .ok()
+        .map(|v| v.trim_end_matches('\\').to_lowercase())
 }
 
 /// Why `path` must not be deleted, if it mustn't.
 pub fn protected(path: &str) -> Option<String> {
-    let l = path.trim_end_matches('\\').replace('/', "\\").to_lowercase();
+    let l = path
+        .trim_end_matches('\\')
+        .replace('/', "\\")
+        .to_lowercase();
     let segs: Vec<&str> = l.split('\\').filter(|s| !s.is_empty()).collect();
     if l.starts_with(r"\\") {
         if segs.len() <= 2 {
@@ -875,7 +1116,10 @@ pub fn protected(path: &str) -> Option<String> {
     if segs.len() == 2 && ["pagefile.sys", "hiberfil.sys", "swapfile.sys"].contains(&segs[1]) {
         return Some("a system file (hibernation/page file settings control it)".into());
     }
-    if segs.get(1).is_some_and(|s| *s == "system volume information") {
+    if segs
+        .get(1)
+        .is_some_and(|s| *s == "system volume information")
+    {
         return Some("System Volume Information".into());
     }
     None
@@ -893,7 +1137,10 @@ fn wide_multi(paths: &[&str]) -> Vec<u16> {
 
 /// Moves to the Recycle Bin (shell, no UI).
 fn recycle(path: &str) -> Result<(), String> {
-    use windows_sys::Win32::UI::Shell::{FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW};
+    use windows_sys::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW,
+        SHFileOperationW,
+    };
     let from = wide_multi(&[path]);
     let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
     op.wFunc = FO_DELETE;
@@ -901,7 +1148,9 @@ fn recycle(path: &str) -> Result<(), String> {
     op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI) as u16;
     let rc = unsafe { SHFileOperationW(&mut op) };
     if rc != 0 {
-        return Err(format!("the shell couldn't recycle it (error {rc:#x}; in use or access denied?)"));
+        return Err(format!(
+            "the shell couldn't recycle it (error {rc:#x}; in use or access denied?)"
+        ));
     }
     if op.fAnyOperationsAborted != 0 {
         return Err("aborted".into());
@@ -911,7 +1160,10 @@ fn recycle(path: &str) -> Result<(), String> {
 
 /// Index size of each path (folders: everything inside), looked up in one tree.
 fn sizes_of(be: &mut dyn Backend, paths: &[String]) -> Vec<Option<u64>> {
-    if be.tree("", SearchFlags::default(), TreeSort::Name, false).is_err() {
+    if be
+        .tree("", SearchFlags::default(), TreeSort::Name, false)
+        .is_err()
+    {
         return vec![None; paths.len()];
     }
     let out = paths
@@ -919,8 +1171,22 @@ fn sizes_of(be: &mut dyn Backend, paths: &[String]) -> Vec<Option<u64>> {
         .map(|p| {
             let p = p.trim_end_matches('\\');
             let (parent, name) = p.rsplit_once('\\')?;
-            let l = be.children(&NodeRef { path: parent.to_string(), ..Default::default() }, TreeSort::Name, false, 0, u32::MAX).ok()?;
-            l.rows.iter().find(|r| r.name.eq_ignore_ascii_case(name)).map(|r| r.size)
+            let l = be
+                .children(
+                    &NodeRef {
+                        path: parent.to_string(),
+                        ..Default::default()
+                    },
+                    TreeSort::Name,
+                    false,
+                    0,
+                    u32::MAX,
+                )
+                .ok()?;
+            l.rows
+                .iter()
+                .find(|r| r.name.eq_ignore_ascii_case(name))
+                .map(|r| r.size)
         })
         .collect();
     be.tree_close();
@@ -947,7 +1213,9 @@ fn delete_paths(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     let mut results = Vec::new();
     for (p, size) in paths.iter().zip(sizes) {
         let meta = std::fs::symlink_metadata(p);
-        let size = size.or_else(|| meta.as_ref().ok().filter(|m| m.is_file()).map(|m| m.len())).unwrap_or(0);
+        let size = size
+            .or_else(|| meta.as_ref().ok().filter(|m| m.is_file()).map(|m| m.len()))
+            .unwrap_or(0);
         let mut r = json!({ "path": p, "size": size, "size_human": fmt::size(size) });
         let refuse = if meta.is_err() {
             Some("doesn't exist (already deleted?)".to_string())
@@ -965,14 +1233,23 @@ fn delete_paths(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
             results.push(r);
             continue;
         }
-        let action = if permanent { "deleted permanently" } else { "moved to the Recycle Bin" };
+        let action = if permanent {
+            "deleted permanently"
+        } else {
+            "moved to the Recycle Bin"
+        };
         if dry {
             r["ok"] = json!(true);
             r["action"] = json!(format!("would be {action}"));
         } else {
             let res = if permanent {
                 let m = meta.as_ref().unwrap();
-                if m.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) }.map_err(|e| e.to_string())
+                if m.is_dir() {
+                    std::fs::remove_dir_all(p)
+                } else {
+                    std::fs::remove_file(p)
+                }
+                .map_err(|e| e.to_string())
             } else {
                 recycle(p)
             };
@@ -995,7 +1272,11 @@ fn delete_paths(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
         }
         results.push(r);
     }
-    let would: u64 = results.iter().filter(|r| r["ok"] == json!(true)).map(|r| r["size"].as_u64().unwrap_or(0)).sum();
+    let would: u64 = results
+        .iter()
+        .filter(|r| r["ok"] == json!(true))
+        .map(|r| r["size"].as_u64().unwrap_or(0))
+        .sum();
     Ok(json!({
         "dry_run": dry,
         "results": results,
@@ -1010,10 +1291,20 @@ fn delete_paths(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
 }
 
 fn empty_recycle_bin(a: &Value) -> Result<Value, String> {
-    use windows_sys::Win32::UI::Shell::{SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND, SHEmptyRecycleBinW, SHQUERYRBINFO, SHQueryRecycleBinW};
+    use windows_sys::Win32::UI::Shell::{
+        SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND, SHEmptyRecycleBinW, SHQUERYRBINFO,
+        SHQueryRecycleBinW,
+    };
     let drive = s(a, "drive").map(|d| format!("{}\\", d.trim_end_matches('\\')));
-    let root: Vec<u16> = drive.as_deref().map(|d| d.encode_utf16().chain(Some(0)).collect()).unwrap_or_else(|| vec![0]);
-    let root_ptr = if drive.is_some() { root.as_ptr() } else { std::ptr::null() };
+    let root: Vec<u16> = drive
+        .as_deref()
+        .map(|d| d.encode_utf16().chain(Some(0)).collect())
+        .unwrap_or_else(|| vec![0]);
+    let root_ptr = if drive.is_some() {
+        root.as_ptr()
+    } else {
+        std::ptr::null()
+    };
     let mut info: SHQUERYRBINFO = unsafe { std::mem::zeroed() };
     info.cbSize = size_of::<SHQUERYRBINFO>() as u32;
     let hr = unsafe { SHQueryRecycleBinW(root_ptr, &mut info) };
@@ -1023,13 +1314,23 @@ fn empty_recycle_bin(a: &Value) -> Result<Value, String> {
     let (size, items) = (info.i64Size as u64, info.i64NumItems as u64);
     let scope = drive.clone().unwrap_or_else(|| "all drives".into());
     if b(a, "dry_run").unwrap_or(false) || items == 0 {
-        return Ok(json!({ "scope": scope, "size": size, "size_human": fmt::size(size), "items": items, "emptied": false }));
+        return Ok(
+            json!({ "scope": scope, "size": size, "size_human": fmt::size(size), "items": items, "emptied": false }),
+        );
     }
-    let hr = unsafe { SHEmptyRecycleBinW(std::ptr::null_mut(), root_ptr, SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND) };
+    let hr = unsafe {
+        SHEmptyRecycleBinW(
+            std::ptr::null_mut(),
+            root_ptr,
+            SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND,
+        )
+    };
     if hr < 0 {
         return Err(format!("emptying the Recycle Bin failed (HRESULT {hr:#x})"));
     }
-    Ok(json!({ "scope": scope, "freed": size, "freed_human": fmt::size(size), "items": items, "emptied": true }))
+    Ok(
+        json!({ "scope": scope, "freed": size, "freed_human": fmt::size(size), "items": items, "emptied": true }),
+    )
 }
 
 #[cfg(test)]
@@ -1039,15 +1340,22 @@ mod tests {
     #[test]
     fn queries_from_arguments() {
         let a = json!({ "query": "a|b", "name": "re*port", "path": "C:/Users/me/", "extensions": [".PDF", "docx"], "min_size": "10 mb", "max_size": 5000, "modified_after": "2026-01-01", "type": "file" });
-        assert_eq!(build_query(&a), r#"<a|b > "re*port" "C:\Users\me\" ext:PDF;docx size:>=10mb size:<=5000 dm:>=2026-01-01 file:"#);
+        assert_eq!(
+            build_query(&a),
+            r#"<a|b > "re*port" "C:\Users\me\" ext:PDF;docx size:>=10mb size:<=5000 dm:>=2026-01-01 file:"#
+        );
         assert_eq!(build_query(&json!({})), "");
         assert_eq!(sort_arg(&json!({}), true), (SortKey::Size, true));
-        assert_eq!(sort_arg(&json!({ "sort": "name" }), true), (SortKey::Name, false));
+        assert_eq!(
+            sort_arg(&json!({ "sort": "name" }), true),
+            (SortKey::Name, false)
+        );
     }
 
     #[test]
     fn content_search() {
-        let dir = std::env::temp_dir().join(format!("rapidfind-mcp-content-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rapidfind-mcp-content-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.txt"), "hello needle world").unwrap();
@@ -1055,19 +1363,57 @@ mod tests {
         let mut w16 = vec![0xFF, 0xFE];
         w16.extend("utf-16 Needle".encode_utf16().flat_map(u16::to_le_bytes));
         std::fs::write(dir.join("sub").join("c.log"), w16).unwrap();
-        let ix = rapidfind_core::folder::build(&dir.to_string_lossy(), rapidfind_core::fold::FoldMode::Lower);
-        let mut be = rapidfind_core::ipc::Local::new(Arc::new(rapidfind_core::engine::Engine::from_indexes(vec![ix])));
-        let paths = |v: &Value| v["results"].as_array().unwrap().iter().map(|r| r["path"].as_str().unwrap().rsplit('\\').next().unwrap().to_string()).collect::<Vec<_>>();
+        let ix = rapidfind_core::folder::build(
+            &dir.to_string_lossy(),
+            rapidfind_core::fold::FoldMode::Lower,
+        );
+        let mut be = rapidfind_core::ipc::Local::new(Arc::new(
+            rapidfind_core::engine::Engine::from_indexes(vec![ix]),
+        ));
+        let paths = |v: &Value| {
+            v["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    r["path"]
+                        .as_str()
+                        .unwrap()
+                        .rsplit('\\')
+                        .next()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        };
         let v = call(&mut be, "search_files", &json!({ "content": "needle" })).unwrap();
         assert_eq!(paths(&v), ["a.txt", "c.log"], "{v}");
         assert_eq!(v["content"]["complete"], json!(true));
         assert_eq!(v["total"], json!(2));
-        let v = call(&mut be, "search_files", &json!({ "content": "needle", "match_case": true })).unwrap();
+        let v = call(
+            &mut be,
+            "search_files",
+            &json!({ "content": "needle", "match_case": true }),
+        )
+        .unwrap();
         assert_eq!(paths(&v), ["a.txt"]);
-        let v = call(&mut be, "search_files", &json!({ "query": "*.txt !content:needle" })).unwrap();
+        let v = call(
+            &mut be,
+            "search_files",
+            &json!({ "query": "*.txt !content:needle" }),
+        )
+        .unwrap();
         assert_eq!(paths(&v), ["b.txt"]);
-        let v = call(&mut be, "search_files", &json!({ "content": "ne+dle", "content_regex": true, "limit": 1 })).unwrap();
-        assert_eq!((paths(&v), v["has_more"].clone()), (vec!["a.txt".to_string()], json!(true)));
+        let v = call(
+            &mut be,
+            "search_files",
+            &json!({ "content": "ne+dle", "content_regex": true, "limit": 1 }),
+        )
+        .unwrap();
+        assert_eq!(
+            (paths(&v), v["has_more"].clone()),
+            (vec!["a.txt".to_string()], json!(true))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1075,7 +1421,8 @@ mod tests {
     fn growth_since_a_snapshot() {
         use rapidfind_core::engine::Engine;
         use rapidfind_core::tree::Tree;
-        let root = std::env::temp_dir().join(format!("rapidfind-mcp-growth-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rapidfind-mcp-growth-{}", std::process::id()));
         let (dir, hist) = (root.join("data"), root.join("history"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(dir.join("grows")).unwrap();
@@ -1083,13 +1430,20 @@ mod tests {
         std::fs::write(dir.join("grows").join("a.bin"), vec![1u8; 1000]).unwrap();
         std::fs::write(dir.join("same").join("b.bin"), vec![1u8; 500]).unwrap();
         let engine = |d: &std::path::Path| {
-            let e = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(&d.to_string_lossy(), rapidfind_core::fold::FoldMode::Lower)]));
+            let e = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(
+                &d.to_string_lossy(),
+                rapidfind_core::fold::FoldMode::Lower,
+            )]));
             e.enable_history(hist.clone());
             e
         };
         let eng = engine(&dir);
         let mut be = rapidfind_core::ipc::Local::new(eng.clone());
-        assert!(call(&mut be, "folder_growth", &json!({})).unwrap_err().contains("no snapshots"));
+        assert!(
+            call(&mut be, "folder_growth", &json!({}))
+                .unwrap_err()
+                .contains("no snapshots")
+        );
         let mut t = Tree::build(&eng, "", SearchFlags::default()).unwrap();
         let mut s = t.snapshot(&eng, "before", 0, 100).unwrap();
         s.time -= 3 * 86_400;
@@ -1100,12 +1454,18 @@ mod tests {
         let v = call(&mut be, "folder_growth", &json!({ "list_snapshots": true })).unwrap();
         assert_eq!(v["snapshots"][0]["save_point"], json!("before"), "{v}");
         let p = dir.to_string_lossy().to_string();
-        for args in [json!({ "path": p, "days": 3 }), json!({ "path": p, "since": "before" })] {
+        for args in [
+            json!({ "path": p, "days": 3 }),
+            json!({ "path": p, "since": "before" }),
+        ] {
             let v = call(&mut be, "folder_growth", &args).unwrap();
             assert_eq!(v["change"], json!(4000), "{v}");
             let kids = v["children"].as_array().unwrap();
             assert_eq!(kids.len(), 1, "unchanged folders are left out: {v}");
-            assert_eq!((kids[0]["name"].as_str(), kids[0]["change"].as_i64()), (Some("grows"), Some(4000)));
+            assert_eq!(
+                (kids[0]["name"].as_str(), kids[0]["change"].as_i64()),
+                (Some("grows"), Some(4000))
+            );
             assert_eq!(kids[0]["children"][0]["name"], json!("c.bin"));
         }
         assert!(call(&mut be, "folder_growth", &json!({ "since": "nonsense" })).is_err());
@@ -1116,11 +1476,33 @@ mod tests {
 
     #[test]
     fn protected_paths() {
-        for p in [r"C:\", "C:", r"D:\", r"\\nas\media", r"\\nas\media\", r"C:\Windows", r"C:\Windows\System32\drivers", r"C:\Users", r"C:\Users\me", r"C:\pagefile.sys", r"C:\$Recycle.Bin\S-1-5"] {
+        for p in [
+            r"C:\",
+            "C:",
+            r"D:\",
+            r"\\nas\media",
+            r"\\nas\media\",
+            r"C:\Windows",
+            r"C:\Windows\System32\drivers",
+            r"C:\Users",
+            r"C:\Users\me",
+            r"C:\pagefile.sys",
+            r"C:\$Recycle.Bin\S-1-5",
+        ] {
             assert!(protected(p).is_some(), "{p} should be protected");
         }
-        for p in [r"C:\Users\me\Downloads\x.iso", r"C:\Windows\Temp\x.tmp", r"\\nas\media\old", r"D:\Projects\node_modules", r"C:\Users\me\AppData\Local\Temp"] {
-            assert!(protected(p).is_none(), "{p} should be deletable: {:?}", protected(p));
+        for p in [
+            r"C:\Users\me\Downloads\x.iso",
+            r"C:\Windows\Temp\x.tmp",
+            r"\\nas\media\old",
+            r"D:\Projects\node_modules",
+            r"C:\Users\me\AppData\Local\Temp",
+        ] {
+            assert!(
+                protected(p).is_none(),
+                "{p} should be deletable: {:?}",
+                protected(p)
+            );
         }
     }
 }

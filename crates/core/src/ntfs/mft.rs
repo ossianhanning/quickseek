@@ -129,7 +129,9 @@ impl Stream {
                     let disk = (lcn + (vcn - run.vcn)) * self.cluster + in_cluster;
                     let len = n;
                     h.read_exact_at(disk, &mut buf[done..done + n])
-                        .map_err(|e| ctx(&format!("read {len} bytes at disk offset {disk:#x}"), e))?;
+                        .map_err(|e| {
+                            ctx(&format!("read {len} bytes at disk offset {disk:#x}"), e)
+                        })?;
                 }
                 None => buf[done..done + n].fill(0),
             }
@@ -164,7 +166,11 @@ fn locate_mft(h: &Dev, vd: &NtfsVolumeData) -> io::Result<(Stream, Vec<u8>)> {
         return Err(io::Error::other("MFT record 0 is corrupt"));
     }
 
-    let mut data = Stream { runs: Vec::new(), cluster, size: 0 };
+    let mut data = Stream {
+        runs: Vec::new(),
+        cluster,
+        size: 0,
+    };
     let mut bitmap: Option<Stream> = None;
     let mut bitmap_resident: Option<Vec<u8>> = None;
     let mut attr_list: Option<Vec<u8>> = None;
@@ -184,7 +190,11 @@ fn locate_mft(h: &Dev, vd: &NtfsVolumeData) -> io::Result<(Stream, Vec<u8>)> {
                 }
                 ATTR_BITMAP if a.name_len() == 0 => {
                     if a.non_resident() {
-                        let s = bitmap.get_or_insert(Stream { runs: Vec::new(), cluster, size: 0 });
+                        let s = bitmap.get_or_insert(Stream {
+                            runs: Vec::new(),
+                            cluster,
+                            size: 0,
+                        });
                         if a.lowest_vcn() == 0 {
                             s.size = a.data_size();
                         }
@@ -195,8 +205,13 @@ fn locate_mft(h: &Dev, vd: &NtfsVolumeData) -> io::Result<(Stream, Vec<u8>)> {
                 }
                 ATTR_ATTRIBUTE_LIST => {
                     *attr_list = Some(if a.non_resident() {
-                        let s = Stream { runs: a.runs(), cluster, size: a.data_size() };
-                        s.read_all(h, sector).map_err(|e| ctx("read $MFT attribute list", e))?
+                        let s = Stream {
+                            runs: a.runs(),
+                            cluster,
+                            size: a.data_size(),
+                        };
+                        s.read_all(h, sector)
+                            .map_err(|e| ctx("read $MFT attribute list", e))?
                     } else {
                         a.value().unwrap_or_default().to_vec()
                     });
@@ -219,7 +234,10 @@ fn locate_mft(h: &Dev, vd: &NtfsVolumeData) -> io::Result<(Stream, Vec<u8>)> {
             if len == 0 {
                 break;
             }
-            if (ty == ATTR_DATA || ty == ATTR_BITMAP) && reference != 0 && !ext_records.contains(&reference) {
+            if (ty == ATTR_DATA || ty == ATTR_BITMAP)
+                && reference != 0
+                && !ext_records.contains(&reference)
+            {
                 ext_records.push(reference);
             }
             p += len;
@@ -242,7 +260,8 @@ fn locate_mft(h: &Dev, vd: &NtfsVolumeData) -> io::Result<(Stream, Vec<u8>)> {
     let bitmap_bytes = match (bitmap, bitmap_resident) {
         (Some(mut s), _) => {
             s.runs.sort_by_key(|r| r.vcn);
-            s.read_all(h, sector).map_err(|e| ctx("read $MFT bitmap", e))?
+            s.read_all(h, sector)
+                .map_err(|e| ctx("read $MFT bitmap", e))?
         }
         (None, Some(b)) => b,
         // No bitmap: treat every record as potentially used.
@@ -279,7 +298,10 @@ fn parse_chunk(buf: &mut [u8], first: u64, count: usize, rs: usize, bitmap: &[u8
     let mut name = String::new();
     for i in 0..count {
         let rec_no = first + i as u64;
-        if bitmap.get((rec_no / 8) as usize).is_none_or(|b| b & (1 << (rec_no % 8)) == 0) {
+        if bitmap
+            .get((rec_no / 8) as usize)
+            .is_none_or(|b| b & (1 << (rec_no % 8)) == 0)
+        {
             continue;
         }
         let rec = &mut buf[i * rs..(i + 1) * rs];
@@ -312,13 +334,20 @@ fn parse_chunk(buf: &mut [u8], first: u64, count: usize, rs: usize, bitmap: &[u8
                     }
                 }
                 ATTR_FILE_NAME => {
-                    let Some(f) = a.value().and_then(parse_file_name) else { continue };
+                    let Some(f) = a.value().and_then(parse_file_name) else {
+                        continue;
+                    };
                     if f.namespace == NS_DOS {
                         continue; // 8.3 alias; the long name is in another $FILE_NAME
                     }
                     name.clear();
-                    let it = f.name_utf16.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
-                    name.extend(char::decode_utf16(it).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)));
+                    let it = f
+                        .name_utf16
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]));
+                    name.extend(
+                        char::decode_utf16(it).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)),
+                    );
                     out.names.push(ScanName {
                         record: owner,
                         parent: (f.parent_ref & FRN_MASK) as u32,
@@ -339,7 +368,11 @@ fn parse_chunk(buf: &mut [u8], first: u64, count: usize, rs: usize, bitmap: &[u8
             }
         }
         if base == 0 {
-            out.base.push(BaseMeta { record: owner, meta, size_known });
+            out.base.push(BaseMeta {
+                record: owner,
+                meta,
+                size_known,
+            });
         }
     }
     out
@@ -356,7 +389,11 @@ fn ctx(stage: &str, e: io::Error) -> io::Error {
 /// disk (some volume filter drivers reject raw volume reads entirely).
 pub fn scan(letter: char, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<(Scan, MftStats)> {
     let mut last = None;
-    for src in [Source::Volume { unbuffered: true }, Source::Volume { unbuffered: false }, Source::PhysicalDisk] {
+    for src in [
+        Source::Volume { unbuffered: true },
+        Source::Volume { unbuffered: false },
+        Source::PhysicalDisk,
+    ] {
         match scan_with(letter, src, progress) {
             Ok(r) => return Ok(r),
             Err(e) => {
@@ -368,24 +405,39 @@ pub fn scan(letter: char, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<(S
     Err(last.unwrap())
 }
 
-fn scan_with(letter: char, src: Source, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<(Scan, MftStats)> {
+fn scan_with(
+    letter: char,
+    src: Source,
+    progress: &(dyn Fn(u64, u64) + Sync),
+) -> io::Result<(Scan, MftStats)> {
     let t0 = Instant::now();
     let vol = win::open_volume(letter, 0).map_err(|e| ctx("open volume", e))?;
     let h = match src {
         Source::Volume { unbuffered } => {
-            let flags = if unbuffered { FILE_FLAG_NO_BUFFERING } else { 0 };
-            Dev { h: win::open_volume(letter, flags).map_err(|e| ctx("open volume", e))?, base: 0 }
+            let flags = if unbuffered {
+                FILE_FLAG_NO_BUFFERING
+            } else {
+                0
+            };
+            Dev {
+                h: win::open_volume(letter, flags).map_err(|e| ctx("open volume", e))?,
+                base: 0,
+            }
         }
         Source::PhysicalDisk => {
-            let (disk, base) = win::volume_disk_extent(&vol).map_err(|e| ctx("get volume disk extent", e))?;
-            let h = win::open_physical_drive(disk, FILE_FLAG_NO_BUFFERING).map_err(|e| ctx(&format!("open PhysicalDrive{disk}"), e))?;
+            let (disk, base) =
+                win::volume_disk_extent(&vol).map_err(|e| ctx("get volume disk extent", e))?;
+            let h = win::open_physical_drive(disk, FILE_FLAG_NO_BUFFERING)
+                .map_err(|e| ctx(&format!("open PhysicalDrive{disk}"), e))?;
             Dev { h, base }
         }
     };
     let vd = volume_data(&vol).map_err(|e| ctx("FSCTL_GET_NTFS_VOLUME_DATA", e))?;
     let rs = vd.bytes_per_file_record_segment as usize;
     if rs == 0 || !CHUNK_BYTES.is_multiple_of(rs) {
-        return Err(io::Error::other(format!("unsupported file record size {rs}")));
+        return Err(io::Error::other(format!(
+            "unsupported file record size {rs}"
+        )));
     }
     let sector = vd.bytes_per_sector.max(512) as usize;
     let (stream, bitmap) = locate_mft(&h, &vd).map_err(|e| ctx("locate $MFT", e))?;
@@ -424,7 +476,11 @@ fn scan_with(letter: char, src: Source, progress: &(dyn Fn(u64, u64) + Sync)) ->
                 sp.1 = (first + (sp.1 - first).div_ceil(align) * align).min(end.max(sp.1));
             }
             let count = (spans.last().unwrap().1 - first) as usize;
-            chunks.push(Chunk { first, count, spans });
+            chunks.push(Chunk {
+                first,
+                count,
+                spans,
+            });
         }
         first = end;
     }
@@ -505,7 +561,10 @@ fn scan_with(letter: char, src: Source, progress: &(dyn Fn(u64, u64) + Sync)) ->
             }
         }
         let base = scan.strings.len() as u32;
-        scan.names.extend(o.names.iter().map(|n| ScanName { off: n.off + base, ..*n }));
+        scan.names.extend(o.names.iter().map(|n| ScanName {
+            off: n.off + base,
+            ..*n
+        }));
         scan.strings.extend_from_slice(&o.strings);
     }
     scan.meta = meta;
@@ -541,7 +600,9 @@ mod tests {
         let mut r1 = r1;
         r1[32..40].copy_from_slice(&((3u64 << 48) | 40).to_le_bytes()); // base = record 40
         // Not marked in bitmap: must be ignored.
-        let r2 = RecBuilder::new(REC_IN_USE, 0).file_name(5, NS_WIN32, "ghost").finish();
+        let r2 = RecBuilder::new(REC_IN_USE, 0)
+            .file_name(5, NS_WIN32, "ghost")
+            .finish();
 
         let mut buf = [r0, r1, r2].concat();
         let out = parse_chunk(&mut buf, 40, 3, REC, &[0, 0, 0, 0, 0, 0b011]);
@@ -551,7 +612,14 @@ mod tests {
         let names: Vec<_> = out
             .names
             .iter()
-            .map(|n| (n.record, n.parent, std::str::from_utf8(&out.strings[n.off as usize..(n.off + n.len) as usize]).unwrap()))
+            .map(|n| {
+                (
+                    n.record,
+                    n.parent,
+                    std::str::from_utf8(&out.strings[n.off as usize..(n.off + n.len) as usize])
+                        .unwrap(),
+                )
+            })
             .collect();
         assert_eq!(names, vec![(40, 5, "long name.txt"), (40, 7, "link.txt")]);
     }

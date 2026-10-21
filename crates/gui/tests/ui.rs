@@ -15,11 +15,15 @@ use rapidfind_core::engine::Engine;
 use rapidfind_core::query::SearchFlags;
 use rapidfind_core::search::{SearchOptions, SortKey};
 use uiautomation::controls::ControlType;
-use uiautomation::patterns::{UIExpandCollapsePattern, UIInvokePattern, UISelectionItemPattern, UIValuePattern};
+use uiautomation::patterns::{
+    UIExpandCollapsePattern, UIInvokePattern, UISelectionItemPattern, UIValuePattern,
+};
 use uiautomation::types::TreeScope;
 use uiautomation::{UIAutomation, UIElement};
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindowThreadProcessId, PostMessageW, WM_COMMAND};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetClassNameW, GetWindowThreadProcessId, PostMessageW, WM_COMMAND,
+};
 
 // Menu command ids (crates/gui/src/app.rs).
 const CMD_CASE: usize = 300;
@@ -70,7 +74,11 @@ fn find_window(pid: u32, class: &str) -> Option<HWND> {
         }
         1
     }
-    let mut q = Q { pid, class: class.encode_utf16().collect(), found: std::ptr::null_mut() };
+    let mut q = Q {
+        pid,
+        class: class.encode_utf16().collect(),
+        found: std::ptr::null_mut(),
+    };
     unsafe { EnumWindows(Some(cb), &mut q as *mut _ as isize) };
     (!q.found.is_null()).then_some(q.found)
 }
@@ -97,7 +105,8 @@ impl Gui {
         let n = LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let pipe = format!(r"\\.\pipe\rapidfind-uitest-{}-{n}", std::process::id());
         common::serve(&pipe, engine.clone());
-        let settings = std::env::temp_dir().join(format!("rapidfind-uitest-{}", std::process::id()));
+        let settings =
+            std::env::temp_dir().join(format!("rapidfind-uitest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings);
         let child = Command::new(env!("CARGO_BIN_EXE_rapidfind-gui"))
             .arg("--test")
@@ -106,10 +115,20 @@ impl Gui {
             .spawn()
             .expect("launching rapidfind-gui");
         let pid = child.id();
-        let hwnd = eventually("main window", Duration::from_secs(15), || find_window(pid, "rapidfind.main"));
+        let hwnd = eventually("main window", Duration::from_secs(15), || {
+            find_window(pid, "rapidfind.main")
+        });
         let ua = UIAutomation::new().unwrap();
-        let win = ua.element_from_handle(windows::Win32::Foundation::HWND(hwnd).into()).unwrap();
-        Gui { child, hwnd, ua, win, engine }
+        let win = ua
+            .element_from_handle(windows::Win32::Foundation::HWND(hwnd).into())
+            .unwrap();
+        Gui {
+            child,
+            hwnd,
+            ua,
+            win,
+            engine,
+        }
     }
 
     fn by_id(&self, id: &str) -> UIElement {
@@ -118,13 +137,19 @@ impl Gui {
             .create_matcher()
             .from_ref(&self.win)
             .timeout(5000)
-            .filter_fn(Box::new(move |e: &UIElement| Ok(e.get_automation_id().map(|a| a == id).unwrap_or(false))))
+            .filter_fn(Box::new(move |e: &UIElement| {
+                Ok(e.get_automation_id().map(|a| a == id).unwrap_or(false))
+            }))
             .find_first()
             .unwrap_or_else(|e| panic!("element with automation id: {e}"))
     }
 
     fn set_query(&self, q: &str) {
-        self.by_id(ID_SEARCH).get_pattern::<UIValuePattern>().unwrap().set_value(q).unwrap();
+        self.by_id(ID_SEARCH)
+            .get_pattern::<UIValuePattern>()
+            .unwrap()
+            .set_value(q)
+            .unwrap();
     }
 
     fn list_hwnd(&self) -> HWND {
@@ -136,11 +161,25 @@ impl Gui {
     }
 
     fn rows(&self) -> i32 {
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(self.list_hwnd(), 0x1004 /* LVM_GETITEMCOUNT */, 0, 0) as i32 }
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                self.list_hwnd(),
+                0x1004, /* LVM_GETITEMCOUNT */
+                0,
+                0,
+            ) as i32
+        }
     }
 
     fn tree_rows(&self) -> i32 {
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(self.tree_hwnd(), 0x1004, 0, 0) as i32 }
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                self.tree_hwnd(),
+                0x1004,
+                0,
+                0,
+            ) as i32
+        }
     }
 
     /// Selects tree row `i` (LVM_SETITEMSTATE across processes needs no
@@ -153,17 +192,31 @@ impl Gui {
             .create_matcher()
             .from_ref(&tree)
             .control_type(ControlType::ListItem)
-            .filter_fn(Box::new(move |e: &UIElement| Ok(e.get_name().map(|x| x == n).unwrap_or(false))))
+            .filter_fn(Box::new(move |e: &UIElement| {
+                Ok(e.get_name().map(|x| x == n).unwrap_or(false))
+            }))
             .timeout(5000)
             .find_first()
             .unwrap_or_else(|e| panic!("tree row {name}: {e}"));
-        row.get_pattern::<UISelectionItemPattern>().unwrap().select().unwrap();
+        row.get_pattern::<UISelectionItemPattern>()
+            .unwrap()
+            .select()
+            .unwrap();
     }
 
     /// Tree cell text (columns: Name, Size, % of Parent, Files, Online-only,
     /// Date Modified, Change, Trend).
     fn tree_cell(&self, row: i32, col: i32) -> String {
-        const HEADERS: [&str; 8] = ["Name", "Size", "% of Parent", "Files", "Online-only", "Date Modified", "Change", "Trend"];
+        const HEADERS: [&str; 8] = [
+            "Name",
+            "Size",
+            "% of Parent",
+            "Files",
+            "Online-only",
+            "Date Modified",
+            "Change",
+            "Trend",
+        ];
         msaa_cell(self.tree_hwnd(), row, col, &HEADERS)
     }
 
@@ -176,18 +229,33 @@ impl Gui {
             .create_matcher()
             .from_ref(&list)
             .control_type(ControlType::ListItem)
-            .filter_fn(Box::new(move |e: &UIElement| Ok(e.get_name().map(|x| x == n).unwrap_or(false))))
+            .filter_fn(Box::new(move |e: &UIElement| {
+                Ok(e.get_name().map(|x| x == n).unwrap_or(false))
+            }))
             .timeout(5000)
             .find_first()
             .unwrap_or_else(|e| panic!("list row {name}: {e}"));
-        row.get_pattern::<UISelectionItemPattern>().unwrap().select().unwrap();
+        row.get_pattern::<UISelectionItemPattern>()
+            .unwrap()
+            .select()
+            .unwrap();
     }
 
     /// The status bar's left part.
     fn status(&self) -> String {
         let bar = self.by_id("103");
-        let parts = self.ua.create_matcher().from_ref(&bar).control_type(ControlType::Text).timeout(1000).find_all().unwrap_or_default();
-        parts.first().and_then(|p| p.get_name().ok()).unwrap_or_default()
+        let parts = self
+            .ua
+            .create_matcher()
+            .from_ref(&bar)
+            .control_type(ControlType::Text)
+            .timeout(1000)
+            .find_all()
+            .unwrap_or_default();
+        parts
+            .first()
+            .and_then(|p| p.get_name().ok())
+            .unwrap_or_default()
     }
 
     /// What the preview pane says it shows (its window text).
@@ -196,7 +264,9 @@ impl Gui {
     }
 
     fn tree_names(&self) -> Vec<String> {
-        (0..self.tree_rows()).map(|i| self.tree_cell(i, 0)).collect()
+        (0..self.tree_rows())
+            .map(|i| self.tree_cell(i, 0))
+            .collect()
     }
 
     /// Cell text through MSAA: the owner-data list view answers for any row
@@ -213,40 +283,72 @@ impl Gui {
 /// "Header: value, ..." description).
 fn msaa_cell(list: HWND, row: i32, col: i32, headers: &[&str]) -> String {
     {
-        use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
+        use windows::Win32::System::Variant::{
+            VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4,
+        };
         use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
         use windows::core::Interface;
         let mut p = std::ptr::null_mut();
         let acc: IAccessible = unsafe {
-            if AccessibleObjectFromWindow(windows::Win32::Foundation::HWND(list), 0xFFFF_FFFC /* OBJID_CLIENT */, &IAccessible::IID, &mut p).is_err() || p.is_null() {
+            if AccessibleObjectFromWindow(
+                windows::Win32::Foundation::HWND(list),
+                0xFFFF_FFFC, /* OBJID_CLIENT */
+                &IAccessible::IID,
+                &mut p,
+            )
+            .is_err()
+                || p.is_null()
+            {
                 return String::new();
             }
             IAccessible::from_raw(p)
         };
         let child = VARIANT {
             Anonymous: VARIANT_0 {
-                Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 { vt: VT_I4, wReserved1: 0, wReserved2: 0, wReserved3: 0, Anonymous: VARIANT_0_0_0 { lVal: row + 1 } }),
+                Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                    vt: VT_I4,
+                    wReserved1: 0,
+                    wReserved2: 0,
+                    wReserved3: 0,
+                    Anonymous: VARIANT_0_0_0 { lVal: row + 1 },
+                }),
             },
         };
         if col == 0 {
-            return unsafe { acc.get_accName(&child) }.map(|b| b.to_string()).unwrap_or_default();
+            return unsafe { acc.get_accName(&child) }
+                .map(|b| b.to_string())
+                .unwrap_or_default();
         }
-        let desc = unsafe { acc.get_accDescription(&child) }.map(|b| b.to_string()).unwrap_or_default();
+        let desc = unsafe { acc.get_accDescription(&child) }
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let key = format!("{}: ", headers[col as usize]);
-        let Some(start) = desc.find(&key).map(|i| i + key.len()) else { return String::new() };
+        let Some(start) = desc.find(&key).map(|i| i + key.len()) else {
+            return String::new();
+        };
         let rest = &desc[start..];
         // Columns can be shown in another order than their index: any header ends the value.
-    let end = headers.iter().enumerate().filter(|&(i, _)| i != col as usize).map(|(_, h)| h).filter_map(|h| rest.find(&format!(", {h}: "))).min().unwrap_or(rest.len());
+        let end = headers
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != col as usize)
+            .map(|(_, h)| h)
+            .filter_map(|h| rest.find(&format!(", {h}: ")))
+            .min()
+            .unwrap_or(rest.len());
         rest[..end].to_string()
     }
 }
 
 impl Gui {
-
     /// Clicks (a real mouse click) until the list shows the expected first
     /// row; a click can be swallowed while the window is being activated.
     fn click_until(&self, el: &UIElement, what: &str, n: usize, first: &str) {
-        let pause = Duration::from_millis(u64::from(unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() }) + 150);
+        let pause = Duration::from_millis(
+            u64::from(unsafe {
+                windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime()
+            }) + 150,
+        );
         for _ in 0..4 {
             let _ = self.win.set_focus();
             el.click().unwrap();
@@ -268,9 +370,31 @@ impl Gui {
     }
 
     /// Expected total and first names for a query, straight from the engine.
-    fn expect(&self, q: &str, flags: SearchFlags, sort: SortKey, desc: bool) -> (usize, Vec<String>) {
-        let rs = self.engine.query(q, flags, &SearchOptions { sort, descending: desc, limit: 0 }).unwrap();
-        let names = self.engine.with_indexes(|ixs| rs.first_page().iter().map(|h| ixs[h.vol as usize].name(h.idx).to_string()).collect());
+    fn expect(
+        &self,
+        q: &str,
+        flags: SearchFlags,
+        sort: SortKey,
+        desc: bool,
+    ) -> (usize, Vec<String>) {
+        let rs = self
+            .engine
+            .query(
+                q,
+                flags,
+                &SearchOptions {
+                    sort,
+                    descending: desc,
+                    limit: 0,
+                },
+            )
+            .unwrap();
+        let names = self.engine.with_indexes(|ixs| {
+            rs.first_page()
+                .iter()
+                .map(|h| ixs[h.vol as usize].name(h.idx).to_string())
+                .collect()
+        });
         (rs.total, names)
     }
 
@@ -283,7 +407,10 @@ impl Gui {
                 return;
             }
             if t.elapsed() > Duration::from_secs(8) {
-                panic!("timed out waiting for {what}: want {n} rows starting {first:?}, have {rows} rows starting {c0:?} (title {:?})", self.win.get_name());
+                panic!(
+                    "timed out waiting for {what}: want {n} rows starting {first:?}, have {rows} rows starting {c0:?} (title {:?})",
+                    self.win.get_name()
+                );
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -305,22 +432,25 @@ fn gui_end_to_end() {
     g.set_query("report-2026");
     g.wait_for("report-2026 row", 1, Some("report-2026.pdf"));
     assert_eq!(g.cell(0, 1), r"C:\Users\me\Documents");
-    assert!(g.cell(0, 2).ends_with("KB"), "size column: {}", g.cell(0, 2));
+    assert!(
+        g.cell(0, 2).ends_with("KB"),
+        "size column: {}",
+        g.cell(0, 2)
+    );
     assert!(!g.cell(0, 4).is_empty(), "type column from the shell");
 
     // 3. Header click sorts by size (descending first), again flips.
     g.set_query("file0000*");
     let (n, _) = g.expect("file0000*", none, SortKey::Name, false);
     g.wait_for("wildcard rows", n, None);
-    let header = g
-        .ua
-        .create_matcher()
-        .from_ref(&g.win)
-        .control_type(ControlType::HeaderItem)
-        .name("Size")
-        .timeout(5000)
-        .find_first()
-        .expect("Size header");
+    let header =
+        g.ua.create_matcher()
+            .from_ref(&g.win)
+            .control_type(ControlType::HeaderItem)
+            .name("Size")
+            .timeout(5000)
+            .find_first()
+            .expect("Size header");
     let (_, by_size) = g.expect("file0000*", none, SortKey::Size, true);
     g.click_until(&header, "sorted by size, descending", n, &by_size[0]);
     assert_eq!(g.cell(1, 0), by_size[1]);
@@ -331,30 +461,57 @@ fn gui_end_to_end() {
     g.set_query("");
     let (total, _) = g.expect("", none, SortKey::Size, false);
     g.wait_for("all entries again", total, None);
-    let full = engine.query("", none, &SearchOptions { sort: SortKey::Size, descending: false, limit: 0 }).unwrap();
+    let full = engine
+        .query(
+            "",
+            none,
+            &SearchOptions {
+                sort: SortKey::Size,
+                descending: false,
+                limit: 0,
+            },
+        )
+        .unwrap();
     let last = engine.with_indexes(|ixs| {
         let h = full.first_page()[total - 1];
         ixs[h.vol as usize].name(h.idx).to_string()
     });
-    eventually("last row text", Duration::from_secs(8), || (g.cell(total as i32 - 1, 0) == last).then_some(()));
+    eventually("last row text", Duration::from_secs(8), || {
+        (g.cell(total as i32 - 1, 0) == last).then_some(())
+    });
 
     // 5. Filter dropdown: Picture.
     let combo = g.by_id(ID_FILTER);
-    combo.get_pattern::<UIExpandCollapsePattern>().unwrap().expand().unwrap();
-    let item = g
-        .ua
-        .create_matcher()
-        .control_type(ControlType::ListItem)
-        .name("Picture")
-        .timeout(5000)
-        .find_first()
-        .expect("Picture in the filter list");
-    let _ = item.get_pattern::<UISelectionItemPattern>().map(|p| p.select());
+    combo
+        .get_pattern::<UIExpandCollapsePattern>()
+        .unwrap()
+        .expand()
+        .unwrap();
+    let item =
+        g.ua.create_matcher()
+            .control_type(ControlType::ListItem)
+            .name("Picture")
+            .timeout(5000)
+            .find_first()
+            .expect("Picture in the filter list");
+    let _ = item
+        .get_pattern::<UISelectionItemPattern>()
+        .map(|p| p.select());
     item.click().unwrap();
     let (pics, _) = g.expect("pic:", none, SortKey::Size, false);
     g.wait_for("picture filter", pics, None);
-    combo.get_pattern::<UIExpandCollapsePattern>().unwrap().expand().unwrap();
-    let everything = g.ua.create_matcher().control_type(ControlType::ListItem).name("Everything").timeout(5000).find_first().unwrap();
+    combo
+        .get_pattern::<UIExpandCollapsePattern>()
+        .unwrap()
+        .expand()
+        .unwrap();
+    let everything =
+        g.ua.create_matcher()
+            .control_type(ControlType::ListItem)
+            .name("Everything")
+            .timeout(5000)
+            .find_first()
+            .unwrap();
     everything.click().unwrap();
 
     // 6. Search menu toggles: Match Case.
@@ -381,7 +538,16 @@ fn gui_end_to_end() {
         let v = &engine.volumes()[0];
         let mut ix = v.index.write();
         let (root, rec) = (ix.root, ix.rec_count);
-        ix.add_link(rec, 0, root, "zz-live-test.txt", 0x20, 1, common::BASE_TIME, common::BASE_TIME);
+        ix.add_link(
+            rec,
+            0,
+            root,
+            "zz-live-test.txt",
+            0x20,
+            1,
+            common::BASE_TIME,
+            common::BASE_TIME,
+        );
     }
     g.wait_for("live file shows up", 1, Some("zz-live-test.txt"));
 
@@ -389,43 +555,85 @@ fn gui_end_to_end() {
     g.set_query("notes.txt");
     g.wait_for("notes row", 1, Some("notes.txt"));
     let list = g.by_id(ID_LIST);
-    let row = g.ua.create_matcher().from_ref(&list).control_type(ControlType::ListItem).timeout(5000).find_first().expect("list item");
-    row.get_pattern::<UISelectionItemPattern>().unwrap().select().unwrap();
+    let row =
+        g.ua.create_matcher()
+            .from_ref(&list)
+            .control_type(ControlType::ListItem)
+            .timeout(5000)
+            .find_first()
+            .expect("list item");
+    row.get_pattern::<UISelectionItemPattern>()
+        .unwrap()
+        .select()
+        .unwrap();
     row.right_click().unwrap();
-    let copy = g
-        .ua
-        .create_matcher()
-        .control_type(ControlType::MenuItem)
-        .name("Copy Full Path")
-        .timeout(5000)
-        .find_first()
-        .expect("context menu item");
+    let copy =
+        g.ua.create_matcher()
+            .control_type(ControlType::MenuItem)
+            .name("Copy Full Path")
+            .timeout(5000)
+            .find_first()
+            .expect("context menu item");
     copy.click().unwrap();
     let clip = eventually("clipboard", Duration::from_secs(5), || {
-        uiautomation::clipboards::Clipboard::open().ok().and_then(|c| c.get_text().ok()).filter(|t| t.contains("notes.txt"))
+        uiautomation::clipboards::Clipboard::open()
+            .ok()
+            .and_then(|c| c.get_text().ok())
+            .filter(|t| t.contains("notes.txt"))
     });
     assert_eq!(clip, r"C:\Users\me\Documents\notes.txt");
 
     // 10. Options: add an exclude pattern; the service applies it.
     g.command(CMD_OPTIONS);
     let pid = g.child.id();
-    let opt_hwnd = eventually("options window", Duration::from_secs(5), || find_window(pid, "rapidfind.options"));
-    let opt = g.ua.element_from_handle(windows::Win32::Foundation::HWND(opt_hwnd).into()).unwrap();
-    let tab = g.ua.create_matcher().from_ref(&opt).control_type(ControlType::TabItem).name("Exclude").timeout(5000).find_first().unwrap();
+    let opt_hwnd = eventually("options window", Duration::from_secs(5), || {
+        find_window(pid, "rapidfind.options")
+    });
+    let opt =
+        g.ua.element_from_handle(windows::Win32::Foundation::HWND(opt_hwnd).into())
+            .unwrap();
+    let tab =
+        g.ua.create_matcher()
+            .from_ref(&opt)
+            .control_type(ControlType::TabItem)
+            .name("Exclude")
+            .timeout(5000)
+            .find_first()
+            .unwrap();
     tab.click().unwrap();
     let find = |id: &str| {
         let id = id.to_string();
         g.ua.create_matcher()
             .from_ref(&opt)
             .timeout(5000)
-            .filter_fn(Box::new(move |e: &UIElement| Ok(e.get_automation_id().map(|a| a == id).unwrap_or(false))))
+            .filter_fn(Box::new(move |e: &UIElement| {
+                Ok(e.get_automation_id().map(|a| a == id).unwrap_or(false))
+            }))
             .find_first()
             .unwrap()
     };
-    find("944").get_pattern::<UIValuePattern>().unwrap().set_value("Downloads").unwrap();
-    find("945").get_pattern::<UIInvokePattern>().unwrap().invoke().unwrap(); // Add Pattern
-    find("1").get_pattern::<UIInvokePattern>().unwrap().invoke().unwrap(); // OK
-    eventually("config applied", Duration::from_secs(5), || engine.config().exclude_folders.contains(&"Downloads".to_string()).then_some(()));
+    find("944")
+        .get_pattern::<UIValuePattern>()
+        .unwrap()
+        .set_value("Downloads")
+        .unwrap();
+    find("945")
+        .get_pattern::<UIInvokePattern>()
+        .unwrap()
+        .invoke()
+        .unwrap(); // Add Pattern
+    find("1")
+        .get_pattern::<UIInvokePattern>()
+        .unwrap()
+        .invoke()
+        .unwrap(); // OK
+    eventually("config applied", Duration::from_secs(5), || {
+        engine
+            .config()
+            .exclude_folders
+            .contains(&"Downloads".to_string())
+            .then_some(())
+    });
     g.set_query("setup.exe");
     g.wait_for("excluded folder hidden", 0, None);
 
@@ -435,7 +643,12 @@ fn gui_end_to_end() {
     edit.set_focus().unwrap();
     edit.send_keys("{Esc}", 10).unwrap();
     eventually("search cleared", Duration::from_secs(5), || {
-        edit.get_pattern::<UIValuePattern>().unwrap().get_value().unwrap().is_empty().then_some(())
+        edit.get_pattern::<UIValuePattern>()
+            .unwrap()
+            .get_value()
+            .unwrap()
+            .is_empty()
+            .then_some(())
     });
 
     // 12. Folder size tree: volumes open one level; a folder holding a
@@ -444,32 +657,66 @@ fn gui_end_to_end() {
     g.command(CMD_TREE);
     use rapidfind_core::tree::{NodeRef, Tree, TreeSort};
     let mut t = Tree::build(&engine, "", none).unwrap();
-    let at = |t: &mut Tree, p: &str| t.children(&engine, &NodeRef { path: p.into(), ..Default::default() }, TreeSort::Size, true, 0, 100).unwrap();
+    let at = |t: &mut Tree, p: &str| {
+        t.children(
+            &engine,
+            &NodeRef {
+                path: p.into(),
+                ..Default::default()
+            },
+            TreeSort::Size,
+            true,
+            0,
+            100,
+        )
+        .unwrap()
+    };
     let c = at(&mut t, "C:");
     let me = at(&mut t, r"C:\Users\me");
-    let short = || g.tree_names().iter().map(|n| n.split("   ").next().unwrap().to_string()).collect::<Vec<_>>();
+    let short = || {
+        g.tree_names()
+            .iter()
+            .map(|n| n.split("   ").next().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
     let wait_rows = |what: &str, want: &[String]| {
         let t0 = Instant::now();
         while short() != want {
-            assert!(t0.elapsed() < Duration::from_secs(8), "{what}: want {want:?}, have {:?}", g.tree_names());
+            assert!(
+                t0.elapsed() < Duration::from_secs(8),
+                "{what}: want {want:?}, have {:?}",
+                g.tree_names()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     };
     let mut want: Vec<String> = vec!["C:".into()];
     want.extend(c.rows.iter().map(|r| r.name.clone()));
     wait_rows("volume opened", &want);
-    assert!(g.tree_cell(0, 0).contains("free of") || g.tree_cell(0, 0) == "C:", "root label: {}", g.tree_cell(0, 0));
+    assert!(
+        g.tree_cell(0, 0).contains("free of") || g.tree_cell(0, 0) == "C:",
+        "root label: {}",
+        g.tree_cell(0, 0)
+    );
     g.select_tree_row("Users");
     g.command(CMD_EXPAND);
     let users = want.iter().position(|n| n == "Users").unwrap();
-    want.splice(users + 1..users + 1, std::iter::once("me".to_string()).chain(me.rows.iter().map(|r| r.name.clone())));
+    want.splice(
+        users + 1..users + 1,
+        std::iter::once("me".to_string()).chain(me.rows.iter().map(|r| r.name.clone())),
+    );
     wait_rows("Users drilled to me", &want);
     assert_eq!(g.tree_cell(users as i32 + 1, 2), "100.0 %"); // me is all of Users
-    assert_eq!(g.tree_cell(users as i32 + 2, 3), crate_group(me.rows[0].files));
+    assert_eq!(
+        g.tree_cell(users as i32 + 2, 3),
+        crate_group(me.rows[0].files)
+    );
 
     // 13. Filtered: only *.mkv counts, and the only path opens down to the movie.
     g.set_query("*.mkv");
-    let mkv: Vec<String> = ["C:", "Users", "me", "Videos", "movie.mkv"].map(String::from).to_vec();
+    let mkv: Vec<String> = ["C:", "Users", "me", "Videos", "movie.mkv"]
+        .map(String::from)
+        .to_vec();
     wait_rows("filtered tree", &mkv);
     assert_eq!(g.tree_cell(3, 1), "3.7 GB");
     assert_eq!(g.tree_cell(4, 2), "100.0 %");
@@ -491,25 +738,42 @@ fn gui_end_to_end() {
 #[test]
 fn gui_growth_compare() {
     let engine = Arc::new(Engine::from_indexes(vec![common::sample_index('C', 2_000)]));
-    let hist = std::env::temp_dir().join(format!("rapidfind-uitest-history-{}", std::process::id()));
+    let hist =
+        std::env::temp_dir().join(format!("rapidfind-uitest-history-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&hist);
     engine.enable_history(hist.clone());
     common::seed_history(&engine);
     let g = Gui::launch(engine);
     g.command(CMD_TREE);
-    eventually("tree", Duration::from_secs(8), || (g.tree_rows() > 1).then_some(()));
+    eventually("tree", Duration::from_secs(8), || {
+        (g.tree_rows() > 1).then_some(())
+    });
     g.command(CMD_COMPARE_DAY);
-    let row = |name: &str| g.tree_names().iter().position(|n| n.split("   ").next() == Some(name)).map(|i| i as i32);
-    let videos = eventually("drilled to Videos", Duration::from_secs(8), || row("Videos").filter(|&i| g.tree_cell(i, 6).starts_with('+')));
+    let row = |name: &str| {
+        g.tree_names()
+            .iter()
+            .position(|n| n.split("   ").next() == Some(name))
+            .map(|i| i as i32)
+    };
+    let videos = eventually("drilled to Videos", Duration::from_secs(8), || {
+        row("Videos").filter(|&i| g.tree_cell(i, 6).starts_with('+'))
+    });
     let change = g.tree_cell(videos, 6);
-    assert!(change.ends_with("MB"), "Videos grew about 117 MB since yesterday: {change}");
+    assert!(
+        change.ends_with("MB"),
+        "Videos grew about 117 MB since yesterday: {change}"
+    );
     assert_eq!(g.tree_cell(0, 6), change, "all of C:'s growth is in Videos");
     assert!(g.status().contains("Compared with"), "{}", g.status());
     // A month back: Downloads shrank by 2e9 bytes in the cleanup.
     g.command(CMD_COMPARE_MONTH);
-    eventually("Downloads shrank", Duration::from_secs(8), || row("Downloads").filter(|&i| g.tree_cell(i, 6) == "\u{2212}1.9 GB"));
+    eventually("Downloads shrank", Duration::from_secs(8), || {
+        row("Downloads").filter(|&i| g.tree_cell(i, 6) == "\u{2212}1.9 GB")
+    });
     g.command(CMD_STOP_COMPARE);
-    eventually("comparing stopped", Duration::from_secs(8), || (!g.status().contains("Compared with")).then_some(()));
+    eventually("comparing stopped", Duration::from_secs(8), || {
+        (!g.status().contains("Compared with")).then_some(())
+    });
     let _ = std::fs::remove_dir_all(&hist);
 }
 
@@ -519,7 +783,9 @@ fn gui_growth_compare() {
 /// live tree drops it without a refresh.
 #[test]
 fn gui_delete_in_background() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_KEYDOWN, WM_NULL};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_KEYDOWN, WM_NULL,
+    };
     let dir = std::env::temp_dir().join(format!("rapidfind-uitest-delete-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     for sub in 0..30 {
@@ -532,13 +798,24 @@ fn gui_delete_in_background() {
     std::fs::create_dir_all(dir.join("keep")).unwrap();
     std::fs::write(dir.join("keep").join("small.txt"), "stays").unwrap();
     let root = dir.to_string_lossy().to_string();
-    let engine = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(&root, rapidfind_core::fold::FoldMode::Lower)]));
+    let engine = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(
+        &root,
+        rapidfind_core::fold::FoldMode::Lower,
+    )]));
     let g = Gui::launch(engine.clone());
     g.command(CMD_TREE);
-    let has = |name: &str| g.tree_names().iter().any(|n| n.split("   ").next() == Some(name));
-    eventually("tree shows big and keep", Duration::from_secs(8), || (has("big") && has("keep")).then_some(()));
+    let has = |name: &str| {
+        g.tree_names()
+            .iter()
+            .any(|n| n.split("   ").next() == Some(name))
+    };
+    eventually("tree shows big and keep", Duration::from_secs(8), || {
+        (has("big") && has("keep")).then_some(())
+    });
     g.select_tree_row("big");
-    unsafe { PostMessageW(g.tree_hwnd(), WM_KEYDOWN, 0x2E /* VK_DELETE */, 0) };
+    unsafe {
+        PostMessageW(g.tree_hwnd(), WM_KEYDOWN, 0x2E /* VK_DELETE */, 0)
+    };
     // While the files go, the window answers right away.
     let t0 = Instant::now();
     let mut slowest = Duration::ZERO;
@@ -546,28 +823,41 @@ fn gui_delete_in_background() {
     while dir.join("big").exists() {
         let t = Instant::now();
         let mut out = 0usize;
-        let ok = unsafe { SendMessageTimeoutW(g.hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 2000, &mut out) };
+        let ok =
+            unsafe { SendMessageTimeoutW(g.hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 2000, &mut out) };
         assert!(ok != 0, "the window stopped answering while deleting");
         slowest = slowest.max(t.elapsed());
         saw_marked |= g.tree_names().iter().any(|n| n.contains("deleting"));
         assert!(t0.elapsed() < Duration::from_secs(60), "big wasn't deleted");
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(slowest < Duration::from_millis(500), "the window took {slowest:?} to answer while deleting");
+    assert!(
+        slowest < Duration::from_millis(500),
+        "the window took {slowest:?} to answer while deleting"
+    );
     let t1 = Instant::now();
     while !g.status().contains("Deleted \"big\"") {
-        assert!(t1.elapsed() < Duration::from_secs(8), "status: {:?}", g.status());
+        assert!(
+            t1.elapsed() < Duration::from_secs(8),
+            "status: {:?}",
+            g.status()
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     // Usually seen, but a fast disk may finish first.
-    eprintln!("deleted 3,000 files in {:?}; slowest answer {slowest:?}; saw the greyed row: {saw_marked}", t0.elapsed());
+    eprintln!(
+        "deleted 3,000 files in {:?}; slowest answer {slowest:?}; saw the greyed row: {saw_marked}",
+        t0.elapsed()
+    );
     // The index notices (a watcher would; here the test removes it): the live tree follows.
     let big = format!("{}\\big", root.trim_end_matches('\\'));
     {
         let (v, i) = engine.lookup_path(&big).expect("big in the index");
         engine.volumes()[v].index.write().remove_subtree(i);
     }
-    eventually("live tree dropped big", Duration::from_secs(10), || (!has("big") && has("keep")).then_some(()));
+    eventually("live tree dropped big", Duration::from_secs(10), || {
+        (!has("big") && has("keep")).then_some(())
+    });
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -579,9 +869,17 @@ fn gui_content_search_and_preview() {
     let dir = std::env::temp_dir().join(format!("rapidfind-uitest-content-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
-    std::fs::write(dir.join("alpha.txt"), "first line\r\nhere is the needle\r\n").unwrap();
+    std::fs::write(
+        dir.join("alpha.txt"),
+        "first line\r\nhere is the needle\r\n",
+    )
+    .unwrap();
     let mut w16 = vec![0xFF, 0xFE];
-    w16.extend("A Needle in UTF-16".encode_utf16().flat_map(u16::to_le_bytes));
+    w16.extend(
+        "A Needle in UTF-16"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes),
+    );
     std::fs::write(dir.join("wide.txt"), w16).unwrap();
     std::fs::write(dir.join("sub").join("deep.log"), "deep NEEDLE").unwrap();
     std::fs::write(dir.join("blob.bin"), b"\x00\x01needle\x00\x02").unwrap(); // binary: skipped
@@ -606,7 +904,10 @@ fn gui_content_search_and_preview() {
 
     let root = dir.to_string_lossy().to_string();
     let folder = rapidfind_core::folder::build(&root, rapidfind_core::fold::FoldMode::Lower);
-    let engine = Arc::new(Engine::from_indexes(vec![common::sample_index('C', 2_000), folder]));
+    let engine = Arc::new(Engine::from_indexes(vec![
+        common::sample_index('C', 2_000),
+        folder,
+    ]));
     let g = Gui::launch(engine.clone());
     let inside = format!("\"{}\\\"", root.trim_end_matches('\\'));
 
@@ -614,9 +915,16 @@ fn gui_content_search_and_preview() {
     // UTF-8 and UTF-16), sorted by name; folders and binaries drop out.
     g.set_query(&format!("{inside} content:needle"));
     g.wait_for("content matches", 3, Some("alpha.txt"));
-    eventually("all three rows", Duration::from_secs(5), || (g.cell(1, 0) == "deep.log" && g.cell(2, 0) == "wide.txt").then_some(()));
-    let st = eventually("finished status", Duration::from_secs(8), || Some(g.status()).filter(|s| s.contains("files read")));
-    assert!(st.starts_with("3 objects") && st.contains("skipped 1 binary"), "status: {st}");
+    eventually("all three rows", Duration::from_secs(5), || {
+        (g.cell(1, 0) == "deep.log" && g.cell(2, 0) == "wide.txt").then_some(())
+    });
+    let st = eventually("finished status", Duration::from_secs(8), || {
+        Some(g.status()).filter(|s| s.contains("files read"))
+    });
+    assert!(
+        st.starts_with("3 objects") && st.contains("skipped 1 binary"),
+        "status: {st}"
+    );
 
     // 2. Case-sensitive and negated terms.
     g.set_query(&format!("{inside} case:content:NEEDLE"));
@@ -626,31 +934,53 @@ fn gui_content_search_and_preview() {
 
     // 3. Errors in the query show in the status bar.
     g.set_query("content:a | b");
-    eventually("error shown", Duration::from_secs(5), || g.status().contains("only be combined with AND").then_some(()));
+    eventually("error shown", Duration::from_secs(5), || {
+        g.status()
+            .contains("only be combined with AND")
+            .then_some(())
+    });
 
     // 4. Stopping a scan (Esc in the search box): it may already be done.
     g.set_query("content:zzz-not-there");
     g.command(CMD_STOP);
-    let st = eventually("stopped or finished", Duration::from_secs(8), || Some(g.status()).filter(|s| s.contains("files read")));
-    assert!(st.contains("stopped") || st.starts_with("0 objects"), "status: {st}");
+    let st = eventually("stopped or finished", Duration::from_secs(8), || {
+        Some(g.status()).filter(|s| s.contains("files read"))
+    });
+    assert!(
+        st.contains("stopped") || st.starts_with("0 objects"),
+        "status: {st}"
+    );
 
     // 5. Preview pane: text with the match highlighted, scrolled to it.
     g.set_query(&format!("{inside} content:needle"));
     g.wait_for("content matches again", 3, Some("alpha.txt"));
     g.command(CMD_PREVIEW);
     g.select_row("alpha.txt");
-    eventually("text preview", Duration::from_secs(5), || (g.preview_state() == "text · Utf8 · 1 matches").then_some(()));
+    eventually("text preview", Duration::from_secs(5), || {
+        (g.preview_state() == "text · Utf8 · 1 matches").then_some(())
+    });
     g.select_row("wide.txt");
-    eventually("UTF-16 preview", Duration::from_secs(5), || (g.preview_state() == "text · Utf16Le · 1 matches").then_some(()));
+    eventually("UTF-16 preview", Duration::from_secs(5), || {
+        (g.preview_state() == "text · Utf16Le · 1 matches").then_some(())
+    });
     let text = g.by_id("107");
-    let body = text.get_pattern::<uiautomation::patterns::UITextPattern>().and_then(|t| t.get_document_range()).and_then(|r| r.get_text(-1)).unwrap_or_default();
-    assert!(body.contains("A Needle in UTF-16"), "preview text: {body:?}");
+    let body = text
+        .get_pattern::<uiautomation::patterns::UITextPattern>()
+        .and_then(|t| t.get_document_range())
+        .and_then(|r| r.get_text(-1))
+        .unwrap_or_default();
+    assert!(
+        body.contains("A Needle in UTF-16"),
+        "preview text: {body:?}"
+    );
 
     // 6. Pictures as shell thumbnails.
     g.set_query(&format!("{inside} pic.bmp"));
     g.wait_for("picture", 1, Some("pic.bmp"));
     g.select_row("pic.bmp");
-    eventually("thumbnail", Duration::from_secs(8), || (g.preview_state() == "image").then_some(()));
+    eventually("thumbnail", Duration::from_secs(8), || {
+        (g.preview_state() == "image").then_some(())
+    });
     g.command(CMD_PREVIEW);
 
     drop(g);

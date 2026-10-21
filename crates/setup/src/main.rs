@@ -20,12 +20,19 @@ use rapidfind_pkg::{install, log_line, parse};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let parsed = parse(&args);
-    log_line(&format!("--- rapidfind-setup {} {}", install::VERSION, args.join(" ")));
+    log_line(&format!(
+        "--- rapidfind-setup {} {}",
+        install::VERSION,
+        args.join(" ")
+    ));
     let a = match parsed {
         Ok(a) => a,
         Err(e) => {
             log_line(&e);
-            if !args.iter().any(|x| x.to_lowercase().contains("silent") || x == "/S") {
+            if !args
+                .iter()
+                .any(|x| x.to_lowercase().contains("silent") || x == "/S")
+            {
                 ui::message(&e, true);
             }
             std::process::exit(2);
@@ -34,7 +41,15 @@ fn main() {
     let code = if a.silent {
         let mut log = |s: &str| log_line(s);
         let r = if a.uninstall {
-            install::uninstall(&install::Removal { dir: a.opts.dir.clone(), service: a.opts.service, system: a.opts.arp, purge: a.purge }, &mut log)
+            install::uninstall(
+                &install::Removal {
+                    dir: a.opts.dir.clone(),
+                    service: a.opts.service,
+                    system: a.opts.arp,
+                    purge: a.purge,
+                },
+                &mut log,
+            )
         } else {
             install::install(&a.opts, &mut log)
         };
@@ -52,4 +67,3 @@ fn main() {
     };
     std::process::exit(code);
 }
-

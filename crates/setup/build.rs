@@ -16,7 +16,8 @@ fn main() {
             Some(dir) => {
                 let p = dir.join(f);
                 println!("cargo:rerun-if-changed={}", p.display());
-                let raw = std::fs::read(&p).unwrap_or_else(|e| panic!("payload {}: {e}", p.display()));
+                let raw =
+                    std::fs::read(&p).unwrap_or_else(|e| panic!("payload {}: {e}", p.display()));
                 zstd::encode_all(&raw[..], 19).unwrap()
             }
             None => Vec::new(),
@@ -36,7 +37,10 @@ fn main() {
 /// manifest carry: all three come from the workspace version.
 fn version_resource(out: &std::path::Path) {
     let v = std::env::var("CARGO_PKG_VERSION").unwrap();
-    let mut n: Vec<u16> = v.split(['.', '-', '+']).filter_map(|p| p.parse().ok()).collect();
+    let mut n: Vec<u16> = v
+        .split(['.', '-', '+'])
+        .filter_map(|p| p.parse().ok())
+        .collect();
     n.resize(4, 0);
     let (a, b, c, d) = (n[0], n[1], n[2], n[3]);
     let rc = format!(
@@ -68,5 +72,7 @@ END
     );
     let path = out.join("version.rc");
     std::fs::write(&path, rc).unwrap();
-    embed_resource::compile(&path, embed_resource::NONE).manifest_optional().unwrap();
+    embed_resource::compile(&path, embed_resource::NONE)
+        .manifest_optional()
+        .unwrap();
 }

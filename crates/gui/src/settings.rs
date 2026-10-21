@@ -72,18 +72,27 @@ pub fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("RAPIDFIND_GUI_DIR") {
         return PathBuf::from(d);
     }
-    std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("rapidfind")
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("rapidfind")
 }
 
 impl Settings {
     pub fn load() -> Settings {
-        std::fs::read_to_string(dir().join("gui.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        std::fs::read_to_string(dir().join("gui.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     pub fn save(&self) {
         let d = dir();
         let _ = std::fs::create_dir_all(&d);
-        let _ = std::fs::write(d.join("gui.json"), serde_json::to_string_pretty(self).unwrap());
+        let _ = std::fs::write(
+            d.join("gui.json"),
+            serde_json::to_string_pretty(self).unwrap(),
+        );
     }
 }
 
@@ -105,8 +114,12 @@ pub fn parse_hotkey(s: &str) -> Option<(u32, u32)> {
             "space" => vk = Some(0x20),
             "tab" => vk = Some(0x09),
             "enter" => vk = Some(0x0D),
-            p if p.len() == 1 && p.as_bytes()[0].is_ascii_alphanumeric() => vk = Some(p.to_ascii_uppercase().as_bytes()[0] as u32),
-            p if p.starts_with('f') && p[1..].parse::<u32>().is_ok_and(|n| (1..=24).contains(&n)) => {
+            p if p.len() == 1 && p.as_bytes()[0].is_ascii_alphanumeric() => {
+                vk = Some(p.to_ascii_uppercase().as_bytes()[0] as u32)
+            }
+            p if p.starts_with('f')
+                && p[1..].parse::<u32>().is_ok_and(|n| (1..=24).contains(&n)) =>
+            {
                 vk = Some(0x70 + p[1..].parse::<u32>().unwrap() - 1)
             }
             "" => {}
@@ -123,8 +136,14 @@ mod tests {
 
     #[test]
     fn hotkeys() {
-        assert_eq!(parse_hotkey("Ctrl+Alt+Space"), Some((MOD_CONTROL | MOD_ALT, 0x20)));
-        assert_eq!(parse_hotkey("win+shift+f"), Some((MOD_WIN | MOD_SHIFT, b'F' as u32)));
+        assert_eq!(
+            parse_hotkey("Ctrl+Alt+Space"),
+            Some((MOD_CONTROL | MOD_ALT, 0x20))
+        );
+        assert_eq!(
+            parse_hotkey("win+shift+f"),
+            Some((MOD_WIN | MOD_SHIFT, b'F' as u32))
+        );
         assert_eq!(parse_hotkey("F11"), Some((0, 0x7A)));
         assert_eq!(parse_hotkey("a"), None, "a bare letter would steal typing");
         assert_eq!(parse_hotkey("Ctrl+Banana"), None);

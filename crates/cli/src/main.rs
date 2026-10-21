@@ -18,7 +18,11 @@ use rapidfind_core::search::{SearchOptions, SortKey, search};
 use rapidfind_core::{content, fmt, persist};
 
 #[derive(Parser)]
-#[command(name = "rapidfind", version, about = "Instant filename search for NTFS volumes")]
+#[command(
+    name = "rapidfind",
+    version,
+    about = "Instant filename search for NTFS volumes"
+)]
 struct Cli {
     /// Volumes to use, e.g. `-v C -v D` (default: all included volumes).
     #[arg(short, long, global = true)]
@@ -293,14 +297,19 @@ fn open_backend(cli: &Cli, verbose: bool) -> anyhow::Result<Box<dyn Backend>> {
 
 fn require_admin() -> anyhow::Result<()> {
     if !win::is_elevated() {
-        bail!("this command reads the NTFS master file table directly and must run as administrator.\nRe-run from an elevated terminal.");
+        bail!(
+            "this command reads the NTFS master file table directly and must run as administrator.\nRe-run from an elevated terminal."
+        );
     }
     Ok(())
 }
 
 /// Config edits go through the service when it runs, otherwise to the local
 /// config file (no admin needed).
-fn edit_config(cli: &Cli, f: impl FnOnce(&mut rapidfind_core::config::Config) -> anyhow::Result<()>) -> anyhow::Result<()> {
+fn edit_config(
+    cli: &Cli,
+    f: impl FnOnce(&mut rapidfind_core::config::Config) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     if !cli.local
         && let Ok(c) = ipc::Client::connect()
     {
@@ -313,7 +322,10 @@ fn edit_config(cli: &Cli, f: impl FnOnce(&mut rapidfind_core::config::Config) ->
     let mut cfg = rapidfind_core::config::Config::load(&path);
     f(&mut cfg)?;
     cfg.save(&path)?;
-    eprintln!("saved {} (takes effect next time the index is opened)", path.display());
+    eprintln!(
+        "saved {} (takes effect next time the index is opened)",
+        path.display()
+    );
     Ok(())
 }
 
@@ -323,7 +335,9 @@ fn show_config(cli: &Cli) -> anyhow::Result<rapidfind_core::config::Config> {
     {
         return ipc::Remote(c).get_config().map_err(anyhow::Error::msg);
     }
-    Ok(rapidfind_core::config::Config::load(&persist::db_dir().join("config.json")))
+    Ok(rapidfind_core::config::Config::load(
+        &persist::db_dir().join("config.json"),
+    ))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -331,7 +345,12 @@ fn main() -> anyhow::Result<()> {
     let cmd = cli.cmd.take().unwrap_or(Cmd::Ui);
     // `service run` installs its own file logger in service_main; a global logger set here
     // first would make that try_init fail and send everything to the service's absent stderr.
-    if !matches!(cmd, Cmd::Service { action: ServiceCmd::Run }) {
+    if !matches!(
+        cmd,
+        Cmd::Service {
+            action: ServiceCmd::Run
+        }
+    ) {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     }
     match cmd {
@@ -357,22 +376,47 @@ fn main() -> anyhow::Result<()> {
                 Err(e) => println!("service: unknown ({e})"),
             }
             println!("this program: rapidfind {}", ipc::BUILD);
-            match ipc::Client::connect().and_then(|mut c| Ok((c.call(&ipc::Request::Status)?, c.service_build().unwrap_or("an older build").to_string(), c.protocol()))) {
+            match ipc::Client::connect().and_then(|mut c| {
+                Ok((
+                    c.call(&ipc::Request::Status)?,
+                    c.service_build().unwrap_or("an older build").to_string(),
+                    c.protocol(),
+                ))
+            }) {
                 Ok((ipc::Response::Status(s), build, ver)) => {
-                    println!("pipe {}: {} (service {build}, protocol v{ver})", ipc::PIPE_NAME, if s.ready { "ready" } else { "index still loading" });
+                    println!(
+                        "pipe {}: {} (service {build}, protocol v{ver})",
+                        ipc::PIPE_NAME,
+                        if s.ready {
+                            "ready"
+                        } else {
+                            "index still loading"
+                        }
+                    );
                     for v in &s.volumes {
-                        println!("  {:<28} {:<6} {:>10} entries  {}", v.key, v.kind, v.entries, v.state);
+                        println!(
+                            "  {:<28} {:<6} {:>10} entries  {}",
+                            v.key, v.kind, v.entries, v.state
+                        );
                     }
                 }
                 Ok(_) => println!("pipe {}: unexpected answer", ipc::PIPE_NAME),
-                Err(e) if ipc::is_version_mismatch(&e) => println!("pipe {}: {e}; reinstall rapidfind so they match", ipc::PIPE_NAME),
+                Err(e) if ipc::is_version_mismatch(&e) => println!(
+                    "pipe {}: {e}; reinstall rapidfind so they match",
+                    ipc::PIPE_NAME
+                ),
                 Err(e) => println!("pipe {}: not available ({e})", ipc::PIPE_NAME),
             }
             println!("local indexes ({}):", persist::db_dir().display());
             for v in win::list_volumes() {
                 let db = persist::db_path(v.letter);
-                let size = std::fs::metadata(&db).map(|m| fmt::size(m.len())).unwrap_or_else(|_| "-".into());
-                println!("  {}:  {:<6} type {} serial {:08X}  index {}", v.letter, v.fs, v.drive_type, v.serial, size);
+                let size = std::fs::metadata(&db)
+                    .map(|m| fmt::size(m.len()))
+                    .unwrap_or_else(|_| "-".into());
+                println!(
+                    "  {}:  {:<6} type {} serial {:08X}  index {}",
+                    v.letter, v.fs, v.drive_type, v.serial, size
+                );
             }
             println!("elevated: {}", win::is_elevated());
         }
@@ -395,29 +439,78 @@ fn main() -> anyhow::Result<()> {
             let ts = Instant::now();
             eng.save_all(1)?;
             eprintln!("saved in {} ms", ts.elapsed().as_millis());
-            eprintln!("done in {} ms (index saved to {})", t.elapsed().as_millis(), persist::db_dir().display());
+            eprintln!(
+                "done in {} ms (index saved to {})",
+                t.elapsed().as_millis(),
+                persist::db_dir().display()
+            );
         }
-        Cmd::Search { ref query, sort, desc, limit, long, case, path, ww, regex, max_size_mb, binary, no_ifilter } => {
+        Cmd::Search {
+            ref query,
+            sort,
+            desc,
+            limit,
+            long,
+            case,
+            path,
+            ww,
+            regex,
+            max_size_mb,
+            binary,
+            no_ifilter,
+        } => {
             let mut be = open_backend(&cli, false)?;
-            let flags = SearchFlags { case, path, whole_word: ww, regex };
+            let flags = SearchFlags {
+                case,
+                path,
+                whole_word: ww,
+                regex,
+            };
             let page = if limit == 0 { u32::MAX } else { limit as u32 };
-            let (names, content) = content::split_query(&query.join(" "), flags).map_err(anyhow::Error::msg)?;
-            let mut res = be.search(&names, flags, sort.into(), desc, if content.is_some() { 1 } else { page.min(10_000) }).map_err(anyhow::Error::msg)?;
+            let (names, content) =
+                content::split_query(&query.join(" "), flags).map_err(anyhow::Error::msg)?;
+            let mut res = be
+                .search(
+                    &names,
+                    flags,
+                    sort.into(),
+                    desc,
+                    if content.is_some() {
+                        1
+                    } else {
+                        page.min(10_000)
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
             let mut stats = None;
             if let Some(cq) = content {
                 // Contents are read here, as the user running the command.
-                let opts = content::ContentOptions { max_size: max_size_mb << 20, binary, ifilter: !no_ifilter, byte_budget: None, time_limit: None };
+                let opts = content::ContentOptions {
+                    max_size: max_size_mb << 20,
+                    binary,
+                    ifilter: !no_ifilter,
+                    byte_budget: None,
+                    time_limit: None,
+                };
                 let want = (limit != 0).then_some(limit);
-                let (rows, st) = content::matching_rows(&mut |r| be.call(r), Arc::new(cq), opts, want).map_err(anyhow::Error::msg)?;
+                let (rows, st) =
+                    content::matching_rows(&mut |r| be.call(r), Arc::new(cq), opts, want)
+                        .map_err(anyhow::Error::msg)?;
                 res.rows = rows;
                 if let Some(w) = want {
                     res.rows.truncate(w);
                 }
                 stats = Some(st);
             } else {
-                let want = if limit == 0 { res.total } else { (limit as u64).min(res.total) };
+                let want = if limit == 0 {
+                    res.total
+                } else {
+                    (limit as u64).min(res.total)
+                };
                 while (res.rows.len() as u64) < want {
-                    let more = be.fetch(res.rows.len() as u64, 10_000).map_err(anyhow::Error::msg)?;
+                    let more = be
+                        .fetch(res.rows.len() as u64, 10_000)
+                        .map_err(anyhow::Error::msg)?;
                     if more.rows.is_empty() {
                         break;
                     }
@@ -428,15 +521,28 @@ fn main() -> anyhow::Result<()> {
             let mut out = out.lock();
             for row in &res.rows {
                 if long {
-                    let size = if row.has_size || !row.is_dir { fmt::size(row.size) } else { String::new() };
-                    writeln!(out, "{size:>10}  {:16}  {}", fmt::time(row.modified), row.full_path())?;
+                    let size = if row.has_size || !row.is_dir {
+                        fmt::size(row.size)
+                    } else {
+                        String::new()
+                    };
+                    writeln!(
+                        out,
+                        "{size:>10}  {:16}  {}",
+                        fmt::time(row.modified),
+                        row.full_path()
+                    )?;
                 } else {
                     writeln!(out, "{}", row.full_path())?;
                 }
             }
             match stats {
                 Some(st) => {
-                    let more = if st.done { "" } else { " (stopped at the limit)" };
+                    let more = if st.done {
+                        ""
+                    } else {
+                        " (stopped at the limit)"
+                    };
                     let skipped = st.skipped();
                     eprintln!(
                         "{} name matches in {:.2} ms; contents: {} of {} checked, {} matched, {} read in {:.0} ms{more}{}{} via {}",
@@ -452,7 +558,13 @@ fn main() -> anyhow::Result<()> {
                         be.label()
                     );
                 }
-                None => eprintln!("{} results ({} shown) in {:.2} ms via {}", res.total, res.rows.len(), res.elapsed_us as f64 / 1000.0, be.label()),
+                None => eprintln!(
+                    "{} results ({} shown) in {:.2} ms via {}",
+                    res.total,
+                    res.rows.len(),
+                    res.elapsed_us as f64 / 1000.0,
+                    be.label()
+                ),
             }
             be.finish()?;
         }
@@ -483,15 +595,38 @@ fn main() -> anyhow::Result<()> {
             let mut be = open_backend(&cli, false)?;
             history_cmd(&mut *be, action)?;
         }
-        Cmd::Du { ref path, ref query, depth, limit } => {
+        Cmd::Du {
+            ref path,
+            ref query,
+            depth,
+            limit,
+        } => {
             use rapidfind_core::tree::{NodeRef, TreeRow, TreeSort};
             let mut be = open_backend(&cli, false)?;
             let t = Instant::now();
-            let roots = be.tree(query.as_deref().unwrap_or(""), SearchFlags::default(), TreeSort::Size, true).map_err(anyhow::Error::msg)?;
+            let roots = be
+                .tree(
+                    query.as_deref().unwrap_or(""),
+                    SearchFlags::default(),
+                    TreeSort::Size,
+                    true,
+                )
+                .map_err(anyhow::Error::msg)?;
             let built = t.elapsed();
             let (top, total) = match path {
                 Some(p) => {
-                    let l = be.children(&NodeRef { path: p.clone(), ..Default::default() }, TreeSort::Size, true, 0, limit as u32).map_err(anyhow::Error::msg)?;
+                    let l = be
+                        .children(
+                            &NodeRef {
+                                path: p.clone(),
+                                ..Default::default()
+                            },
+                            TreeSort::Size,
+                            true,
+                            0,
+                            limit as u32,
+                        )
+                        .map_err(anyhow::Error::msg)?;
                     println!("{:>10}  {:>9} files  {}", fmt::size(l.size), l.files, p);
                     (l.rows, l.size)
                 }
@@ -500,22 +635,60 @@ fn main() -> anyhow::Result<()> {
                     (roots.rows.into_iter().take(limit).collect(), total)
                 }
             };
-            fn show(be: &mut dyn Backend, rows: &[TreeRow], parent: u64, level: usize, depth: usize, limit: usize) -> anyhow::Result<()> {
+            fn show(
+                be: &mut dyn Backend,
+                rows: &[TreeRow],
+                parent: u64,
+                level: usize,
+                depth: usize,
+                limit: usize,
+            ) -> anyhow::Result<()> {
                 for r in rows {
-                    let pct = if parent > 0 { r.size as f64 * 100.0 / parent as f64 } else { 0.0 };
+                    let pct = if parent > 0 {
+                        r.size as f64 * 100.0 / parent as f64
+                    } else {
+                        0.0
+                    };
                     let bar = "█".repeat((pct / 10.0).round() as usize);
-                    let files = if r.is_dir { format!("{:>9} files", r.files) } else { " ".repeat(15) };
-                    let mut free = if r.capacity > 0 { format!("  ({} free of {})", fmt::size(r.free), fmt::size(r.capacity)) } else { String::new() };
+                    let files = if r.is_dir {
+                        format!("{:>9} files", r.files)
+                    } else {
+                        " ".repeat(15)
+                    };
+                    let mut free = if r.capacity > 0 {
+                        format!(
+                            "  ({} free of {})",
+                            fmt::size(r.free),
+                            fmt::size(r.capacity)
+                        )
+                    } else {
+                        String::new()
+                    };
                     if r.cloud > 0 {
                         free.push_str(&format!("  [+{} online-only]", fmt::size(r.cloud)));
                     }
                     if r.hardlink {
                         free.push_str("  [hard link, counted elsewhere]");
                     }
-                    println!("{:>10} {:>5.1}% {:<10} {files}  {}{}{}{free}", fmt::size(r.size), pct, bar, "  ".repeat(level), r.name, if r.is_dir { "\\" } else { "" });
+                    println!(
+                        "{:>10} {:>5.1}% {:<10} {files}  {}{}{}{free}",
+                        fmt::size(r.size),
+                        pct,
+                        bar,
+                        "  ".repeat(level),
+                        r.name,
+                        if r.is_dir { "\\" } else { "" }
+                    );
                     if r.is_dir && r.has_children && level + 1 < depth {
-                        let node = NodeRef { vol: r.vol.clone(), idx: r.idx, epoch: r.epoch, path: r.full_path() };
-                        let l = be.children(&node, TreeSort::Size, true, 0, limit as u32).map_err(anyhow::Error::msg)?;
+                        let node = NodeRef {
+                            vol: r.vol.clone(),
+                            idx: r.idx,
+                            epoch: r.epoch,
+                            path: r.full_path(),
+                        };
+                        let l = be
+                            .children(&node, TreeSort::Size, true, 0, limit as u32)
+                            .map_err(anyhow::Error::msg)?;
                         show(be, &l.rows, r.size, level + 1, depth, limit)?;
                     }
                 }
@@ -523,37 +696,77 @@ fn main() -> anyhow::Result<()> {
             }
             show(&mut *be, &top, total, 0, depth, limit)?;
             be.tree_close();
-            eprintln!("tree built in {} ms, listed in {} ms via {}", built.as_millis(), (t.elapsed() - built).as_millis(), be.label());
+            eprintln!(
+                "tree built in {} ms, listed in {} ms via {}",
+                built.as_millis(),
+                (t.elapsed() - built).as_millis(),
+                be.label()
+            );
             be.finish()?;
         }
         Cmd::Watch => {
             require_admin()?;
-            let letter = cli.volume.first().copied().unwrap_or('C').to_ascii_uppercase();
+            let letter = cli
+                .volume
+                .first()
+                .copied()
+                .unwrap_or('C')
+                .to_ascii_uppercase();
             let mut j = Journal::open(letter, None, None).map_err(|e| anyhow::anyhow!("{e}"))?;
-            eprintln!("watching {letter}: (journal {:#x}); Ctrl+C to stop", j.journal_id);
+            eprintln!(
+                "watching {letter}: (journal {:#x}); Ctrl+C to stop",
+                j.journal_id
+            );
             loop {
                 for r in j.read(true).map_err(|e| anyhow::anyhow!("{e}"))? {
-                    println!("{:>12} rec {:>8} parent {:>8} reason {:08x} attrs {:05x} {}", r.usn, r.record(), r.parent_record(), r.reason, r.attrs, r.name);
+                    println!(
+                        "{:>12} rec {:>8} parent {:>8} reason {:08x} attrs {:05x} {}",
+                        r.usn,
+                        r.record(),
+                        r.parent_record(),
+                        r.reason,
+                        r.attrs,
+                        r.name
+                    );
                 }
             }
         }
         Cmd::Selftest => {
             require_admin()?;
-            selftest::run(cli.volume.first().copied().unwrap_or('C').to_ascii_uppercase())?;
+            selftest::run(
+                cli.volume
+                    .first()
+                    .copied()
+                    .unwrap_or('C')
+                    .to_ascii_uppercase(),
+            )?;
         }
         Cmd::Folders { ref action } => match action {
             FolderCmd::List => {
                 for f in show_config(&cli)?.folders {
-                    println!("{}  watch={} rescan={}min", f.path, f.watch, f.rescan_minutes);
+                    println!(
+                        "{}  watch={} rescan={}min",
+                        f.path, f.watch, f.rescan_minutes
+                    );
                 }
             }
-            FolderCmd::Add { path, rescan_minutes, no_watch } => {
+            FolderCmd::Add {
+                path,
+                rescan_minutes,
+                no_watch,
+            } => {
                 let unc = win::universal_path(path);
                 let path = rapidfind_core::folder::root_name(&unc);
                 if !std::path::Path::new(&format!("{path}\\")).is_dir() {
-                    eprintln!("warning: {path} isn't reachable right now; it will be indexed when it is");
+                    eprintln!(
+                        "warning: {path} isn't reachable right now; it will be indexed when it is"
+                    );
                 }
-                let entry = FolderConfig { path: path.clone(), watch: !no_watch, rescan_minutes: *rescan_minutes };
+                let entry = FolderConfig {
+                    path: path.clone(),
+                    watch: !no_watch,
+                    rescan_minutes: *rescan_minutes,
+                };
                 edit_config(&cli, |c| {
                     c.folders.retain(|f| !f.path.eq_ignore_ascii_case(&path));
                     c.folders.push(entry);
@@ -577,7 +790,8 @@ fn main() -> anyhow::Result<()> {
         Cmd::Config { ref action } => match action {
             ConfigCmd::Show => println!("{}", serde_json::to_string_pretty(&show_config(&cli)?)?),
             ConfigCmd::Set { file } => {
-                let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+                let text = std::fs::read_to_string(file)
+                    .with_context(|| format!("reading {}", file.display()))?;
                 let new: rapidfind_core::config::Config = serde_json::from_str(&text)?;
                 edit_config(&cli, |c| {
                     *c = new;
@@ -622,7 +836,14 @@ fn mcp_clients(ids: &[String]) -> anyhow::Result<Vec<rapidfind_mcp::register::Cl
     }
     ids.iter()
         .flat_map(|s| s.split(','))
-        .map(|id| Client::from_id(id.trim()).ok_or_else(|| anyhow::anyhow!("unknown client {id:?}; one of: {}", ALL.map(|c| c.id()).join(", "))))
+        .map(|id| {
+            Client::from_id(id.trim()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown client {id:?}; one of: {}",
+                    ALL.map(|c| c.id()).join(", ")
+                )
+            })
+        })
         .collect()
 }
 
@@ -632,7 +853,10 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
         McpCmd::Status => {
             for s in reg::status_all() {
                 let state = match (&s.registered, &s.problem) {
-                    (Some(cmd), _) => format!("registered: {cmd}{}", if s.skill { " (+ rapidfind skill)" } else { "" }),
+                    (Some(cmd), _) => format!(
+                        "registered: {cmd}{}",
+                        if s.skill { " (+ rapidfind skill)" } else { "" }
+                    ),
                     (None, Some(p)) => format!("can't tell: {p}"),
                     (None, None) if s.detected => "not registered".into(),
                     _ => "not installed".into(),
@@ -642,13 +866,18 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
         }
         McpCmd::Install { client, exe } => {
             let src = match exe {
-                Some(e) => e.canonicalize().with_context(|| format!("{}", e.display()))?,
-                None => reg::sibling_exe().context("rapidfind-mcp.exe isn't next to this program; pass --exe")?,
+                Some(e) => e
+                    .canonicalize()
+                    .with_context(|| format!("{}", e.display()))?,
+                None => reg::sibling_exe()
+                    .context("rapidfind-mcp.exe isn't next to this program; pass --exe")?,
             };
             let exe = reg::stable_exe(&src).map_err(anyhow::Error::msg)?;
             let clients = mcp_clients(client)?;
             if clients.is_empty() {
-                bail!("no supported AI client found (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf); use --client to register anyway");
+                bail!(
+                    "no supported AI client found (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf); use --client to register anyway"
+                );
             }
             println!("registering {}", exe.display());
             let mut failed = 0;
@@ -666,7 +895,11 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
             }
         }
         McpCmd::Uninstall { client } => {
-            let clients = if client.is_empty() { rapidfind_mcp::register::ALL.to_vec() } else { mcp_clients(client)? };
+            let clients = if client.is_empty() {
+                rapidfind_mcp::register::ALL.to_vec()
+            } else {
+                mcp_clients(client)?
+            };
             for c in clients {
                 match reg::unregister(c) {
                     Ok(true) => println!("  {:<18} removed", c.label()),
@@ -681,7 +914,11 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
 
 /// `+1.2 GB` / `-300.0 MB`.
 fn signed_size(d: i64) -> String {
-    format!("{}{}", if d < 0 { "-" } else { "+" }, fmt::size(d.unsigned_abs()))
+    format!(
+        "{}{}",
+        if d < 0 { "-" } else { "+" },
+        fmt::size(d.unsigned_abs())
+    )
 }
 
 fn history_cmd(be: &mut dyn Backend, action: &HistoryCmd) -> anyhow::Result<()> {
@@ -690,29 +927,88 @@ fn history_cmd(be: &mut dyn Backend, action: &HistoryCmd) -> anyhow::Result<()> 
     match action {
         HistoryCmd::List => {
             for s in be.history().map_err(anyhow::Error::msg)? {
-                println!("{}  {:<14} {:>7} folders {:>9}{}", when(s.time), s.id, s.folders, fmt::size(s.bytes), if s.name.is_empty() { String::new() } else { format!("  \"{}\"", s.name) });
+                println!(
+                    "{}  {:<14} {:>7} folders {:>9}{}",
+                    when(s.time),
+                    s.id,
+                    s.folders,
+                    fmt::size(s.bytes),
+                    if s.name.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  \"{}\"", s.name)
+                    }
+                );
             }
         }
         HistoryCmd::Save { name } => {
             let t = Instant::now();
             let s = be.save_point(&name.join(" ")).map_err(anyhow::Error::msg)?;
-            println!("saved {} ({}) in {} ms", s.id, when(s.time), t.elapsed().as_millis());
+            println!(
+                "saved {} ({}) in {} ms",
+                s.id,
+                when(s.time),
+                t.elapsed().as_millis()
+            );
         }
         HistoryCmd::Growth { path, days, limit } => {
             let list = be.history().map_err(anyhow::Error::msg)?;
             let target = rapidfind_core::history::now_unix() - *days as i64 * 86_400;
-            let base = list.iter().min_by_key(|s| (s.time - target).abs()).context("no snapshots yet (the service takes one a day)")?;
+            let base = list
+                .iter()
+                .min_by_key(|s| (s.time - target).abs())
+                .context("no snapshots yet (the service takes one a day)")?;
             be.compare(&base.id).map_err(anyhow::Error::msg)?;
-            let roots = be.tree("", SearchFlags::default(), TreeSort::Change, true).map_err(anyhow::Error::msg)?;
+            let roots = be
+                .tree("", SearchFlags::default(), TreeSort::Change, true)
+                .map_err(anyhow::Error::msg)?;
             let level = match path {
-                Some(p) => be.children(&NodeRef { path: p.clone(), ..Default::default() }, TreeSort::Change, true, 0, *limit as u32).map_err(anyhow::Error::msg)?,
+                Some(p) => be
+                    .children(
+                        &NodeRef {
+                            path: p.clone(),
+                            ..Default::default()
+                        },
+                        TreeSort::Change,
+                        true,
+                        0,
+                        *limit as u32,
+                    )
+                    .map_err(anyhow::Error::msg)?,
                 None => roots,
             };
-            println!("since {} ({}): {} -> {} ({})", when(base.time), base.id, fmt::size(level.before), fmt::size(level.size), signed_size(level.size as i64 - level.before as i64));
+            println!(
+                "since {} ({}): {} -> {} ({})",
+                when(base.time),
+                base.id,
+                fmt::size(level.before),
+                fmt::size(level.size),
+                signed_size(level.size as i64 - level.before as i64)
+            );
             for r in level.rows.iter().take(*limit) {
-                let note = if r.changed { "  (new or changed)" } else if r.is_dir && r.before == 0 && r.size > 0 { "  (new or was small)" } else { "" };
-                let free = if r.capacity > 0 && r.free_before > 0 { format!("  free {} -> {}", fmt::size(r.free_before), fmt::size(r.free)) } else { String::new() };
-                println!("{:>11}  {:>10}  {}{}{free}{note}", signed_size(r.change()), fmt::size(r.size), r.name, if r.is_dir { "\\" } else { "" });
+                let note = if r.changed {
+                    "  (new or changed)"
+                } else if r.is_dir && r.before == 0 && r.size > 0 {
+                    "  (new or was small)"
+                } else {
+                    ""
+                };
+                let free = if r.capacity > 0 && r.free_before > 0 {
+                    format!(
+                        "  free {} -> {}",
+                        fmt::size(r.free_before),
+                        fmt::size(r.free)
+                    )
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{:>11}  {:>10}  {}{}{free}{note}",
+                    signed_size(r.change()),
+                    fmt::size(r.size),
+                    r.name,
+                    if r.is_dir { "\\" } else { "" }
+                );
             }
             be.compare("").map_err(anyhow::Error::msg)?;
             be.tree_close();

@@ -68,24 +68,50 @@ pub enum DateField {
 #[derive(Debug)]
 pub enum Leaf {
     /// Substring. `needle` is folded unless `case`.
-    Text { needle: Vec<u8>, case: bool, path: bool, whole_word: bool },
+    Text {
+        needle: Vec<u8>,
+        case: bool,
+        path: bool,
+        whole_word: bool,
+    },
     /// Whole-name (or whole-path) wildcard pattern. Path patterns are also
     /// in [`Query::path_globs`] at `slot`.
-    Glob { pat: Vec<u8>, case: bool, path: bool, slot: usize },
-    Regex { re: regex::bytes::Regex, path: bool },
+    Glob {
+        pat: Vec<u8>,
+        case: bool,
+        path: bool,
+        slot: usize,
+    },
+    Regex {
+        re: regex::bytes::Regex,
+        path: bool,
+    },
     /// Folded extensions without the dot.
     Ext(HashSet<Vec<u8>>),
-    Size { lo: u64, hi: u64 },
+    Size {
+        lo: u64,
+        hi: u64,
+    },
     IsFile,
     IsDir,
     /// Half-open UTC FILETIME interval.
-    Date { field: DateField, lo: i64, hi: i64 },
+    Date {
+        field: DateField,
+        lo: i64,
+        hi: i64,
+    },
     /// Index into [`Query::parents`].
     Parent(usize),
-    Depth { lo: u64, hi: u64 },
+    Depth {
+        lo: u64,
+        hi: u64,
+    },
     Empty,
     Attrib(u32),
-    RunCount { lo: u64, hi: u64 },
+    RunCount {
+        lo: u64,
+        hi: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,10 +131,18 @@ pub struct SearchFlags {
 
 impl SearchFlags {
     pub fn bits(self) -> u8 {
-        self.case as u8 | (self.whole_word as u8) << 1 | (self.path as u8) << 2 | (self.regex as u8) << 3
+        self.case as u8
+            | (self.whole_word as u8) << 1
+            | (self.path as u8) << 2
+            | (self.regex as u8) << 3
     }
     pub fn from_bits(b: u8) -> Self {
-        SearchFlags { case: b & 1 != 0, whole_word: b & 2 != 0, path: b & 4 != 0, regex: b & 8 != 0 }
+        SearchFlags {
+            case: b & 1 != 0,
+            whole_word: b & 2 != 0,
+            path: b & 4 != 0,
+            regex: b & 8 != 0,
+        }
     }
 }
 
@@ -194,7 +228,9 @@ pub(crate) fn tokenize_spans(s: &str) -> Vec<(Tok, std::ops::Range<usize>)> {
             }
             '>' if depth > 0
                 && !cur.ends_with([':', '<', '>', '='])
-                && chars.get(i + 1).is_none_or(|(_, n)| n.is_whitespace() || *n == '|' || *n == '>') =>
+                && chars
+                    .get(i + 1)
+                    .is_none_or(|(_, n)| n.is_whitespace() || *n == '|' || *n == '>') =>
             {
                 flush(&mut cur, start, &mut out);
                 out.push((Tok::Close, at..at + 1));
@@ -210,10 +246,16 @@ pub(crate) fn tokenize_spans(s: &str) -> Vec<(Tok, std::ops::Range<usize>)> {
 fn parse_num(s: &str, units: bool) -> Option<u64> {
     let s = s.trim().to_ascii_lowercase();
     let (num, mul) = if units {
-        [("tb", 1u64 << 40), ("gb", 1 << 30), ("mb", 1 << 20), ("kb", 1 << 10), ("b", 1)]
-            .iter()
-            .find_map(|(suf, m)| s.strip_suffix(suf).map(|n| (n.to_string(), *m)))
-            .unwrap_or((s.clone(), 1))
+        [
+            ("tb", 1u64 << 40),
+            ("gb", 1 << 30),
+            ("mb", 1 << 20),
+            ("kb", 1 << 10),
+            ("b", 1),
+        ]
+        .iter()
+        .find_map(|(suf, m)| s.strip_suffix(suf).map(|n| (n.to_string(), *m)))
+        .unwrap_or((s.clone(), 1))
     } else {
         (s.clone(), 1)
     };
@@ -373,7 +415,9 @@ impl Parser<'_> {
     }
 
     fn parse_unary(&mut self) -> Result<Option<Node>, String> {
-        let Some(t) = self.toks.get(self.pos) else { return Ok(None) };
+        let Some(t) = self.toks.get(self.pos) else {
+            return Ok(None);
+        };
         match t {
             Tok::Not => {
                 self.pos += 1;
@@ -427,7 +471,9 @@ impl Parser<'_> {
                 "noregex" => (m.regex, consumed_value) = (false, false),
                 k if crate::content::is_content_key(k) => {
                     // Content terms are taken out by the client (crate::content::split_query).
-                    return Err(format!("{k}: searches file contents, which only the result list, `rapidfind search` and the MCP search do, combined with AND"));
+                    return Err(format!(
+                        "{k}: searches file contents, which only the result list, `rapidfind search` and the MCP search do, combined with AND"
+                    ));
                 }
                 "wfn" | "wholefilename" | "exact" => (m.exact, consumed_value) = (true, false),
                 "file" | "files" => {
@@ -477,20 +523,24 @@ impl Parser<'_> {
                 }
                 "ext" => filters.push(leaf(Leaf::Ext(ext_set(&value, fold)))),
                 "size" => {
-                    let (lo, hi) = parse_range(&value, true).ok_or_else(|| format!("bad size: {value}"))?;
+                    let (lo, hi) =
+                        parse_range(&value, true).ok_or_else(|| format!("bad size: {value}"))?;
                     filters.push(leaf(Leaf::Size { lo, hi }));
                 }
                 "depth" => {
-                    let (lo, hi) = parse_range(&value, false).ok_or_else(|| format!("bad depth: {value}"))?;
+                    let (lo, hi) =
+                        parse_range(&value, false).ok_or_else(|| format!("bad depth: {value}"))?;
                     filters.push(leaf(Leaf::Depth { lo, hi }));
                 }
                 "runcount" => {
-                    let (lo, hi) = parse_range(&value, false).ok_or_else(|| format!("bad run count: {value}"))?;
+                    let (lo, hi) = parse_range(&value, false)
+                        .ok_or_else(|| format!("bad run count: {value}"))?;
                     self.q.uses_runs = true;
                     filters.push(leaf(Leaf::RunCount { lo, hi }));
                 }
                 "attrib" | "attributes" => {
-                    let a = parse_attrib(&value).ok_or_else(|| format!("bad attributes: {value}"))?;
+                    let a =
+                        parse_attrib(&value).ok_or_else(|| format!("bad attributes: {value}"))?;
                     filters.push(leaf(Leaf::Attrib(a)));
                 }
                 k @ ("dm" | "datemodified" | "dc" | "datecreated" | "rc" | "recentchange") => {
@@ -508,7 +558,8 @@ impl Parser<'_> {
                     let (lo, hi) = if value.is_empty() && field == DateField::RecentChange {
                         (i64::MIN, i64::MAX)
                     } else {
-                        parse_date_filter(&value, self.env).ok_or_else(|| format!("bad date: {value}"))?
+                        parse_date_filter(&value, self.env)
+                            .ok_or_else(|| format!("bad date: {value}"))?
                     };
                     filters.push(leaf(Leaf::Date { field, lo, hi }));
                 }
@@ -538,13 +589,22 @@ impl Parser<'_> {
                     .map_err(|e| e.to_string())?;
                 Leaf::Regex { re, path }
             } else if text.contains(['*', '?']) || m.exact {
-                let mut pat = if m.case { text.into_bytes() } else { fold_mode(&text, fold).into_bytes() };
+                let mut pat = if m.case {
+                    text.into_bytes()
+                } else {
+                    fold_mode(&text, fold).into_bytes()
+                };
                 let slot = self.q.path_globs.len();
                 if path {
                     pat = path_glob(pat);
                     self.q.path_globs.push((pat.clone(), m.case));
                 }
-                Leaf::Glob { pat, case: m.case, path, slot }
+                Leaf::Glob {
+                    pat,
+                    case: m.case,
+                    path,
+                    slot,
+                }
             } else if path && !m.ww && text.chars().count() <= 60 {
                 // A path substring is the wildcard `*text*`, which the
                 // per-folder matcher answers without building every path.
@@ -552,10 +612,24 @@ impl Parser<'_> {
                 let pat = format!("*{needle}*").into_bytes();
                 let slot = self.q.path_globs.len();
                 self.q.path_globs.push((pat.clone(), m.case));
-                Leaf::Glob { pat, case: m.case, path, slot }
+                Leaf::Glob {
+                    pat,
+                    case: m.case,
+                    path,
+                    slot,
+                }
             } else {
-                let needle = if m.case { text.into_bytes() } else { fold_mode(&text, fold).into_bytes() };
-                Leaf::Text { needle, case: m.case, path, whole_word: m.ww }
+                let needle = if m.case {
+                    text.into_bytes()
+                } else {
+                    fold_mode(&text, fold).into_bytes()
+                };
+                Leaf::Text {
+                    needle,
+                    case: m.case,
+                    path,
+                    whole_word: m.ww,
+                }
             };
             filters.push(Node::Leaf(l));
         }
@@ -571,14 +645,30 @@ impl Parser<'_> {
 
 impl Query {
     pub fn parse(s: &str) -> Result<Query, String> {
-        Self::parse_with(s, SearchFlags::default(), FoldMode::Lower, &DateEnv::system())
+        Self::parse_with(
+            s,
+            SearchFlags::default(),
+            FoldMode::Lower,
+            &DateEnv::system(),
+        )
     }
 
-    pub fn parse_with(s: &str, flags: SearchFlags, fold: FoldMode, env: &DateEnv) -> Result<Query, String> {
+    pub fn parse_with(
+        s: &str,
+        flags: SearchFlags,
+        fold: FoldMode,
+        env: &DateEnv,
+    ) -> Result<Query, String> {
         let mut p = Parser {
             toks: tokenize(s),
             pos: 0,
-            defaults: Mods { case: flags.case, path: flags.path, ww: flags.whole_word, regex: flags.regex, exact: false },
+            defaults: Mods {
+                case: flags.case,
+                path: flags.path,
+                ww: flags.whole_word,
+                regex: flags.regex,
+                exact: false,
+            },
             fold,
             env,
             q: Query {
@@ -621,17 +711,34 @@ impl Query {
     /// A folded literal that every match must contain in its *name*, used to
     /// drive the arena scan. Picks the longest available.
     pub fn driver(&self) -> Option<Vec<u8>> {
-        let Node::All(items) = &self.root else { return None };
+        let Node::All(items) = &self.root else {
+            return None;
+        };
         items
             .iter()
             .filter_map(|n| match n {
-                Node::Leaf(Leaf::Text { needle, case: false, path: false, .. }) => Some(needle.clone()),
-                Node::Leaf(Leaf::Glob { pat, case: false, path: false, .. }) => pat
+                Node::Leaf(Leaf::Text {
+                    needle,
+                    case: false,
+                    path: false,
+                    ..
+                }) => Some(needle.clone()),
+                Node::Leaf(Leaf::Glob {
+                    pat,
+                    case: false,
+                    path: false,
+                    ..
+                }) => pat
                     .split(|&b| is_wild(b))
                     .max_by_key(|p| p.len())
                     .filter(|p| !p.is_empty())
                     .map(|p| p.to_vec()),
-                Node::Leaf(Leaf::Glob { pat, case: false, path: true, .. }) => glob_tail(pat).map(|t| t.to_vec()),
+                Node::Leaf(Leaf::Glob {
+                    pat,
+                    case: false,
+                    path: true,
+                    ..
+                }) => glob_tail(pat).map(|t| t.to_vec()),
                 Node::Leaf(Leaf::Ext(exts)) if exts.len() == 1 => {
                     let mut v = vec![b'.'];
                     v.extend_from_slice(exts.iter().next().unwrap());
@@ -648,9 +755,17 @@ impl Query {
             match n {
                 Node::All(v) | Node::Any(v) => v.iter().for_each(|c| walk(c, neg, out)),
                 Node::Not(c) => walk(c, !neg, out),
-                Node::Leaf(Leaf::Text { needle, case: false, .. }) if !neg => out.push(needle.clone()),
-                Node::Leaf(Leaf::Glob { pat, case: false, .. }) if !neg => out.extend(
-                    pat.split(|&b| is_wild(b)).filter(|p| !p.is_empty()).map(|p| p.to_vec()),
+                Node::Leaf(Leaf::Text {
+                    needle,
+                    case: false,
+                    ..
+                }) if !neg => out.push(needle.clone()),
+                Node::Leaf(Leaf::Glob {
+                    pat, case: false, ..
+                }) if !neg => out.extend(
+                    pat.split(|&b| is_wild(b))
+                        .filter(|p| !p.is_empty())
+                        .map(|p| p.to_vec()),
                 ),
                 _ => {}
             }
@@ -689,7 +804,13 @@ pub struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     pub fn new(ix: &'a Index, i: u32, prep: &'a Prep) -> Self {
-        Ctx { ix, i, prep, fold_path: None, raw_path: None }
+        Ctx {
+            ix,
+            i,
+            prep,
+            fold_path: None,
+            raw_path: None,
+        }
     }
     fn fold_path(&mut self) -> &[u8] {
         if self.fold_path.is_none() {
@@ -778,8 +899,14 @@ fn glob_match_dirs(pat: &[u8], s: &[u8]) -> bool {
         }
         let ok = match pat.get(p) {
             None => i == s.len(),
-            Some(b'*') => go(pat, s, p + 1, i, failed) || (i < s.len() && go(pat, s, p, i + char_len(s, i), failed)),
-            Some(&ANY_DIRS) => go(pat, s, p + 1, i, failed) || (i..s.len()).any(|j| s[j] == b'\\' && go(pat, s, p + 1, j + 1, failed)),
+            Some(b'*') => {
+                go(pat, s, p + 1, i, failed)
+                    || (i < s.len() && go(pat, s, p, i + char_len(s, i), failed))
+            }
+            Some(&ANY_DIRS) => {
+                go(pat, s, p + 1, i, failed)
+                    || (i..s.len()).any(|j| s[j] == b'\\' && go(pat, s, p + 1, j + 1, failed))
+            }
             Some(b'?') => i < s.len() && go(pat, s, p + 1, i + char_len(s, i), failed),
             Some(&c) => i < s.len() && s[i] == c && go(pat, s, p + 1, i + 1, failed),
         };
@@ -863,9 +990,21 @@ impl PathGlob {
                     _ => 0,
                 };
         }
-        let mut g = PathGlob { toks, case, start: 0, advance, one, stay, dirs_loop, eps, states: Vec::new() };
+        let mut g = PathGlob {
+            toks,
+            case,
+            start: 0,
+            advance,
+            one,
+            stay,
+            dirs_loop,
+            eps,
+            states: Vec::new(),
+        };
         g.start = g.closure(1);
-        g.states = (0..entries).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
+        g.states = (0..entries)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect();
         Some(g)
     }
 
@@ -884,7 +1023,11 @@ impl PathGlob {
         let lit = if (c as u32) < 128 {
             self.advance[c as usize]
         } else {
-            self.toks.iter().enumerate().filter(|(_, t)| **t == GTok::Lit(c)).fold(0, |m, (p, _)| m | 1 << p)
+            self.toks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| **t == GTok::Lit(c))
+                .fold(0, |m, (p, _)| m | 1 << p)
         };
         let mut t = ((s & (lit | self.one)) << 1) | (s & (self.stay | self.dirs_loop));
         if c == '\\' {
@@ -913,13 +1056,22 @@ impl PathGlob {
     }
 
     fn name<'a>(&self, ix: &'a Index, i: u32) -> &'a [u8] {
-        if self.case { ix.name(i).as_bytes() } else { ix.fold_name(i) }
+        if self.case {
+            ix.name(i).as_bytes()
+        } else {
+            ix.fold_name(i)
+        }
     }
 
     /// State after the full path of entry `i`.
     fn state(&self, ix: &Index, i: u32) -> u64 {
         use std::sync::atomic::Ordering::Relaxed;
-        let cached = |i: u32| self.states.get(i as usize).map(|a| a.load(Relaxed)).filter(|v| v & KNOWN != 0);
+        let cached = |i: u32| {
+            self.states
+                .get(i as usize)
+                .map(|a| a.load(Relaxed))
+                .filter(|v| v & KNOWN != 0)
+        };
         if let Some(v) = cached(i) {
             return v & !KNOWN;
         }
@@ -981,17 +1133,38 @@ impl Leaf {
     fn eval(&self, c: &mut Ctx) -> bool {
         let e = &c.ix.entries[c.i as usize];
         match self {
-            Leaf::Text { needle, case, path, whole_word } => {
+            Leaf::Text {
+                needle,
+                case,
+                path,
+                whole_word,
+            } => {
                 let hay = c.hay(*path, *case);
-                if *whole_word { contains_word(hay, needle) } else { memchr::memmem::find(hay, needle).is_some() }
+                if *whole_word {
+                    contains_word(hay, needle)
+                } else {
+                    memchr::memmem::find(hay, needle).is_some()
+                }
             }
-            Leaf::Glob { pat, case, path: true, slot } => match c.prep.path_globs.get(*slot) {
+            Leaf::Glob {
+                pat,
+                case,
+                path: true,
+                slot,
+            } => match c.prep.path_globs.get(*slot) {
                 Some(Some(g)) => g.matches(c.ix, c.i),
                 _ => glob_match(pat, c.hay(true, *case)),
             },
-            Leaf::Glob { pat, case, path: false, .. } => glob_match(pat, c.hay(false, *case)),
+            Leaf::Glob {
+                pat,
+                case,
+                path: false,
+                ..
+            } => glob_match(pat, c.hay(false, *case)),
             Leaf::Regex { re, path } => re.is_match(c.hay(*path, true)),
-            Leaf::Ext(exts) => !e.is_dir() && extension(c.ix.fold_name(c.i)).is_some_and(|x| exts.contains(x)),
+            Leaf::Ext(exts) => {
+                !e.is_dir() && extension(c.ix.fold_name(c.i)).is_some_and(|x| exts.contains(x))
+            }
             Leaf::Size { lo, hi } => !e.is_dir() && e.size >= *lo && e.size <= *hi,
             Leaf::IsFile => !e.is_dir(),
             Leaf::IsDir => e.is_dir(),
@@ -1009,12 +1182,22 @@ impl Leaf {
                 };
                 t >= *lo && t < *hi
             }
-            Leaf::Parent(id) => c.prep.parent_sets.get(*id).is_some_and(|s| s.contains(&e.parent)),
+            Leaf::Parent(id) => c
+                .prep
+                .parent_sets
+                .get(*id)
+                .is_some_and(|s| s.contains(&e.parent)),
             Leaf::Depth { lo, hi } => {
                 let d = c.ix.depth(c.i) as u64;
                 d >= *lo && d <= *hi
             }
-            Leaf::Empty => e.is_dir() && c.prep.child_counts.as_ref().is_some_and(|cc| cc[c.i as usize] == 0),
+            Leaf::Empty => {
+                e.is_dir()
+                    && c.prep
+                        .child_counts
+                        .as_ref()
+                        .is_some_and(|cc| cc[c.i as usize] == 0)
+            }
             Leaf::Attrib(m) => e.attrs() & m == *m,
             Leaf::RunCount { lo, hi } => {
                 let n = c.prep.runs.get(&c.i).copied().unwrap_or(0) as u64;
@@ -1057,7 +1240,10 @@ mod tests {
         assert_eq!(matches("note"), vec!["notepad.exe", "notes.txt"]);
         assert_eq!(matches("note !exe"), vec!["notes.txt"]);
         assert_eq!(matches("report|notepad"), vec!["Report.PDF", "notepad.exe"]);
-        assert_eq!(matches("report | notepad"), vec!["Report.PDF", "notepad.exe"]);
+        assert_eq!(
+            matches("report | notepad"),
+            vec!["Report.PDF", "notepad.exe"]
+        );
         assert_eq!(matches("case:report"), Vec::<String>::new());
         assert_eq!(matches("case:Report"), vec!["Report.PDF"]);
     }
@@ -1066,7 +1252,10 @@ mod tests {
     fn grouping_and_precedence() {
         // OR binds tighter: `note pad|txt` = note AND (pad OR txt).
         assert_eq!(matches("note pad|txt"), vec!["notepad.exe", "notes.txt"]);
-        assert_eq!(matches("<note exe>|report"), vec!["Report.PDF", "notepad.exe"]);
+        assert_eq!(
+            matches("<note exe>|report"),
+            vec!["Report.PDF", "notepad.exe"]
+        );
         assert_eq!(matches("!<note exe> note"), vec!["notes.txt"]);
         assert_eq!(matches("<<note>>"), vec!["notepad.exe", "notes.txt"]);
         // `>` inside a modifier value is not a group close.
@@ -1108,9 +1297,17 @@ mod tests {
         assert_eq!(matches("wfn:me"), vec!["Me"]);
         assert_eq!(matches("wfn:note"), Vec::<String>::new());
         assert_eq!(matches(r"wfn:c:\users\me"), vec!["Me"]);
-        assert_eq!(parse("wfn:node_modules").driver(), Some(b"node_modules".to_vec()));
+        assert_eq!(
+            parse("wfn:node_modules").driver(),
+            Some(b"node_modules".to_vec())
+        );
         let g = |p: &str, s: &str| glob_match(&path_glob(p.as_bytes().to_vec()), s.as_bytes());
-        assert!(g(r"a\*\b", r"x\a\b") && g(r"a\*\b", r"a\1\2\b") && !g(r"a\*\b", r"a\1b") && !g(r"a\*\b", r"a\b\c"));
+        assert!(
+            g(r"a\*\b", r"x\a\b")
+                && g(r"a\*\b", r"a\1\2\b")
+                && !g(r"a\*\b", r"a\1b")
+                && !g(r"a\*\b", r"a\b\c")
+        );
         assert!(g(r"a\*\*\b", r"a\b") && g(r"\*\b?", r"c:\b1") && !g(r"\*\b?", r"c:\b"));
         assert!(g(r"a\*\*b*\*\c", &format!(r"a\{}b\c", r"q\".repeat(200)))); // memoized: no blowup
         // The literal tail drives the name scan.
@@ -1123,11 +1320,32 @@ mod tests {
     fn path_glob_nfa_agrees_with_reference() {
         let ix = sample();
         for q in [
-            r"users\*\*.pdf", r"users\*", r"c:\*\notes.txt", r"C:\**\*.exe", r"*\m?\*", r"sers\*\notes.txt", r"users\*\me", r"windows\*\me",
-            r"c:\*", r"*", r"c:\users\me\*.txt", r"\*\*\*\*\r*", r"case:Users\*\R*", r"case:users\*", r"*e*\*e*", r"c:\w*\n?tepad.*",
+            r"users\*\*.pdf",
+            r"users\*",
+            r"c:\*\notes.txt",
+            r"C:\**\*.exe",
+            r"*\m?\*",
+            r"sers\*\notes.txt",
+            r"users\*\me",
+            r"windows\*\me",
+            r"c:\*",
+            r"*",
+            r"c:\users\me\*.txt",
+            r"\*\*\*\*\r*",
+            r"case:Users\*\R*",
+            r"case:users\*",
+            r"*e*\*e*",
+            r"c:\w*\n?tepad.*",
         ] {
             let parsed = parse(q);
-            let nfa = Prep { path_globs: parsed.path_globs.iter().map(|(p, c)| PathGlob::new(p, *c, ix.entries.len())).collect(), ..Default::default() };
+            let nfa = Prep {
+                path_globs: parsed
+                    .path_globs
+                    .iter()
+                    .map(|(p, c)| PathGlob::new(p, *c, ix.entries.len()))
+                    .collect(),
+                ..Default::default()
+            };
             assert!(nfa.path_globs.iter().all(Option::is_some), "{q}");
             let a = matches_with(q, &nfa);
             let b = matches_with(q, &Prep::default());
@@ -1154,7 +1372,11 @@ mod tests {
             let pat = path_glob(raw.clone().into_bytes());
             let g = PathGlob::new(&pat, true, 0).unwrap();
             let nfa = g.feed(g.start, path.as_bytes()) >> g.toks.len() & 1 == 1;
-            assert_eq!(nfa, glob_match(&pat, path.as_bytes()), "pattern {raw:?} path {path:?}");
+            assert_eq!(
+                nfa,
+                glob_match(&pat, path.as_bytes()),
+                "pattern {raw:?} path {path:?}"
+            );
         }
     }
 
@@ -1165,11 +1387,18 @@ mod tests {
         assert!(matches("dm:today").is_empty());
         let mut prep = Prep::default();
         let ix = sample();
-        let notes = (0..ix.entries.len() as u32).find(|&i| ix.name(i) == "notes.txt").unwrap();
-        prep.recent.insert(notes, crate::date::parse_date_filter("today", &env()).unwrap().0 + 1);
+        let notes = (0..ix.entries.len() as u32)
+            .find(|&i| ix.name(i) == "notes.txt")
+            .unwrap();
+        prep.recent.insert(
+            notes,
+            crate::date::parse_date_filter("today", &env()).unwrap().0 + 1,
+        );
         assert_eq!(matches_with("rc:today", &prep), vec!["notes.txt"]);
         assert_eq!(matches_with("rc:", &prep), vec!["notes.txt"]);
-        assert!(Query::parse_with("dm:nope", SearchFlags::default(), FoldMode::Lower, &env()).is_err());
+        assert!(
+            Query::parse_with("dm:nope", SearchFlags::default(), FoldMode::Lower, &env()).is_err()
+        );
     }
 
     #[test]
@@ -1177,10 +1406,20 @@ mod tests {
         let ix = sample();
         let q = parse(r"parent:C:\Users\Me\");
         assert_eq!(q.parents, vec![br"c:\users\me".to_vec()]);
-        let me = (0..ix.entries.len() as u32).find(|&i| ix.name(i) == "Me").unwrap();
-        let mut prep = Prep { parent_sets: vec![HashSet::from([me])], ..Default::default() };
-        assert_eq!(matches_with(r"parent:C:\Users\Me", &prep), vec!["Report.PDF", "notes.txt"]);
-        let pad = (0..ix.entries.len() as u32).find(|&i| ix.name(i) == "notepad.exe").unwrap();
+        let me = (0..ix.entries.len() as u32)
+            .find(|&i| ix.name(i) == "Me")
+            .unwrap();
+        let mut prep = Prep {
+            parent_sets: vec![HashSet::from([me])],
+            ..Default::default()
+        };
+        assert_eq!(
+            matches_with(r"parent:C:\Users\Me", &prep),
+            vec!["Report.PDF", "notes.txt"]
+        );
+        let pad = (0..ix.entries.len() as u32)
+            .find(|&i| ix.name(i) == "notepad.exe")
+            .unwrap();
         prep.runs.insert(pad, 3);
         assert_eq!(matches_with("runcount:>0", &prep), vec!["notepad.exe"]);
         let mut cc = vec![1u32; ix.entries.len()];
@@ -1191,25 +1430,70 @@ mod tests {
 
     #[test]
     fn flags_and_dupe_and_tokens() {
-        let q = Query::parse_with("Report", SearchFlags { case: true, ..Default::default() }, FoldMode::Lower, &env()).unwrap();
-        assert!(matches!(&q.root, Node::All(v) if matches!(&v[0], Node::Leaf(Leaf::Text { case: true, .. }))));
+        let q = Query::parse_with(
+            "Report",
+            SearchFlags {
+                case: true,
+                ..Default::default()
+            },
+            FoldMode::Lower,
+            &env(),
+        )
+        .unwrap();
+        assert!(
+            matches!(&q.root, Node::All(v) if matches!(&v[0], Node::Leaf(Leaf::Text { case: true, .. })))
+        );
         let q = parse("dupe: foo");
         assert_eq!(q.dupe, Some(Dupe::Name));
         assert!(!q.is_empty());
-        assert_eq!(SearchFlags::from_bits(SearchFlags { path: true, regex: true, ..Default::default() }.bits()), SearchFlags { path: true, regex: true, ..Default::default() });
-        assert_eq!(tokenize("a <b|c> !<d>"), vec![
-            Tok::Word("a".into()), Tok::Open, Tok::Word("b".into()), Tok::Or, Tok::Word("c".into()), Tok::Close,
-            Tok::Not, Tok::Open, Tok::Word("d".into()), Tok::Close,
-        ]);
+        assert_eq!(
+            SearchFlags::from_bits(
+                SearchFlags {
+                    path: true,
+                    regex: true,
+                    ..Default::default()
+                }
+                .bits()
+            ),
+            SearchFlags {
+                path: true,
+                regex: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            tokenize("a <b|c> !<d>"),
+            vec![
+                Tok::Word("a".into()),
+                Tok::Open,
+                Tok::Word("b".into()),
+                Tok::Or,
+                Tok::Word("c".into()),
+                Tok::Close,
+                Tok::Not,
+                Tok::Open,
+                Tok::Word("d".into()),
+                Tok::Close,
+            ]
+        );
         assert_eq!(parse("ab *.longer").driver(), Some(b".longer".to_vec()));
         assert_eq!(parse("ext:rs").driver(), Some(b".rs".to_vec()));
         assert_eq!(parse("a|b").driver(), None);
-        assert_eq!(parse("foo !bar *.r?s").highlight_terms(), vec![b"foo".to_vec(), b".r".to_vec(), b"s".to_vec()]);
+        assert_eq!(
+            parse("foo !bar *.r?s").highlight_terms(),
+            vec![b"foo".to_vec(), b".r".to_vec(), b"s".to_vec()]
+        );
     }
 
     #[test]
     fn diacritics_mode_folds_query_too() {
-        let q = Query::parse_with("Café", SearchFlags::default(), FoldMode::StripDiacritics, &env()).unwrap();
+        let q = Query::parse_with(
+            "Café",
+            SearchFlags::default(),
+            FoldMode::StripDiacritics,
+            &env(),
+        )
+        .unwrap();
         assert_eq!(q.driver(), Some(b"cafe".to_vec()));
     }
 

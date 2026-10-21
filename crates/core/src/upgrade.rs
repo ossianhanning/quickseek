@@ -9,10 +9,12 @@ use std::ptr::null;
 
 use windows_sys::Win32::Foundation::{CloseHandle, MAX_PATH};
 use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW,
-    TerminateProcess, WaitForSingleObject,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
 };
 
 use crate::ntfs::win::wide;
@@ -32,12 +34,25 @@ pub fn install_dir() -> Option<std::path::PathBuf> {
     let (k, v) = (wide(ARP_KEY), wide("InstallLocation"));
     let mut buf = vec![0u16; 1024];
     let mut n = (buf.len() * 2) as u32;
-    let r = unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr() as _, &mut n) };
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            k.as_ptr(),
+            v.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as _,
+            &mut n,
+        )
+    };
     if r != 0 {
         return None;
     }
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    Some(std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len]))).filter(|p| p.join("rapidfind.exe").exists())
+    Some(std::path::PathBuf::from(String::from_utf16_lossy(
+        &buf[..len],
+    )))
+    .filter(|p| p.join("rapidfind.exe").exists())
 }
 
 pub fn same_dir(a: &Path, b: &Path) -> bool {
@@ -57,7 +72,8 @@ pub fn replace_file(dst: &Path, data: &[u8]) -> Result<bool, String> {
     }
     let old = dst.with_extension(format!("old-{}", std::process::id()));
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(dst, &old).map_err(|e| format!("{} is in use and can't be moved aside: {e}", dst.display()))?;
+    std::fs::rename(dst, &old)
+        .map_err(|e| format!("{} is in use and can't be moved aside: {e}", dst.display()))?;
     delete_on_reboot(&old);
     std::fs::write(dst, data).map_err(|e| format!("writing {}: {e}", dst.display()))?;
     Ok(true)
@@ -87,15 +103,26 @@ pub fn kill_in(dir: &Path, names: &[&str]) -> usize {
         e.dwSize = size_of::<PROCESSENTRY32W>() as u32;
         let mut ok = Process32FirstW(snap, &mut e) != 0;
         while ok {
-            let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            let n = e
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(e.szExeFile.len());
             let name = String::from_utf16_lossy(&e.szExeFile[..n]);
             if e.th32ProcessID != me && names.iter().any(|x| x.eq_ignore_ascii_case(&name)) {
-                let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, e.th32ProcessID);
+                let h = OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+                    0,
+                    e.th32ProcessID,
+                );
                 if !h.is_null() {
                     let mut buf = [0u16; MAX_PATH as usize * 2];
                     let mut len = buf.len() as u32;
-                    if QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0
-                        && String::from_utf16_lossy(&buf[..len as usize]).to_lowercase().starts_with(&prefix)
+                    if QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
+                        != 0
+                        && String::from_utf16_lossy(&buf[..len as usize])
+                            .to_lowercase()
+                            .starts_with(&prefix)
                         && TerminateProcess(h, 1) != 0
                     {
                         WaitForSingleObject(h, 2000);
@@ -124,7 +151,9 @@ pub fn remove_leftovers(dir: &Path) -> usize {
 }
 
 fn is_leftover(name: &str) -> bool {
-    name.rsplit_once(".old-").is_some_and(|(stem, pid)| !stem.is_empty() && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
+    name.rsplit_once(".old-").is_some_and(|(stem, pid)| {
+        !stem.is_empty() && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 /// After replacing the programs in `dir`: ends the MCP servers still running
@@ -145,18 +174,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join(MCP_EXE);
-        let ping = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or(r"C:\Windows".into())).join(r"System32\PING.EXE");
+        let ping =
+            std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or(r"C:\Windows".into()))
+                .join(r"System32\PING.EXE");
         std::fs::copy(&ping, &p).unwrap();
-        let mut child = std::process::Command::new(&p).args(["-n", "60", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap();
+        let mut child = std::process::Command::new(&p)
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
         assert!(replace_file(&p, b"new").unwrap(), "in use: moved aside");
         assert_eq!(std::fs::read(&p).unwrap(), b"new");
-        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 2, "the old copy waits for deletion");
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            2,
+            "the old copy waits for deletion"
+        );
         assert_eq!(remove_leftovers(&d), 0, "still running");
-        assert_eq!(kill_in(&d.with_file_name("rapidfind-upgrade"), &[MCP_EXE]), 0, "only programs in that folder");
+        assert_eq!(
+            kill_in(&d.with_file_name("rapidfind-upgrade"), &[MCP_EXE]),
+            0,
+            "only programs in that folder"
+        );
         assert_eq!(retire_old_programs(&d), (1, 1));
         assert!(child.try_wait().unwrap().is_some());
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
-        assert!(!replace_file(&p, b"newer").unwrap(), "not in use: written in place");
+        assert!(
+            !replace_file(&p, b"newer").unwrap(),
+            "not in use: written in place"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 

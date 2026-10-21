@@ -131,10 +131,17 @@ pub fn prompts_list() -> Value {
 }
 
 pub fn prompt_get(name: &str, args: &Value) -> Result<Value, String> {
-    let arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let arg = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
     let (description, text) = match name {
         "free_disk_space" => {
-            let drive = arg("drive").map(|d| format!("{}\\", d.trim_end_matches('\\'))).unwrap_or_else(|| "the fullest drive".into());
+            let drive = arg("drive")
+                .map(|d| format!("{}\\", d.trim_end_matches('\\')))
+                .unwrap_or_else(|| "the fullest drive".into());
             (
                 "Free up disk space",
                 format!(
@@ -145,17 +152,34 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             )
         }
         "whats_using_space" => {
-            let path = arg("path").map(String::from).unwrap_or_else(|| "my drives".into());
-            ("What's using space?", format!("What is using the space on {path}? Use rapidfind's folder_sizes (start at depth 2, then drill into the biggest folders) and summarise the biggest items, what they probably are, and which could be cleaned up."))
+            let path = arg("path")
+                .map(String::from)
+                .unwrap_or_else(|| "my drives".into());
+            (
+                "What's using space?",
+                format!(
+                    "What is using the space on {path}? Use rapidfind's folder_sizes (start at depth 2, then drill into the biggest folders) and summarise the biggest items, what they probably are, and which could be cleaned up."
+                ),
+            )
         }
         "whats_growing" => {
             let path = arg("path").map(|p| format!(" on {p}")).unwrap_or_default();
             let days = arg("days").unwrap_or("7");
-            ("What's growing?", format!("What has grown or shrunk{path} over the last {days} days? Use rapidfind's folder_growth (depth 3) and explain the biggest changes in plain words: what the folders probably are, whether the growth looks normal, and what could be cleaned up."))
+            (
+                "What's growing?",
+                format!(
+                    "What has grown or shrunk{path} over the last {days} days? Use rapidfind's folder_growth (depth 3) and explain the biggest changes in plain words: what the folders probably are, whether the growth looks normal, and what could be cleaned up."
+                ),
+            )
         }
         "find_files" => {
             let what = arg("what").ok_or("say what to look for")?;
-            ("Find files", format!("Find this on my computer with rapidfind's search_files: {what}. Try a few searches (name parts, likely extensions and folders, dates, and content search if the name doesn't help), then list the best matches with their paths, sizes and dates."))
+            (
+                "Find files",
+                format!(
+                    "Find this on my computer with rapidfind's search_files: {what}. Try a few searches (name parts, likely extensions and folders, dates, and content search if the name doesn't help), then list the best matches with their paths, sizes and dates."
+                ),
+            )
         }
         "find_large_files" => {
             let mut t = String::from("Find the largest files");
@@ -170,7 +194,9 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
         }
         _ => return Err(format!("unknown prompt: {name}")),
     };
-    Ok(json!({ "description": description, "messages": [{ "role": "user", "content": { "type": "text", "text": text } }] }))
+    Ok(
+        json!({ "description": description, "messages": [{ "role": "user", "content": { "type": "text", "text": text } }] }),
+    )
 }
 
 #[cfg(test)]
@@ -182,13 +208,31 @@ mod tests {
         let body = SKILL_MD.strip_prefix("---\n").expect("frontmatter first");
         let (front, rest) = body.split_once("\n---\n").expect("closed frontmatter");
         assert!(front.lines().any(|l| l == format!("name: {SKILL_NAME}")));
-        let desc = front.lines().find_map(|l| l.strip_prefix("description: ")).unwrap();
-        assert!(desc.len() <= 1024, "skill descriptions are capped at 1024 chars ({})", desc.len());
+        let desc = front
+            .lines()
+            .find_map(|l| l.strip_prefix("description: "))
+            .unwrap();
+        assert!(
+            desc.len() <= 1024,
+            "skill descriptions are capped at 1024 chars ({})",
+            desc.len()
+        );
         for word in ["find", "disk", "duplicate", "containing"] {
             assert!(desc.contains(word), "{word}");
         }
-        for tool in ["search_files", "folder_sizes", "folder_growth", "disk_overview", "cleanup_candidates", "delete_paths", "empty_recycle_bin"] {
-            assert!(rest.contains(tool) && INSTRUCTIONS.contains(&tool[..6]), "{tool}");
+        for tool in [
+            "search_files",
+            "folder_sizes",
+            "folder_growth",
+            "disk_overview",
+            "cleanup_candidates",
+            "delete_paths",
+            "empty_recycle_bin",
+        ] {
+            assert!(
+                rest.contains(tool) && INSTRUCTIONS.contains(&tool[..6]),
+                "{tool}"
+            );
         }
     }
 }

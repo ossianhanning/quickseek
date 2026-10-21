@@ -42,7 +42,9 @@ pub struct Scan {
 impl Scan {
     pub fn name(&self, n: &ScanName) -> &str {
         // Names are only ever written from `String`s.
-        unsafe { std::str::from_utf8_unchecked(&self.strings[n.off as usize..(n.off + n.len) as usize]) }
+        unsafe {
+            std::str::from_utf8_unchecked(&self.strings[n.off as usize..(n.off + n.len) as usize])
+        }
     }
 }
 

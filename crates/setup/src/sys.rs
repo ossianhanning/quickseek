@@ -6,7 +6,9 @@ use std::process::Command;
 use std::ptr::null_mut;
 
 use windows_sys::Win32::System::Registry::*;
-use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
+};
 
 use crate::install::{ARP_KEY, SETUP_EXE, VERSION};
 
@@ -21,7 +23,9 @@ pub fn hidden(c: &mut Command) -> &mut Command {
 }
 
 pub fn program_data() -> PathBuf {
-    std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+    std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
 }
 
 // ---- registry --------------------------------------------------------------------
@@ -30,11 +34,29 @@ fn get_string(root: HKEY, key: &str, value: &str) -> Option<String> {
     let (k, v) = (wide(key), wide(value));
     let mut size = 0u32;
     unsafe {
-        if RegGetValueW(root, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, null_mut(), null_mut(), &mut size) != 0 {
+        if RegGetValueW(
+            root,
+            k.as_ptr(),
+            v.as_ptr(),
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+            null_mut(),
+            null_mut(),
+            &mut size,
+        ) != 0
+        {
             return None;
         }
         let mut buf = vec![0u16; size as usize / 2 + 1];
-        if RegGetValueW(root, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, null_mut(), buf.as_mut_ptr() as *mut _, &mut size) != 0 {
+        if RegGetValueW(
+            root,
+            k.as_ptr(),
+            v.as_ptr(),
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+            null_mut(),
+            buf.as_mut_ptr() as *mut _,
+            &mut size,
+        ) != 0
+        {
             return None;
         }
         let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
@@ -42,21 +64,59 @@ fn get_string(root: HKEY, key: &str, value: &str) -> Option<String> {
     }
 }
 
-fn set_string(root: HKEY, key: &str, value: &str, data: &str, kind: REG_VALUE_TYPE) -> Result<(), String> {
+fn set_string(
+    root: HKEY,
+    key: &str,
+    value: &str,
+    data: &str,
+    kind: REG_VALUE_TYPE,
+) -> Result<(), String> {
     let (k, v, d) = (wide(key), wide(value), wide(data));
-    let rc = unsafe { RegSetKeyValueW(root, k.as_ptr(), v.as_ptr(), kind, d.as_ptr() as *const _, (d.len() * 2) as u32) };
-    if rc == 0 { Ok(()) } else { Err(format!("writing registry value {key}\\{value} (error {rc})")) }
+    let rc = unsafe {
+        RegSetKeyValueW(
+            root,
+            k.as_ptr(),
+            v.as_ptr(),
+            kind,
+            d.as_ptr() as *const _,
+            (d.len() * 2) as u32,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "writing registry value {key}\\{value} (error {rc})"
+        ))
+    }
 }
 
 fn set_dword(root: HKEY, key: &str, value: &str, data: u32) -> Result<(), String> {
     let (k, v) = (wide(key), wide(value));
-    let rc = unsafe { RegSetKeyValueW(root, k.as_ptr(), v.as_ptr(), REG_DWORD, &data as *const u32 as *const _, 4) };
-    if rc == 0 { Ok(()) } else { Err(format!("writing registry value {key}\\{value} (error {rc})")) }
+    let rc = unsafe {
+        RegSetKeyValueW(
+            root,
+            k.as_ptr(),
+            v.as_ptr(),
+            REG_DWORD,
+            &data as *const u32 as *const _,
+            4,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "writing registry value {key}\\{value} (error {rc})"
+        ))
+    }
 }
 
 /// Where a previous install put rapidfind (from its Apps & Features entry).
 pub fn installed_dir() -> Option<PathBuf> {
-    get_string(HKEY_LOCAL_MACHINE, ARP_KEY, "InstallLocation").map(PathBuf::from).filter(|p| p.join("rapidfind.exe").exists())
+    get_string(HKEY_LOCAL_MACHINE, ARP_KEY, "InstallLocation")
+        .map(PathBuf::from)
+        .filter(|p| p.join("rapidfind.exe").exists())
 }
 
 pub fn installed_version() -> Option<String> {
@@ -71,9 +131,27 @@ pub fn write_arp(dir: &Path, size_kb: u32) -> Result<(), String> {
     set_string(m, k, "DisplayVersion", VERSION, REG_SZ)?;
     set_string(m, k, "Publisher", "Ossian Hanning", REG_SZ)?;
     set_string(m, k, "InstallLocation", &dir.to_string_lossy(), REG_SZ)?;
-    set_string(m, k, "DisplayIcon", &dir.join("rapidfind-gui.exe").to_string_lossy(), REG_SZ)?;
-    set_string(m, k, "UninstallString", &format!("\"{setup}\" --uninstall"), REG_SZ)?;
-    set_string(m, k, "QuietUninstallString", &format!("\"{setup}\" --uninstall --silent"), REG_SZ)?;
+    set_string(
+        m,
+        k,
+        "DisplayIcon",
+        &dir.join("rapidfind-gui.exe").to_string_lossy(),
+        REG_SZ,
+    )?;
+    set_string(
+        m,
+        k,
+        "UninstallString",
+        &format!("\"{setup}\" --uninstall"),
+        REG_SZ,
+    )?;
+    set_string(
+        m,
+        k,
+        "QuietUninstallString",
+        &format!("\"{setup}\" --uninstall --silent"),
+        REG_SZ,
+    )?;
     set_dword(m, k, "EstimatedSize", size_kb)?;
     set_dword(m, k, "NoModify", 1)?;
     set_dword(m, k, "NoRepair", 1)
@@ -89,7 +167,13 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// The same Run entry the GUI's "Start with Windows" uses.
 pub fn set_run_at_login(gui: Option<&Path>) -> Result<(), String> {
     match gui {
-        Some(g) => set_string(HKEY_CURRENT_USER, RUN_KEY, "rapidfind", &format!("\"{}\" --background", g.display()), REG_SZ),
+        Some(g) => set_string(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            "rapidfind",
+            &format!("\"{}\" --background", g.display()),
+            REG_SZ,
+        ),
         None => {
             let (k, v) = (wide(RUN_KEY), wide("rapidfind"));
             unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr()) };
@@ -123,7 +207,17 @@ fn set_machine_path(f: impl Fn(&str) -> String) -> Result<(), String> {
         set_string(HKEY_LOCAL_MACHINE, ENV_KEY, "Path", &new, REG_EXPAND_SZ)?;
         let env = wide("Environment");
         let mut r = 0usize;
-        unsafe { SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, env.as_ptr() as isize, SMTO_ABORTIFHUNG, 2000, &mut r) };
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                env.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                2000,
+                &mut r,
+            )
+        };
     }
     Ok(())
 }
@@ -146,22 +240,30 @@ pub fn start_menu_link() -> PathBuf {
 }
 
 pub fn shortcut(link: &Path, target: &Path, _args: &str, description: &str) -> Result<(), String> {
-    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, IPersistFile};
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        IPersistFile,
+    };
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
     use windows::core::{HSTRING, Interface};
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let sl: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| format!("shell link: {e}"))?;
-        sl.SetPath(&HSTRING::from(target.as_os_str())).map_err(|e| e.to_string())?;
+        let sl: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| format!("shell link: {e}"))?;
+        sl.SetPath(&HSTRING::from(target.as_os_str()))
+            .map_err(|e| e.to_string())?;
         if let Some(d) = target.parent() {
-            sl.SetWorkingDirectory(&HSTRING::from(d.as_os_str())).map_err(|e| e.to_string())?;
+            sl.SetWorkingDirectory(&HSTRING::from(d.as_os_str()))
+                .map_err(|e| e.to_string())?;
         }
-        sl.SetDescription(&HSTRING::from(description)).map_err(|e| e.to_string())?;
+        sl.SetDescription(&HSTRING::from(description))
+            .map_err(|e| e.to_string())?;
         let pf: IPersistFile = sl.cast().map_err(|e| e.to_string())?;
         if let Some(d) = link.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        pf.Save(&HSTRING::from(link.as_os_str()), true).map_err(|e| format!("saving {}: {e}", link.display()))
+        pf.Save(&HSTRING::from(link.as_os_str()), true)
+            .map_err(|e| format!("saving {}: {e}", link.display()))
     }
 }
 
@@ -169,7 +271,11 @@ pub fn shortcut(link: &Path, target: &Path, _args: &str, description: &str) -> R
 
 /// Deletes the running uninstaller (and its folder, if empty) once it has exited.
 pub fn delete_after_exit(exe: &Path, dir: &Path) {
-    let cmd = format!("ping -n 3 127.0.0.1 >nul & del /f /q \"{}\" & rmdir \"{}\"", exe.display(), dir.display());
+    let cmd = format!(
+        "ping -n 3 127.0.0.1 >nul & del /f /q \"{}\" & rmdir \"{}\"",
+        exe.display(),
+        dir.display()
+    );
     let _ = hidden(Command::new("cmd").arg("/c").raw_arg(&cmd)).spawn();
 }
 
@@ -184,9 +290,26 @@ mod tests {
 
     #[test]
     fn path_list_edits() {
-        assert_eq!(edit_path_list(r"C:\a;C:\b", r"C:\Program Files\rapidfind", true), r"C:\a;C:\b;C:\Program Files\rapidfind");
-        assert_eq!(edit_path_list(r"C:\a;c:\program files\RAPIDFIND\;C:\b;", r"C:\Program Files\rapidfind", true), r"C:\a;C:\b;C:\Program Files\rapidfind");
-        assert_eq!(edit_path_list(r"C:\a;C:\Program Files\rapidfind;C:\b", r"C:\Program Files\rapidfind", false), r"C:\a;C:\b");
+        assert_eq!(
+            edit_path_list(r"C:\a;C:\b", r"C:\Program Files\rapidfind", true),
+            r"C:\a;C:\b;C:\Program Files\rapidfind"
+        );
+        assert_eq!(
+            edit_path_list(
+                r"C:\a;c:\program files\RAPIDFIND\;C:\b;",
+                r"C:\Program Files\rapidfind",
+                true
+            ),
+            r"C:\a;C:\b;C:\Program Files\rapidfind"
+        );
+        assert_eq!(
+            edit_path_list(
+                r"C:\a;C:\Program Files\rapidfind;C:\b",
+                r"C:\Program Files\rapidfind",
+                false
+            ),
+            r"C:\a;C:\b"
+        );
         assert_eq!(edit_path_list("", r"D:\x", true), r"D:\x");
     }
 }

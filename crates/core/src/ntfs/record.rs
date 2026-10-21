@@ -103,12 +103,20 @@ impl<'a> Attr<'a> {
         self.raw.get(off..off.checked_add(len)?)
     }
     pub fn lowest_vcn(&self) -> u64 {
-        if self.non_resident() { u64le(self.raw, 16) } else { 0 }
+        if self.non_resident() {
+            u64le(self.raw, 16)
+        } else {
+            0
+        }
     }
     /// Logical size of the stream (non-resident: data_size; resident: value length).
     pub fn data_size(&self) -> u64 {
         if self.non_resident() {
-            if self.raw.len() >= 56 { u64le(self.raw, 48) } else { 0 }
+            if self.raw.len() >= 56 {
+                u64le(self.raw, 48)
+            } else {
+                0
+            }
         } else {
             u32le(self.raw, 16) as u64
         }
@@ -185,7 +193,10 @@ pub fn attrs(rec: &[u8]) -> impl Iterator<Item = Attr<'_>> {
         if len < 16 || p + len > end {
             return None;
         }
-        let a = Attr { ty, raw: &rec[p..p + len] };
+        let a = Attr {
+            ty,
+            raw: &rec[p..p + len],
+        };
         p += len;
         Some(a)
     })
@@ -352,7 +363,13 @@ pub(crate) mod tests {
             .map(|a| parse_file_name(a.value().unwrap()).unwrap())
             .map(|f| (f.namespace, utf16le_to_string(f.name_utf16)))
             .collect();
-        assert_eq!(names, vec![(NS_DOS, "HELLO~1.TXT".into()), (NS_WIN32, "hello world.txt".into())]);
+        assert_eq!(
+            names,
+            vec![
+                (NS_DOS, "HELLO~1.TXT".into()),
+                (NS_WIN32, "hello world.txt".into())
+            ]
+        );
         let si = attrs(&r)
             .find(|a| a.ty == ATTR_STANDARD_INFORMATION)
             .and_then(|a| parse_std_info(a.value().unwrap()))
@@ -363,7 +380,9 @@ pub(crate) mod tests {
     #[test]
     fn decodes_signed_relative_runs() {
         // run 1: 0x10 clusters at LCN 0x1000; run 2: 8 clusters at -0x800 relative; sparse 4.
-        let runs = [0x21, 0x10, 0x00, 0x10, 0x21, 0x08, 0x00, 0xF8, 0x01, 0x04, 0x00];
+        let runs = [
+            0x21, 0x10, 0x00, 0x10, 0x21, 0x08, 0x00, 0xF8, 0x01, 0x04, 0x00,
+        ];
         let mut r = RecBuilder::new(REC_IN_USE, 0)
             .nonresident(ATTR_DATA, 12345, &runs)
             .finish();
@@ -373,9 +392,21 @@ pub(crate) mod tests {
         assert_eq!(
             a.runs(),
             vec![
-                Run { vcn: 0, lcn: Some(0x1000), clusters: 0x10 },
-                Run { vcn: 0x10, lcn: Some(0x800), clusters: 8 },
-                Run { vcn: 0x18, lcn: None, clusters: 4 },
+                Run {
+                    vcn: 0,
+                    lcn: Some(0x1000),
+                    clusters: 0x10
+                },
+                Run {
+                    vcn: 0x10,
+                    lcn: Some(0x800),
+                    clusters: 8
+                },
+                Run {
+                    vcn: 0x18,
+                    lcn: None,
+                    clusters: 4
+                },
             ]
         );
     }

@@ -18,9 +18,9 @@
 //! is counted twice: matches inside a matched folder are skipped.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicU32, AtomicU64};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -104,7 +104,11 @@ pub struct TreeRow {
 impl TreeRow {
     /// Bytes added (negative: freed) since the comparison snapshot.
     pub fn change(&self) -> i64 {
-        if self.has_before { self.size as i64 - self.before as i64 } else { 0 }
+        if self.has_before {
+            self.size as i64 - self.before as i64
+        } else {
+            0
+        }
     }
 }
 
@@ -167,7 +171,8 @@ struct VolTree {
 }
 
 fn bit(v: &[u64], i: u32) -> bool {
-    v.get(i as usize / 64).is_some_and(|w| w >> (i % 64) & 1 == 1)
+    v.get(i as usize / 64)
+        .is_some_and(|w| w >> (i % 64) & 1 == 1)
 }
 
 const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
@@ -180,7 +185,11 @@ fn contribution(ix: &Index, i: u32) -> (u64, u64, bool) {
     if ix.links(ix.record(i)).next().is_some_and(|head| head != i) {
         return (0, 0, false);
     }
-    if e.attrs() & FILE_ATTRIBUTE_OFFLINE != 0 { (0, e.size, true) } else { (e.size, 0, true) }
+    if e.attrs() & FILE_ATTRIBUTE_OFFLINE != 0 {
+        (0, e.size, true)
+    } else {
+        (e.size, 0, true)
+    }
 }
 
 impl VolTree {
@@ -189,10 +198,24 @@ impl VolTree {
     fn build(key: &str, kind: VolumeKind, ix: &Index, matches: Option<&[u32]>) -> VolTree {
         let n = ix.entries.len();
         let entries = &ix.entries;
-        let atomics = |len: usize| -> Vec<AtomicU32> { (0..len).into_par_iter().map(|_| AtomicU32::new(0)).collect() };
-        let atomics64 = |len: usize| -> Vec<AtomicU64> { (0..len).into_par_iter().map(|_| AtomicU64::new(0)).collect() };
-        let plain = |v: Vec<AtomicU32>| -> Vec<u32> { v.into_par_iter().map(AtomicU32::into_inner).collect() };
-        let plain64 = |v: Vec<AtomicU64>| -> Vec<u64> { v.into_par_iter().map(AtomicU64::into_inner).collect() };
+        let atomics = |len: usize| -> Vec<AtomicU32> {
+            (0..len)
+                .into_par_iter()
+                .map(|_| AtomicU32::new(0))
+                .collect()
+        };
+        let atomics64 = |len: usize| -> Vec<AtomicU64> {
+            (0..len)
+                .into_par_iter()
+                .map(|_| AtomicU64::new(0))
+                .collect()
+        };
+        let plain = |v: Vec<AtomicU32>| -> Vec<u32> {
+            v.into_par_iter().map(AtomicU32::into_inner).collect()
+        };
+        let plain64 = |v: Vec<AtomicU64>| -> Vec<u64> {
+            v.into_par_iter().map(AtomicU64::into_inner).collect()
+        };
         let live = |e: &crate::index::Entry| !e.is_deleted() && e.parent != NONE;
 
         // Child lists: count, prefix-sum, fill.
@@ -219,11 +242,20 @@ impl VolTree {
 
         // Folders level by level (breadth-first, each level in parallel).
         let mut levels: Vec<Vec<u32>> = Vec::new();
-        let mut frontier: Vec<u32> = if (ix.root as usize) < n { vec![ix.root] } else { Vec::new() };
+        let mut frontier: Vec<u32> = if (ix.root as usize) < n {
+            vec![ix.root]
+        } else {
+            Vec::new()
+        };
         while !frontier.is_empty() && levels.len() < 1024 {
             let next: Vec<u32> = frontier
                 .par_iter()
-                .flat_map_iter(|&d| kids[start[d as usize] as usize..start[d as usize + 1] as usize].iter().copied().filter(|&c| entries[c as usize].is_dir()))
+                .flat_map_iter(|&d| {
+                    kids[start[d as usize] as usize..start[d as usize + 1] as usize]
+                        .iter()
+                        .copied()
+                        .filter(|&c| entries[c as usize].is_dir())
+                })
                 .collect();
             levels.push(std::mem::replace(&mut frontier, next));
         }
@@ -268,7 +300,20 @@ impl VolTree {
         }
         drop(levels);
         let (files, local, cloud) = (plain(files_a), plain64(local_a), plain64(cloud_a));
-        let mut t = VolTree { key: key.to_string(), kind, epoch: ix.epoch, generation: ix.generation, start, kids, slot, files, local, cloud, agg: None, matched: Vec::new() };
+        let mut t = VolTree {
+            key: key.to_string(),
+            kind,
+            epoch: ix.epoch,
+            generation: ix.generation,
+            start,
+            kids,
+            slot,
+            files,
+            local,
+            cloud,
+            agg: None,
+            matched: Vec::new(),
+        };
 
         if let Some(m) = matches {
             let mut matched = vec![0u64; n.div_ceil(64)];
@@ -308,7 +353,11 @@ impl VolTree {
             let agg: HashMap<u32, (u64, u64, u64)> = (0..n as u32)
                 .into_par_iter()
                 .filter_map(|i| {
-                    let (l, f, c) = (sizes[i as usize].load(Relaxed), counts[i as usize].load(Relaxed), clouds[i as usize].load(Relaxed));
+                    let (l, f, c) = (
+                        sizes[i as usize].load(Relaxed),
+                        counts[i as usize].load(Relaxed),
+                        clouds[i as usize].load(Relaxed),
+                    );
                     (f > 0 || l > 0 || c > 0 || bit(&matched, i)).then_some((i, (l, f as u64, c)))
                 })
                 .collect();
@@ -321,7 +370,11 @@ impl VolTree {
     /// (bytes, files, cloud bytes) under folder `d`, over everything.
     fn totals(&self, d: u32) -> (u64, u64, u64) {
         match self.slot.get(d as usize).copied().filter(|&s| s != NONE) {
-            Some(s) => (self.local[s as usize], self.files[s as usize] as u64, self.cloud[s as usize]),
+            Some(s) => (
+                self.local[s as usize],
+                self.files[s as usize] as u64,
+                self.cloud[s as usize],
+            ),
             None => (0, 0, 0),
         }
     }
@@ -373,7 +426,11 @@ impl VolTree {
         }
         let (size, files, cloud) = self.value(ix, i, full)?;
         let full_here = full || (e.is_dir() && bit(&self.matched, i));
-        let visible_kids = || self.children(i).iter().any(|&c| ix.entries[c as usize].is_visible());
+        let visible_kids = || {
+            self.children(i)
+                .iter()
+                .any(|&c| ix.entries[c as usize].is_visible())
+        };
         Some(TreeRow {
             name: ix.name(i).to_string(),
             dir: dir.to_string(),
@@ -383,7 +440,12 @@ impl VolTree {
             files,
             modified: e.modified,
             is_dir: e.is_dir(),
-            has_children: e.is_dir() && if full_here || self.agg.is_none() { visible_kids() } else { files > 0 || size > 0 || cloud > 0 },
+            has_children: e.is_dir()
+                && if full_here || self.agg.is_none() {
+                    visible_kids()
+                } else {
+                    files > 0 || size > 0 || cloud > 0
+                },
             has_size: ix.has_sizes,
             matched: bit(&self.matched, i),
             vol: self.key.clone(),
@@ -400,14 +462,25 @@ impl VolTree {
 
     /// Folders of at least `min` bytes, parents before children, at most
     /// `cap` of them (the biggest: a size cut-off keeps the set ancestor-closed).
-    fn snapshot_folders(&self, ix: &Index, min: u64, cap: usize) -> Vec<crate::history::SnapFolder> {
+    fn snapshot_folders(
+        &self,
+        ix: &Index,
+        min: u64,
+        cap: usize,
+    ) -> Vec<crate::history::SnapFolder> {
         use crate::history::SnapFolder;
         let root = ix.root;
         if (root as usize) >= ix.entries.len() {
             return Vec::new();
         }
         // Raise the cut-off if more than `cap` folders would qualify.
-        let mut sizes: Vec<u64> = self.local.iter().zip(&self.cloud).map(|(l, c)| l + c).filter(|&s| s >= min).collect();
+        let mut sizes: Vec<u64> = self
+            .local
+            .iter()
+            .zip(&self.cloud)
+            .map(|(l, c)| l + c)
+            .filter(|&s| s >= min)
+            .collect();
         let min = if sizes.len() > cap {
             let k = sizes.len() - cap;
             *sizes.select_nth_unstable(k).1
@@ -416,7 +489,13 @@ impl VolTree {
         };
         drop(sizes);
         let (l, f, c) = self.totals(root);
-        let mut out = vec![SnapFolder { parent: u32::MAX, name: ix.name(root).trim_end_matches('\\').to_string(), size: l, cloud: c, files: f }];
+        let mut out = vec![SnapFolder {
+            parent: u32::MAX,
+            name: ix.name(root).trim_end_matches('\\').to_string(),
+            size: l,
+            cloud: c,
+            files: f,
+        }];
         let mut stack = vec![(root, 0u32)];
         while let Some((d, at)) = stack.pop() {
             for &k in self.children(d) {
@@ -425,7 +504,13 @@ impl VolTree {
                 }
                 let (l, f, c) = self.totals(k);
                 if l + c >= min && out.len() < cap {
-                    out.push(SnapFolder { parent: at, name: ix.name(k).to_string(), size: l, cloud: c, files: f });
+                    out.push(SnapFolder {
+                        parent: at,
+                        name: ix.name(k).to_string(),
+                        size: l,
+                        cloud: c,
+                        files: f,
+                    });
                     stack.push((k, out.len() as u32 - 1));
                 }
             }
@@ -438,7 +523,10 @@ impl VolTree {
         let mut cur = ix.root;
         for comp in rel.split(['\\', '/']).filter(|c| !c.is_empty()) {
             let f = fold_mode(comp, ix.fold_mode);
-            cur = *self.children(cur).iter().find(|&&c| ix.fold_name(c) == f.as_bytes())?;
+            cur = *self
+                .children(cur)
+                .iter()
+                .find(|&&c| ix.fold_name(c) == f.as_bytes())?;
         }
         Some(cur)
     }
@@ -473,24 +561,52 @@ impl Tree {
     /// query, also what it matches.
     pub fn build(eng: &Engine, query: &str, flags: SearchFlags) -> Result<Tree, String> {
         let filtered = !query.trim().is_empty();
-        let rs = if filtered { Some(eng.query(query, flags, &SearchOptions { sort: SortKey::Name, descending: false, limit: 1 })?) } else { None };
+        let rs = if filtered {
+            Some(eng.query(
+                query,
+                flags,
+                &SearchOptions {
+                    sort: SortKey::Name,
+                    descending: false,
+                    limit: 1,
+                },
+            )?)
+        } else {
+            None
+        };
         let vols = eng.with_volume_indexes(|vols| {
             vols.iter()
                 .enumerate()
                 .map(|(v, (key, kind, ix))| {
                     let m = rs.as_ref().and_then(|rs| rs.volume_hits(v, ix.epoch));
                     // A volume that changed shape since the search counts nothing.
-                    let m = if filtered { Some(m.unwrap_or(&[])) } else { None };
+                    let m = if filtered {
+                        Some(m.unwrap_or(&[]))
+                    } else {
+                        None
+                    };
                     VolTree::build(key, *kind, ix, m)
                 })
                 .collect()
         });
-        Ok(Tree { query: query.to_string(), flags, vols, built: Instant::now(), base: None })
+        Ok(Tree {
+            query: query.to_string(),
+            flags,
+            vols,
+            built: Instant::now(),
+            base: None,
+        })
     }
 
     /// A snapshot of every volume's folder sizes (folders of at least
     /// `min` bytes, at most `cap` per volume), for [`crate::history`].
-    pub fn snapshot(&mut self, eng: &Engine, name: &str, min: u64, cap: usize) -> Result<crate::history::Snapshot, String> {
+    pub fn snapshot(
+        &mut self,
+        eng: &Engine,
+        name: &str,
+        min: u64,
+        cap: usize,
+    ) -> Result<crate::history::Snapshot, String> {
         self.refresh(eng)?;
         let vols = &self.vols;
         let volumes = eng.with_volume_indexes(|ixs| {
@@ -498,12 +614,25 @@ impl Tree {
                 .zip(ixs)
                 .map(|(t, (_, kind, ix))| {
                     let folders = t.snapshot_folders(ix, min, cap);
-                    let (capacity, free) = if *kind != VolumeKind::Folder { folders.first().map_or((0, 0), |r| disk_space(&r.name)) } else { (0, 0) };
-                    crate::history::SnapVolume { key: t.key.clone(), capacity, free, folders }
+                    let (capacity, free) = if *kind != VolumeKind::Folder {
+                        folders.first().map_or((0, 0), |r| disk_space(&r.name))
+                    } else {
+                        (0, 0)
+                    };
+                    crate::history::SnapVolume {
+                        key: t.key.clone(),
+                        capacity,
+                        free,
+                        folders,
+                    }
                 })
                 .collect()
         });
-        Ok(crate::history::Snapshot { time: crate::history::now_unix(), name: name.to_string(), volumes })
+        Ok(crate::history::Snapshot {
+            time: crate::history::now_unix(),
+            name: name.to_string(),
+            volumes,
+        })
     }
 
     /// Rebuilds if any index was compacted, or changed and the snapshot is old.
@@ -511,7 +640,9 @@ impl Tree {
         let stale = eng.with_volume_indexes(|vols| {
             vols.len() != self.vols.len()
                 || vols.iter().zip(&self.vols).any(|((k, _, ix), t)| {
-                    *k != t.key || ix.epoch != t.epoch || (ix.generation != t.generation && self.built.elapsed() > REFRESH_AFTER)
+                    *k != t.key
+                        || ix.epoch != t.epoch
+                        || (ix.generation != t.generation && self.built.elapsed() > REFRESH_AFTER)
                 })
         });
         if stale {
@@ -521,7 +652,15 @@ impl Tree {
     }
 
     /// Children of `node` (the volume roots for an empty one), sorted and paged.
-    pub fn children(&mut self, eng: &Engine, node: &NodeRef, sort: TreeSort, desc: bool, offset: usize, limit: usize) -> Result<TreeLevel, String> {
+    pub fn children(
+        &mut self,
+        eng: &Engine,
+        node: &NodeRef,
+        sort: TreeSort,
+        desc: bool,
+        offset: usize,
+        limit: usize,
+    ) -> Result<TreeLevel, String> {
         self.refresh(eng)?;
         let vols = &self.vols;
         eng.with_volume_indexes(|ixs| {
@@ -530,7 +669,9 @@ impl Tree {
             if node.vol.is_empty() && node.path.trim_matches(['\\', '/']).is_empty() {
                 for (t, (_, _, ix)) in vols.iter().zip(ixs) {
                     // No row for a volume without matches.
-                    let Some(mut r) = t.row(ix, ix.root, "", t.full(ix, ix.root)) else { continue };
+                    let Some(mut r) = t.row(ix, ix.root, "", t.full(ix, ix.root)) else {
+                        continue;
+                    };
                     if t.kind != VolumeKind::Folder {
                         (r.capacity, r.free) = disk_space(&r.name);
                     }
@@ -540,7 +681,16 @@ impl Tree {
                 level.cloud = rows.iter().map(|r| r.cloud).sum();
                 level.files = rows.iter().map(|r| r.files).sum();
             } else {
-                let (v, d) = Self::locate(vols, ixs, node).ok_or_else(|| format!("not indexed: {}", if node.path.is_empty() { &node.vol } else { &node.path }))?;
+                let (v, d) = Self::locate(vols, ixs, node).ok_or_else(|| {
+                    format!(
+                        "not indexed: {}",
+                        if node.path.is_empty() {
+                            &node.vol
+                        } else {
+                            &node.path
+                        }
+                    )
+                })?;
                 let (t, ix) = (&vols[v], ixs[v].2);
                 if !ix.entries[d as usize].is_dir() {
                     return Err(format!("not a folder: {}", ix.path(d)));
@@ -549,14 +699,21 @@ impl Tree {
                 let (s, f, c) = t.value(ix, d, full).unwrap_or((0, 0, 0));
                 (level.size, level.files, level.cloud) = (s, f, c);
                 let dir = ix.path(d);
-                rows = t.children(d).iter().filter_map(|&c| t.row(ix, c, &dir, full)).collect();
+                rows = t
+                    .children(d)
+                    .iter()
+                    .filter_map(|&c| t.row(ix, c, &dir, full))
+                    .collect();
             }
             if let Some(base) = &self.base {
                 Self::fill_before(base, &mut rows);
                 let me = if node.vol.is_empty() && node.path.trim_matches(['\\', '/']).is_empty() {
                     Some(rows.iter().map(|r| r.before).sum())
                 } else {
-                    let p = rows.first().map(|r| r.dir.clone()).unwrap_or_else(|| node.path.clone());
+                    let p = rows
+                        .first()
+                        .map(|r| r.dir.clone())
+                        .unwrap_or_else(|| node.path.clone());
                     base.get(&p).or(Some(0))
                 };
                 (level.before, level.has_before) = (me.unwrap_or(0), true);
@@ -599,7 +756,11 @@ impl Tree {
         }
     }
 
-    fn locate(vols: &[VolTree], ixs: &[(&str, VolumeKind, &Index)], node: &NodeRef) -> Option<(usize, u32)> {
+    fn locate(
+        vols: &[VolTree],
+        ixs: &[(&str, VolumeKind, &Index)],
+        node: &NodeRef,
+    ) -> Option<(usize, u32)> {
         if !node.vol.is_empty()
             && let Some(v) = vols.iter().position(|t| t.key == node.vol)
             && vols[v].epoch == node.epoch
@@ -629,7 +790,11 @@ impl Tree {
     pub fn memory_bytes(&self) -> usize {
         self.vols
             .iter()
-            .map(|t| (t.start.len() + t.kids.len() + t.slot.len() + t.files.len()) * 4 + (t.local.len() + t.cloud.len() + t.matched.len()) * 8 + t.agg.as_ref().map_or(0, |a| a.len() * 40))
+            .map(|t| {
+                (t.start.len() + t.kids.len() + t.slot.len() + t.files.len()) * 4
+                    + (t.local.len() + t.cloud.len() + t.matched.len()) * 8
+                    + t.agg.as_ref().map_or(0, |a| a.len() * 40)
+            })
             .sum()
     }
 }
@@ -640,41 +805,141 @@ mod tests {
     use crate::index::tests::sample;
 
     fn names(l: &TreeLevel) -> Vec<(String, u64, u64)> {
-        l.rows.iter().map(|r| (r.name.clone(), r.size, r.files)).collect()
+        l.rows
+            .iter()
+            .map(|r| (r.name.clone(), r.size, r.files))
+            .collect()
     }
 
     #[test]
     fn sizes_counts_and_filters() {
         let e = Engine::from_indexes(vec![sample()]);
         let mut t = Tree::build(&e, "", SearchFlags::default()).unwrap();
-        let top = t.children(&e, &NodeRef::default(), TreeSort::Size, true, 0, 100).unwrap();
+        let top = t
+            .children(&e, &NodeRef::default(), TreeSort::Size, true, 0, 100)
+            .unwrap();
         assert_eq!(top.rows.len(), 1);
         let c = &top.rows[0];
         assert_eq!((c.name.as_str(), c.files, c.has_children), ("C:", 3, true));
-        let root = NodeRef { vol: c.vol.clone(), idx: c.idx, epoch: c.epoch, path: String::new() };
+        let root = NodeRef {
+            vol: c.vol.clone(),
+            idx: c.idx,
+            epoch: c.epoch,
+            path: String::new(),
+        };
         let l = t.children(&e, &root, TreeSort::Size, true, 0, 100).unwrap();
         let sizes: Vec<_> = names(&l);
         // sample(): Users\Me\{notes.txt 24, Report.PDF 1000}, Windows\notepad.exe 200.
-        assert_eq!(sizes, [("Users".to_string(), 1024, 2), ("Windows".to_string(), 200, 1)]);
+        assert_eq!(
+            sizes,
+            [
+                ("Users".to_string(), 1024, 2),
+                ("Windows".to_string(), 200, 1)
+            ]
+        );
         assert_eq!((l.size, l.files, l.total), (c.size, 3, 2));
-        let by_path = t.children(&e, &NodeRef { path: r"c:\users\ME".into(), ..Default::default() }, TreeSort::Name, false, 0, 100).unwrap();
-        assert_eq!(names(&by_path), [("notes.txt".to_string(), 24, 1), ("Report.PDF".to_string(), 1000, 1)]);
-        let page = t.children(&e, &NodeRef { path: r"c:\users\me".into(), ..Default::default() }, TreeSort::Size, true, 1, 5).unwrap();
-        assert_eq!((page.total, names(&page)), (2, vec![("notes.txt".to_string(), 24, 1)]));
-        assert!(t.children(&e, &NodeRef { path: r"C:\nope".into(), ..Default::default() }, TreeSort::Name, false, 0, 9).is_err());
+        let by_path = t
+            .children(
+                &e,
+                &NodeRef {
+                    path: r"c:\users\ME".into(),
+                    ..Default::default()
+                },
+                TreeSort::Name,
+                false,
+                0,
+                100,
+            )
+            .unwrap();
+        assert_eq!(
+            names(&by_path),
+            [
+                ("notes.txt".to_string(), 24, 1),
+                ("Report.PDF".to_string(), 1000, 1)
+            ]
+        );
+        let page = t
+            .children(
+                &e,
+                &NodeRef {
+                    path: r"c:\users\me".into(),
+                    ..Default::default()
+                },
+                TreeSort::Size,
+                true,
+                1,
+                5,
+            )
+            .unwrap();
+        assert_eq!(
+            (page.total, names(&page)),
+            (2, vec![("notes.txt".to_string(), 24, 1)])
+        );
+        assert!(
+            t.children(
+                &e,
+                &NodeRef {
+                    path: r"C:\nope".into(),
+                    ..Default::default()
+                },
+                TreeSort::Name,
+                false,
+                0,
+                9
+            )
+            .is_err()
+        );
 
         // Filtered: only *.txt counts, folders without matches disappear.
         let mut f = Tree::build(&e, "*.txt", SearchFlags::default()).unwrap();
-        let l = f.children(&e, &NodeRef { path: "C:".into(), ..Default::default() }, TreeSort::Size, true, 0, 100).unwrap();
+        let l = f
+            .children(
+                &e,
+                &NodeRef {
+                    path: "C:".into(),
+                    ..Default::default()
+                },
+                TreeSort::Size,
+                true,
+                0,
+                100,
+            )
+            .unwrap();
         assert_eq!(names(&l), [("Users".to_string(), 24, 1)]);
-        let top = f.children(&e, &NodeRef::default(), TreeSort::Size, true, 0, 100).unwrap();
+        let top = f
+            .children(&e, &NodeRef::default(), TreeSort::Size, true, 0, 100)
+            .unwrap();
         assert_eq!((top.rows[0].size, top.rows[0].files), (24, 1));
         // A matched folder counts fully, and matches inside it aren't counted twice.
         let mut g = Tree::build(&e, "users|notes", SearchFlags::default()).unwrap();
-        let l = g.children(&e, &NodeRef { path: "C:".into(), ..Default::default() }, TreeSort::Size, true, 0, 100).unwrap();
+        let l = g
+            .children(
+                &e,
+                &NodeRef {
+                    path: "C:".into(),
+                    ..Default::default()
+                },
+                TreeSort::Size,
+                true,
+                0,
+                100,
+            )
+            .unwrap();
         assert_eq!(names(&l), [("Users".to_string(), 1024, 2)]);
         assert!(l.rows[0].matched);
-        let inside = g.children(&e, &NodeRef { path: r"C:\Users\Me".into(), ..Default::default() }, TreeSort::Size, true, 0, 100).unwrap();
+        let inside = g
+            .children(
+                &e,
+                &NodeRef {
+                    path: r"C:\Users\Me".into(),
+                    ..Default::default()
+                },
+                TreeSort::Size,
+                true,
+                0,
+                100,
+            )
+            .unwrap();
         assert_eq!(inside.rows.len(), 2); // everything inside a matched folder is listed
         assert!(g.memory_bytes() > 0);
     }
@@ -690,20 +955,65 @@ mod tests {
         ix.add_link(80, 0, me, "cloud.mp4", 0x0040_1620, 5000, 0, 0);
         let e = Engine::from_indexes(vec![ix]);
         let mut t = Tree::build(&e, "", SearchFlags::default()).unwrap();
-        let top = t.children(&e, &NodeRef { path: "C:".into(), ..Default::default() }, TreeSort::Name, false, 0, 100).unwrap();
+        let top = t
+            .children(
+                &e,
+                &NodeRef {
+                    path: "C:".into(),
+                    ..Default::default()
+                },
+                TreeSort::Name,
+                false,
+                0,
+                100,
+            )
+            .unwrap();
         // 1024 + 200 bytes on disk, the link counted once, the cloud file apart.
         assert_eq!((top.size, top.cloud, top.files), (1224, 5000, 4)); // the cloud file is still a file
         let sum: u64 = top.rows.iter().map(|r| r.size).sum();
         assert_eq!(sum, 1224);
-        let l = t.children(&e, &NodeRef { path: r"C:\Users\Me".into(), ..Default::default() }, TreeSort::Name, false, 0, 100).unwrap();
+        let l = t
+            .children(
+                &e,
+                &NodeRef {
+                    path: r"C:\Users\Me".into(),
+                    ..Default::default()
+                },
+                TreeSort::Name,
+                false,
+                0,
+                100,
+            )
+            .unwrap();
         let get = |n: &str| l.rows.iter().find(|r| r.name == n).unwrap().clone();
         assert_eq!((get("cloud.mp4").size, get("cloud.mp4").cloud), (0, 5000));
-        let (a, b) = (get("notepad-link.exe"), t.children(&e, &NodeRef { path: r"C:\Windows".into(), ..Default::default() }, TreeSort::Name, false, 0, 9).unwrap().rows[0].clone());
-        assert!(a.hardlink != b.hardlink, "exactly one link counts: {a:?} {b:?}");
+        let (a, b) = (
+            get("notepad-link.exe"),
+            t.children(
+                &e,
+                &NodeRef {
+                    path: r"C:\Windows".into(),
+                    ..Default::default()
+                },
+                TreeSort::Name,
+                false,
+                0,
+                9,
+            )
+            .unwrap()
+            .rows[0]
+                .clone(),
+        );
+        assert!(
+            a.hardlink != b.hardlink,
+            "exactly one link counts: {a:?} {b:?}"
+        );
         assert_eq!(a.size + b.size, 200);
         // Filtered: the cloud file shows up as cloud bytes only.
         let mut f = Tree::build(&e, "*.mp4", SearchFlags::default()).unwrap();
-        let roots = f.children(&e, &NodeRef::default(), TreeSort::Size, true, 0, 9).unwrap();
+        let roots = f
+            .children(&e, &NodeRef::default(), TreeSort::Size, true, 0, 9)
+            .unwrap();
         assert_eq!((roots.size, roots.cloud, roots.files), (0, 5000, 1));
         assert_eq!(roots.rows.len(), 1);
     }

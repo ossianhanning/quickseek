@@ -92,7 +92,8 @@ pub fn split_query(q: &str, flags: SearchFlags) -> Result<(String, Option<Conten
     for (i, (t, span)) in toks.iter().enumerate() {
         match t {
             Tok::Open => {
-                let ok = !(i > 0 && (is(i - 1, Tok::Not) || is(i - 1, Tok::Or))) && !is(close_of[i] + 1, Tok::Or);
+                let ok = !(i > 0 && (is(i - 1, Tok::Not) || is(i - 1, Tok::Or)))
+                    && !is(close_of[i] + 1, Tok::Or);
                 plain.push(ok && plain.last().copied().unwrap_or(true));
             }
             Tok::Close => {
@@ -122,7 +123,10 @@ pub fn split_query(q: &str, flags: SearchFlags) -> Result<(String, Option<Conten
         at = r.end;
     }
     rest.push_str(&q[at..]);
-    Ok((rest.split_whitespace().collect::<Vec<_>>().join(" "), Some(ContentQuery { terms })))
+    Ok((
+        rest.split_whitespace().collect::<Vec<_>>().join(" "),
+        Some(ContentQuery { terms }),
+    ))
 }
 
 /// `[!][case:|ww:|regex:...]content:value` → a term; anything else → None.
@@ -135,7 +139,9 @@ fn parse_term(word: &str, flags: SearchFlags) -> Result<Option<ContentTerm>, Str
     }
     let (mut case, mut ww, mut regex) = (flags.case, flags.whole_word, flags.regex);
     let value = loop {
-        let Some((key, rest)) = s.split_once(':') else { return Ok(None) };
+        let Some((key, rest)) = s.split_once(':') else {
+            return Ok(None);
+        };
         if key.is_empty() || key.starts_with('"') {
             return Ok(None);
         }
@@ -163,30 +169,64 @@ fn parse_term(word: &str, flags: SearchFlags) -> Result<Option<ContentTerm>, Str
 }
 
 impl ContentTerm {
-    pub fn new(text: &str, neg: bool, case: bool, regex: bool, whole_word: bool) -> Result<ContentTerm, String> {
-        let pat = if regex { text.to_string() } else { regex::escape(text) };
-        let pat = if whole_word { format!(r"\b(?:{pat})\b") } else { pat };
+    pub fn new(
+        text: &str,
+        neg: bool,
+        case: bool,
+        regex: bool,
+        whole_word: bool,
+    ) -> Result<ContentTerm, String> {
+        let pat = if regex {
+            text.to_string()
+        } else {
+            regex::escape(text)
+        };
+        let pat = if whole_word {
+            format!(r"\b(?:{pat})\b")
+        } else {
+            pat
+        };
         let re = regex::bytes::RegexBuilder::new(&pat)
             .case_insensitive(!case)
             .multi_line(true)
             .size_limit(32 << 20)
             .build()
             .map_err(|e| format!("content: {e}"))?;
-        Ok(ContentTerm { text: text.into(), neg, case, regex, whole_word, re })
+        Ok(ContentTerm {
+            text: text.into(),
+            neg,
+            case,
+            regex,
+            whole_word,
+            re,
+        })
     }
 }
 
 impl ContentQuery {
     /// A query of one term, for callers with a separate content argument.
     pub fn single(text: &str, flags: SearchFlags) -> Result<ContentQuery, String> {
-        Ok(ContentQuery { terms: vec![ContentTerm::new(text, false, flags.case, flags.regex, flags.whole_word)?] })
+        Ok(ContentQuery {
+            terms: vec![ContentTerm::new(
+                text,
+                false,
+                flags.case,
+                flags.regex,
+                flags.whole_word,
+            )?],
+        })
     }
 
     /// Byte ranges of the positive terms' matches in `text`, sorted, for
     /// highlighting.
     pub fn find_ranges(&self, text: &[u8], max: usize) -> Vec<Range<usize>> {
-        let mut v: Vec<Range<usize>> =
-            self.terms.iter().filter(|t| !t.neg).flat_map(|t| t.re.find_iter(text).take(max).map(|m| m.range())).filter(|r| !r.is_empty()).collect();
+        let mut v: Vec<Range<usize>> = self
+            .terms
+            .iter()
+            .filter(|t| !t.neg)
+            .flat_map(|t| t.re.find_iter(text).take(max).map(|m| m.range()))
+            .filter(|r| !r.is_empty())
+            .collect();
         v.sort_by_key(|r| (r.start, r.end));
         v.truncate(max);
         v
@@ -194,7 +234,11 @@ impl ContentQuery {
 
     /// A one-line description, e.g. `"foo" and not "bar"`.
     pub fn describe(&self) -> String {
-        self.terms.iter().map(|t| format!("{}\"{}\"", if t.neg { "not " } else { "" }, t.text)).collect::<Vec<_>>().join(" and ")
+        self.terms
+            .iter()
+            .map(|t| format!("{}\"{}\"", if t.neg { "not " } else { "" }, t.text))
+            .collect::<Vec<_>>()
+            .join(" and ")
     }
 }
 
@@ -259,7 +303,16 @@ impl Decoder {
                 let mut data = std::mem::take(&mut self.carry);
                 data.extend_from_slice(raw);
                 let be = self.enc == Encoding::Utf16Be;
-                let mut units: Vec<u16> = data.chunks_exact(2).map(|p| if be { u16::from_be_bytes([p[0], p[1]]) } else { u16::from_le_bytes([p[0], p[1]]) }).collect();
+                let mut units: Vec<u16> = data
+                    .chunks_exact(2)
+                    .map(|p| {
+                        if be {
+                            u16::from_be_bytes([p[0], p[1]])
+                        } else {
+                            u16::from_le_bytes([p[0], p[1]])
+                        }
+                    })
+                    .collect();
                 let mut keep = data.len() % 2;
                 // A high surrogate at the end waits for its partner.
                 if units.last().is_some_and(|&u| (0xD800..0xDC00).contains(&u)) {
@@ -303,7 +356,10 @@ fn push_utf16(units: &[u16], out: &mut Vec<u8>) {
 pub fn decode_all(data: &[u8]) -> (Encoding, String) {
     let (enc, bom) = detect(data);
     let mut out = Vec::with_capacity(data.len());
-    let mut d = Decoder { enc, carry: Vec::new() };
+    let mut d = Decoder {
+        enc,
+        carry: Vec::new(),
+    };
     d.decode(&data[bom..], &mut out);
     d.finish(&mut out);
     (enc, String::from_utf8_lossy(&out).into_owned())
@@ -311,7 +367,9 @@ pub fn decode_all(data: &[u8]) -> (Encoding, String) {
 
 mod ansi {
     use std::sync::OnceLock;
-    use windows_sys::Win32::Globalization::{CP_ACP, CPINFO, GetCPInfo, IsDBCSLeadByteEx, MultiByteToWideChar};
+    use windows_sys::Win32::Globalization::{
+        CP_ACP, CPINFO, GetCPInfo, IsDBCSLeadByteEx, MultiByteToWideChar,
+    };
 
     /// The ANSI code page has double-byte characters.
     pub fn dbcs() -> bool {
@@ -329,10 +387,28 @@ mod ansi {
     pub fn to_wide(data: &[u8]) -> Vec<u16> {
         let mut out = Vec::new();
         for part in data.chunks(1 << 30) {
-            let n = unsafe { MultiByteToWideChar(CP_ACP, 0, part.as_ptr(), part.len() as i32, std::ptr::null_mut(), 0) };
+            let n = unsafe {
+                MultiByteToWideChar(
+                    CP_ACP,
+                    0,
+                    part.as_ptr(),
+                    part.len() as i32,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
             let at = out.len();
             out.resize(at + n.max(0) as usize, 0);
-            unsafe { MultiByteToWideChar(CP_ACP, 0, part.as_ptr(), part.len() as i32, out[at..].as_mut_ptr(), n) };
+            unsafe {
+                MultiByteToWideChar(
+                    CP_ACP,
+                    0,
+                    part.as_ptr(),
+                    part.len() as i32,
+                    out[at..].as_mut_ptr(),
+                    n,
+                )
+            };
         }
         out
     }
@@ -383,7 +459,13 @@ pub struct ContentOptions {
 
 impl Default for ContentOptions {
     fn default() -> Self {
-        ContentOptions { max_size: 64 << 20, binary: false, ifilter: true, byte_budget: None, time_limit: None }
+        ContentOptions {
+            max_size: 64 << 20,
+            binary: false,
+            ifilter: true,
+            byte_budget: None,
+            time_limit: None,
+        }
     }
 }
 
@@ -423,7 +505,11 @@ pub struct Budget {
 
 impl Budget {
     pub fn new(limit: Option<u64>) -> Budget {
-        Budget { limit: limit.unwrap_or(u64::MAX), used: AtomicU64::new(0), refused: AtomicBool::new(false) }
+        Budget {
+            limit: limit.unwrap_or(u64::MAX),
+            used: AtomicU64::new(0),
+            refused: AtomicBool::new(false),
+        }
     }
     pub(crate) fn take(&self, n: u64) -> bool {
         let before = self.used.fetch_add(n, Relaxed);
@@ -452,10 +538,16 @@ impl Budget {
 const OFFLINE_ATTRS: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
 
 /// Extensions read through an IFilter (when one is registered).
-const IFILTER_EXTS: &[&str] = &["doc", "docm", "docx", "dot", "dotx", "odp", "ods", "odt", "pdf", "ppt", "pptm", "pptx", "rtf", "xls", "xlsb", "xlsm", "xlsx", "msg", "one", "epub", "vsdx"];
+const IFILTER_EXTS: &[&str] = &[
+    "doc", "docm", "docx", "dot", "dotx", "odp", "ods", "odt", "pdf", "ppt", "pptm", "pptx", "rtf",
+    "xls", "xlsb", "xlsm", "xlsx", "msg", "one", "epub", "vsdx",
+];
 
 pub fn uses_ifilter(name: &str) -> bool {
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
     IFILTER_EXTS.contains(&ext.as_str())
 }
 
@@ -466,7 +558,15 @@ impl ContentQuery {
 
     /// Checks what is read from `r` (`len` bytes, for the budget).
     /// `chunk` is the read size ([`CHUNK`]; smaller in tests).
-    pub fn check_reader(&self, r: &mut impl Read, len: u64, opts: &ContentOptions, budget: &Budget, cancel: &AtomicBool, chunk: usize) -> Outcome {
+    pub fn check_reader(
+        &self,
+        r: &mut impl Read,
+        len: u64,
+        opts: &ContentOptions,
+        budget: &Budget,
+        cancel: &AtomicBool,
+        chunk: usize,
+    ) -> Outcome {
         let mut found = vec![false; self.terms.len()];
         let need_all = self.has_neg();
         let mut raw = vec![0u8; chunk.max(4)];
@@ -479,7 +579,11 @@ impl ContentQuery {
             }
             // The first read is enough to see a BOM and tell binary files (most
             // of them) apart, without reading a whole chunk of each.
-            let first = if dec.is_none() { chunk.clamp(4, 64 << 10) } else { chunk };
+            let first = if dec.is_none() {
+                chunk.clamp(4, 64 << 10)
+            } else {
+                chunk
+            };
             let want = (first as u64).min(left.max(1));
             if !budget.take(want) {
                 return Outcome::Unchecked;
@@ -500,7 +604,10 @@ impl ContentQuery {
                     return Outcome::Binary;
                 }
                 data = &data[bom..];
-                dec = Some(Decoder { enc, carry: Vec::new() });
+                dec = Some(Decoder {
+                    enc,
+                    carry: Vec::new(),
+                });
             }
             let d = dec.as_mut().unwrap();
             // Keep the end of the previous text so matches across the boundary are found.
@@ -535,11 +642,24 @@ impl ContentQuery {
 
     /// Checks one in-memory file (tests, previews).
     pub fn check_bytes(&self, data: &[u8], opts: &ContentOptions) -> Outcome {
-        self.check_reader(&mut &data[..], data.len() as u64, opts, &Budget::new(None), &AtomicBool::new(false), CHUNK)
+        self.check_reader(
+            &mut &data[..],
+            data.len() as u64,
+            opts,
+            &Budget::new(None),
+            &AtomicBool::new(false),
+            CHUNK,
+        )
     }
 
     /// Reads one result row's file and decides.
-    pub fn check_row(&self, row: &Row, opts: &ContentOptions, budget: &Budget, cancel: &AtomicBool) -> Outcome {
+    pub fn check_row(
+        &self,
+        row: &Row,
+        opts: &ContentOptions,
+        budget: &Budget,
+        cancel: &AtomicBool,
+    ) -> Outcome {
         if row.is_dir {
             return Outcome::Folder;
         }
@@ -555,13 +675,29 @@ impl ContentQuery {
         self.check_path(&row.full_path(), opts, budget, cancel)
     }
 
-    pub fn check_path(&self, path: &str, opts: &ContentOptions, budget: &Budget, cancel: &AtomicBool) -> Outcome {
+    pub fn check_path(
+        &self,
+        path: &str,
+        opts: &ContentOptions,
+        budget: &Budget,
+        cancel: &AtomicBool,
+    ) -> Outcome {
         if opts.ifilter && uses_ifilter(path) {
             match crate::ifilter::extract(path, opts.max_size, budget, cancel) {
                 crate::ifilter::Extracted::Text(t) => {
-                    let utf8 = ContentOptions { binary: true, ..opts.clone() };
+                    let utf8 = ContentOptions {
+                        binary: true,
+                        ..opts.clone()
+                    };
                     let free = Budget::new(None); // already counted while extracting
-                    return self.check_reader(&mut t.as_bytes(), t.len() as u64, &utf8, &free, cancel, CHUNK);
+                    return self.check_reader(
+                        &mut t.as_bytes(),
+                        t.len() as u64,
+                        &utf8,
+                        &free,
+                        cancel,
+                        CHUNK,
+                    );
                 }
                 crate::ifilter::Extracted::Unchecked => return Outcome::Unchecked,
                 crate::ifilter::Extracted::Failed => return Outcome::Unreadable,
@@ -569,7 +705,11 @@ impl ContentQuery {
             }
         }
         const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
-        let Ok(mut f) = std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_SEQUENTIAL_SCAN).open(path) else {
+        let Ok(mut f) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+            .open(path)
+        else {
             return Outcome::Unreadable;
         };
         let len = match f.metadata() {
@@ -603,8 +743,14 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
 fn pool() -> &'static rayon::ThreadPool {
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
     POOL.get_or_init(|| {
-        let n = std::thread::available_parallelism().map_or(8, |n| n.get()).clamp(8, 32);
-        rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("content-{i}")).build().unwrap()
+        let n = std::thread::available_parallelism()
+            .map_or(8, |n| n.get())
+            .clamp(8, 32);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .thread_name(|i| format!("content-{i}"))
+            .build()
+            .unwrap()
     })
 }
 
@@ -647,7 +793,12 @@ impl Stats {
     /// Files that were skipped rather than searched, as a phrase ("" if none).
     pub fn skipped(&self) -> String {
         let mut v = Vec::new();
-        for (n, what) in [(self.too_large, "too large"), (self.binary, "binary"), (self.offline, "online-only"), (self.unreadable, "unreadable")] {
+        for (n, what) in [
+            (self.too_large, "too large"),
+            (self.binary, "binary"),
+            (self.offline, "online-only"),
+            (self.unreadable, "unreadable"),
+        ] {
             if n > 0 {
                 v.push(format!("{n} {what}"));
             }
@@ -666,7 +817,11 @@ pub struct Batch {
 impl Batch {
     /// Snapshot positions of rows that failed.
     pub fn rejected(&self) -> impl Iterator<Item = u32> + '_ {
-        self.outcomes.iter().enumerate().filter(|(_, o)| !o.keeps()).map(|(i, _)| (self.offset + i as u64) as u32)
+        self.outcomes
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| !o.keeps())
+            .map(|(i, _)| (self.offset + i as u64) as u32)
     }
 }
 
@@ -686,12 +841,24 @@ pub struct Scan {
 impl Scan {
     pub fn new(q: Arc<ContentQuery>, opts: ContentOptions, cancel: Arc<AtomicBool>) -> Scan {
         let budget = Budget::new(opts.byte_budget);
-        Scan { q, opts, stats: Stats::default(), cancel, budget, next: 0, batch: 128, start: Instant::now() }
+        Scan {
+            q,
+            opts,
+            stats: Stats::default(),
+            cancel,
+            budget,
+            next: 0,
+            batch: 128,
+            start: Instant::now(),
+        }
     }
 
     /// Fetches and checks the next rows; `None` once everything is checked
     /// (or the scan was cancelled or ran out of budget: see [`Scan::stats`]).
-    pub fn next_batch(&mut self, call: &mut dyn FnMut(&Request) -> io::Result<Response>) -> Result<Option<Batch>, String> {
+    pub fn next_batch(
+        &mut self,
+        call: &mut dyn FnMut(&Request) -> io::Result<Response>,
+    ) -> Result<Option<Batch>, String> {
         if self.stats.done {
             return Ok(None);
         }
@@ -699,12 +866,19 @@ impl Scan {
             self.finish();
             return Ok(None);
         }
-        if self.opts.time_limit.is_some_and(|t| self.start.elapsed() >= t) {
+        if self
+            .opts
+            .time_limit
+            .is_some_and(|t| self.start.elapsed() >= t)
+        {
             self.stats.timed_out = true;
             self.finish();
             return Ok(None);
         }
-        let page = match call(&Request::Snapshot { offset: self.next, count: self.batch }) {
+        let page = match call(&Request::Snapshot {
+            offset: self.next,
+            count: self.batch,
+        }) {
             Ok(Response::Page(p)) => p,
             Ok(Response::Error(e)) if e.contains("request kind") => {
                 return Err("the rapidfind service is older than this program; content search needs `rapidfind service update` (elevated)".into());
@@ -719,13 +893,23 @@ impl Scan {
             return Ok(None);
         }
         let (q, opts, budget, cancel) = (&*self.q, &self.opts, &self.budget, &*self.cancel);
-        let outcomes: Vec<Outcome> = pool().install(|| page.rows.par_iter().with_max_len(1).map(|r| q.check_row(r, opts, budget, cancel)).collect());
+        let outcomes: Vec<Outcome> = pool().install(|| {
+            page.rows
+                .par_iter()
+                .with_max_len(1)
+                .map(|r| q.check_row(r, opts, budget, cancel))
+                .collect()
+        });
         for &o in &outcomes {
             self.stats.add(o);
         }
         self.stats.bytes = self.budget.used();
         self.stats.elapsed = self.start.elapsed();
-        let b = Batch { offset: self.next, rows: page.rows, outcomes };
+        let b = Batch {
+            offset: self.next,
+            rows: page.rows,
+            outcomes,
+        };
         self.next += b.rows.len() as u64;
         self.batch = (self.batch * 2).min(1024);
         if b.outcomes.contains(&Outcome::Unchecked) {
@@ -754,7 +938,13 @@ pub fn matching_rows(
     let mut scan = Scan::new(q, opts, Arc::new(AtomicBool::new(false)));
     let mut rows = Vec::new();
     while let Some(b) = scan.next_batch(call)? {
-        rows.extend(b.rows.into_iter().zip(b.outcomes).filter(|(_, o)| *o == Outcome::Match).map(|(r, _)| r));
+        rows.extend(
+            b.rows
+                .into_iter()
+                .zip(b.outcomes)
+                .filter(|(_, o)| *o == Outcome::Match)
+                .map(|(r, _)| r),
+        );
         if want.is_some_and(|w| rows.len() >= w) {
             scan.stats.elapsed = scan.start.elapsed();
             break;
@@ -792,7 +982,10 @@ mod tests {
         let (rest, c) = split_query(r#"*.rs content:"fn main" !content:test ext:txt"#, f).unwrap();
         assert_eq!(rest, "*.rs ext:txt");
         let c = c.unwrap();
-        assert_eq!((c.terms[0].text.as_str(), c.terms[0].neg), ("fn main", false));
+        assert_eq!(
+            (c.terms[0].text.as_str(), c.terms[0].neg),
+            ("fn main", false)
+        );
         assert_eq!((c.terms[1].text.as_str(), c.terms[1].neg), ("test", true));
         assert_eq!(c.describe(), r#""fn main" and not "test""#);
         let (rest, none) = split_query("foo bar", f).unwrap();
@@ -800,20 +993,53 @@ mod tests {
         // Modifiers before content:, the Search menu's flags as defaults.
         let c = split_query("case:content:Foo", f).unwrap().1.unwrap();
         assert!(c.terms[0].case && !c.terms[0].regex);
-        let c = split_query("regex:content:fo+ content-regex:^x", f).unwrap().1.unwrap();
+        let c = split_query("regex:content:fo+ content-regex:^x", f)
+            .unwrap()
+            .1
+            .unwrap();
         assert!(c.terms.iter().all(|t| t.regex));
-        let c = split_query("content:foo", SearchFlags { case: true, whole_word: true, ..f }).unwrap().1.unwrap();
+        let c = split_query(
+            "content:foo",
+            SearchFlags {
+                case: true,
+                whole_word: true,
+                ..f
+            },
+        )
+        .unwrap()
+        .1
+        .unwrap();
         assert!(c.terms[0].case && c.terms[0].whole_word);
-        assert!(!split_query("nocase:content:foo", SearchFlags { case: true, ..f }).unwrap().1.unwrap().terms[0].case);
+        assert!(
+            !split_query("nocase:content:foo", SearchFlags { case: true, ..f })
+                .unwrap()
+                .1
+                .unwrap()
+                .terms[0]
+                .case
+        );
         // Inside plain AND groups is fine (the MCP server wraps queries in `< >`).
         assert_eq!(split_query("<*.txt content:x >", f).unwrap().0, "<*.txt >");
         // ... but not under OR or NOT.
-        for bad in ["content:a | *.txt", "*.txt|content:a", "<content:a b>|c", "!<content:a>", "content:", "regex:content:("] {
+        for bad in [
+            "content:a | *.txt",
+            "*.txt|content:a",
+            "<content:a b>|c",
+            "!<content:a>",
+            "content:",
+            "regex:content:(",
+        ] {
             assert!(split_query(bad, f).is_err(), "{bad}");
         }
         // Not content terms: a plain name with a colon-free word, regex on names.
         assert!(split_query("regex:content:foo", f).unwrap().1.is_some());
-        assert_eq!(split_query("wfn:content", f).unwrap().1.map(|c| c.terms.len()), None);
+        assert_eq!(
+            split_query("wfn:content", f)
+                .unwrap()
+                .1
+                .map(|c| c.terms.len()),
+            None
+        );
         // The service refuses what slipped through.
         assert!(crate::query::Query::parse("content:x").is_err());
     }
@@ -832,19 +1058,42 @@ mod tests {
             ("utf-16le no bom", utf16(text, false, false)),
         ] {
             assert_eq!(check("content:quick", &data), Outcome::Match, "{name}");
-            assert_eq!(check("content:ÜNÏCØDÉ", &data), Outcome::Match, "{name}: case folding beyond ASCII");
-            assert_eq!(check("case:content:quick", &data), Outcome::NoMatch, "{name}");
-            assert_eq!(check("content:\"brown fox\"", &data), Outcome::Match, "{name}");
+            assert_eq!(
+                check("content:ÜNÏCØDÉ", &data),
+                Outcome::Match,
+                "{name}: case folding beyond ASCII"
+            );
+            assert_eq!(
+                check("case:content:quick", &data),
+                Outcome::NoMatch,
+                "{name}"
+            );
+            assert_eq!(
+                check("content:\"brown fox\"", &data),
+                Outcome::Match,
+                "{name}"
+            );
             assert_eq!(check("content:missing", &data), Outcome::NoMatch, "{name}");
             assert_eq!(check("!content:missing", &data), Outcome::Match, "{name}");
-            assert_eq!(check("content:quick !content:fox", &data), Outcome::NoMatch, "{name}");
-            assert_eq!(check("regex:content:^the\\s+q", &data), Outcome::Match, "{name}: ^ is per line");
+            assert_eq!(
+                check("content:quick !content:fox", &data),
+                Outcome::NoMatch,
+                "{name}"
+            );
+            assert_eq!(
+                check("regex:content:^the\\s+q", &data),
+                Outcome::Match,
+                "{name}: ^ is per line"
+            );
             assert_eq!(check("ww:content:quic", &data), Outcome::NoMatch, "{name}");
             assert_eq!(check("ww:content:quick", &data), Outcome::Match, "{name}");
         }
         assert_eq!(detect(&utf16("abc", false, false)).0, Encoding::Utf16Le);
         assert_eq!(detect(&utf16("abc", true, false)).0, Encoding::Utf16Be);
-        assert_eq!(decode_all(&utf16("håj 😀", false, true)), (Encoding::Utf16Le, "håj 😀".into()));
+        assert_eq!(
+            decode_all(&utf16("håj 😀", false, true)),
+            (Encoding::Utf16Le, "håj 😀".into())
+        );
     }
 
     #[test]
@@ -853,8 +1102,14 @@ mod tests {
         data.extend(std::iter::repeat_n(0xAB, 100));
         assert_eq!(detect(&data).0, Encoding::Binary);
         assert_eq!(check("content:needle", &data), Outcome::Binary);
-        let opts = ContentOptions { binary: true, ..Default::default() };
-        assert_eq!(q("content:needle").check_bytes(&data, &opts), Outcome::Match);
+        let opts = ContentOptions {
+            binary: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            q("content:needle").check_bytes(&data, &opts),
+            Outcome::Match
+        );
         assert_eq!(check("content:x", b""), Outcome::NoMatch);
         assert_eq!(check("!content:x", b""), Outcome::Match);
     }
@@ -878,9 +1133,20 @@ mod tests {
         for enc in ["utf8", "utf16"] {
             for pad in 0..40 {
                 let text = format!("{}needle{}", "x".repeat(pad), "y".repeat(50));
-                let data = if enc == "utf8" { text.clone().into_bytes() } else { utf16(&text, false, true) };
+                let data = if enc == "utf8" {
+                    text.clone().into_bytes()
+                } else {
+                    utf16(&text, false, true)
+                };
                 // 7-byte chunks split the needle, UTF-16 units and the BOM.
-                let got = cq.check_reader(&mut &data[..], data.len() as u64, &opts, &Budget::new(None), &none, 7);
+                let got = cq.check_reader(
+                    &mut &data[..],
+                    data.len() as u64,
+                    &opts,
+                    &Budget::new(None),
+                    &none,
+                    7,
+                );
                 assert_eq!(got, Outcome::Match, "{enc} pad {pad}");
             }
         }
@@ -888,7 +1154,18 @@ mod tests {
         let data = utf16("a😀needle", false, true);
         let cq = q("content:😀needle");
         for chunk in 1..12 {
-            assert_eq!(cq.check_reader(&mut &data[..], data.len() as u64, &opts, &Budget::new(None), &none, chunk), Outcome::Match, "chunk {chunk}");
+            assert_eq!(
+                cq.check_reader(
+                    &mut &data[..],
+                    data.len() as u64,
+                    &opts,
+                    &Budget::new(None),
+                    &none,
+                    chunk
+                ),
+                Outcome::Match,
+                "chunk {chunk}"
+            );
         }
     }
 
@@ -908,13 +1185,29 @@ mod tests {
         let none = AtomicBool::new(false);
         let opts = ContentOptions::default();
         let b = Budget::new(Some(4_000));
-        assert_eq!(cq.check_reader(&mut &data[..], 10_000, &opts, &b, &none, 1000), Outcome::Unchecked);
+        assert_eq!(
+            cq.check_reader(&mut &data[..], 10_000, &opts, &b, &none, 1000),
+            Outcome::Unchecked
+        );
         assert!(b.used() <= 4_000);
         let b = Budget::new(Some(20_000));
-        assert_eq!(cq.check_reader(&mut &data[..], 10_000, &opts, &b, &none, 1000), Outcome::NoMatch);
+        assert_eq!(
+            cq.check_reader(&mut &data[..], 10_000, &opts, &b, &none, 1000),
+            Outcome::NoMatch
+        );
         assert_eq!(b.used(), 10_000);
         let stop = AtomicBool::new(true);
-        assert_eq!(cq.check_reader(&mut &data[..], 10_000, &opts, &Budget::new(None), &stop, 1000), Outcome::Unchecked);
+        assert_eq!(
+            cq.check_reader(
+                &mut &data[..],
+                10_000,
+                &opts,
+                &Budget::new(None),
+                &stop,
+                1000
+            ),
+            Outcome::Unchecked
+        );
     }
 
     /// The whole flow against a session: snapshot in display order, drop
@@ -922,18 +1215,36 @@ mod tests {
     #[test]
     fn scan_drops_rejects_and_stops_on_cancel() {
         use crate::ipc::{Backend, Local};
-        let dir = std::env::temp_dir().join(format!("rapidfind-content-scan-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rapidfind-content-scan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..600 {
-            std::fs::write(dir.join(format!("f{i:03}.txt")), if i % 100 == 7 { "has the needle" } else { "plain" }).unwrap();
+            std::fs::write(
+                dir.join(format!("f{i:03}.txt")),
+                if i % 100 == 7 {
+                    "has the needle"
+                } else {
+                    "plain"
+                },
+            )
+            .unwrap();
         }
         let ix = crate::folder::build(&dir.to_string_lossy(), crate::fold::FoldMode::Lower);
         let mut be = Local::new(Arc::new(crate::engine::Engine::from_indexes(vec![ix])));
         let cq = Arc::new(q("content:needle"));
         let f = SearchFlags::default();
-        assert_eq!(be.search("*.txt", f, crate::search::SortKey::Name, false, 10).unwrap().total, 600);
-        let mut scan = Scan::new(cq.clone(), ContentOptions::default(), Arc::new(AtomicBool::new(false)));
+        assert_eq!(
+            be.search("*.txt", f, crate::search::SortKey::Name, false, 10)
+                .unwrap()
+                .total,
+            600
+        );
+        let mut scan = Scan::new(
+            cq.clone(),
+            ContentOptions::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let mut rejected = Vec::new();
         while let Some(b) = scan.next_batch(&mut |r| be.call(r)).unwrap() {
             rejected.extend(b.rejected());
@@ -942,15 +1253,25 @@ mod tests {
         assert_eq!((scan.stats.checked, scan.stats.matched), (600, 6));
         let page = be.drop_rows(rejected, 100).unwrap();
         let names: Vec<_> = page.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["f007.txt", "f107.txt", "f207.txt", "f307.txt", "f407.txt", "f507.txt"]);
+        assert_eq!(
+            names,
+            [
+                "f007.txt", "f107.txt", "f207.txt", "f307.txt", "f407.txt", "f507.txt"
+            ]
+        );
 
         // Cancelled after the first batch: what wasn't read stays.
-        be.search("*.txt", f, crate::search::SortKey::Name, false, 10).unwrap();
+        be.search("*.txt", f, crate::search::SortKey::Name, false, 10)
+            .unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let mut scan = Scan::new(cq, ContentOptions::default(), cancel.clone());
         let first = scan.next_batch(&mut |r| be.call(r)).unwrap().unwrap();
         let read = first.rows.len();
-        let hits = first.outcomes.iter().filter(|o| **o == Outcome::Match).count();
+        let hits = first
+            .outcomes
+            .iter()
+            .filter(|o| **o == Outcome::Match)
+            .count();
         let mut rejected: Vec<u32> = first.rejected().collect();
         cancel.store(true, Relaxed);
         while let Some(b) = scan.next_batch(&mut |r| be.call(r)).unwrap() {
@@ -960,7 +1281,11 @@ mod tests {
         assert_eq!(scan.stats.checked as usize, read);
         let page = be.drop_rows(rejected, 1000).unwrap();
         assert!(read < 600 && hits > 0);
-        assert_eq!(page.total as usize, 600 - read + hits, "unread rows are kept, plus the matches read so far");
+        assert_eq!(
+            page.total as usize,
+            600 - read + hits,
+            "unread rows are kept, plus the matches read so far"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

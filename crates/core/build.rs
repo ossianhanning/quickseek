@@ -6,14 +6,17 @@ use std::process::Command;
 
 fn git(args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn main() {
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let build = match git(&["rev-parse", "--short=7", "HEAD"]) {
         Some(hash) => {
-            let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
+            let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
+                .is_some_and(|s| !s.is_empty());
             format!("{version}+{hash}{}", if dirty { ".dirty" } else { "" })
         }
         None => version,

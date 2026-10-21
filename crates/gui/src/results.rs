@@ -79,7 +79,10 @@ impl Results {
             return Vec::new();
         }
         let to = to.min(self.total - 1);
-        (from / BLOCK..=to / BLOCK).filter(|b| !self.blocks.contains_key(b)).map(|b| b * BLOCK).collect()
+        (from / BLOCK..=to / BLOCK)
+            .filter(|b| !self.blocks.contains_key(b))
+            .map(|b| b * BLOCK)
+            .collect()
     }
 }
 
@@ -88,12 +91,24 @@ mod tests {
     use super::*;
 
     fn rows(from: usize, n: usize) -> Vec<Row> {
-        (from..from + n).map(|i| Row { name: format!("r{i}"), ..Default::default() }).collect()
+        (from..from + n)
+            .map(|i| Row {
+                name: format!("r{i}"),
+                ..Default::default()
+            })
+            .collect()
     }
 
     #[test]
     fn first_page_and_on_demand_blocks() {
-        let mut r = Results::new(1, Page { total: 1000, rows: rows(0, 300), ..Default::default() });
+        let mut r = Results::new(
+            1,
+            Page {
+                total: 1000,
+                rows: rows(0, 300),
+                ..Default::default()
+            },
+        );
         assert_eq!(r.get(0).unwrap().name, "r0");
         assert_eq!(r.get(255).unwrap().name, "r255");
         // The partial second block (256..300) was not kept.
@@ -110,7 +125,14 @@ mod tests {
 
     #[test]
     fn evicts_far_blocks() {
-        let mut r = Results::new(1, Page { total: 1_000_000, rows: rows(0, 256), ..Default::default() });
+        let mut r = Results::new(
+            1,
+            Page {
+                total: 1_000_000,
+                rows: rows(0, 256),
+                ..Default::default()
+            },
+        );
         for b in 1..200 {
             r.insert(b * BLOCK, rows(b * BLOCK, BLOCK));
         }

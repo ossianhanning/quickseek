@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::fold::FoldMode;
-use crate::index::{Entry, F_DELETED, F_EXCLUDED, F_INCLUDE_ANCESTOR, F_NAME_IN_FOLD, Index, IndexOptions, NONE};
+use crate::index::{
+    Entry, F_DELETED, F_EXCLUDED, F_INCLUDE_ANCESTOR, F_NAME_IN_FOLD, Index, IndexOptions, NONE,
+};
 
 const MAGIC: &[u8; 8] = b"RAPIDFD\x05";
 const BLOCK: usize = 4 << 20;
@@ -36,7 +38,9 @@ pub fn db_dir() -> PathBuf {
     if let Some(d) = DB_DIR.get() {
         return d.clone();
     }
-    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
     base.join("rapidfind")
 }
 
@@ -103,7 +107,10 @@ impl Varints<'_> {
 
 /// Compresses `data` in independent blocks (in parallel).
 fn write_stream(w: &mut impl Write, data: &[u8]) -> io::Result<()> {
-    let blocks: Vec<io::Result<Vec<u8>>> = data.par_chunks(BLOCK).map(|c| zstd::bulk::compress(c, LEVEL)).collect();
+    let blocks: Vec<io::Result<Vec<u8>>> = data
+        .par_chunks(BLOCK)
+        .map(|c| zstd::bulk::compress(c, LEVEL))
+        .collect();
     w.write_all(&(data.len() as u64).to_le_bytes())?;
     w.write_all(&(blocks.len() as u64).to_le_bytes())?;
     for b in blocks {
@@ -223,17 +230,46 @@ fn write_to(ix: &Index, tmp: &Path) -> io::Result<()> {
     let names = column(n, |i, o| o.extend_from_slice(ix.name(i as u32).as_bytes()));
     let recs = ix.records();
     let name_lens = column(n, |i, o| put_varint(o, e[i].name_len() as u64));
-    let records = column(n, |i, o| put_varint(o, zigzag(recs[i] as i64 - if i == 0 { 0 } else { recs[i - 1] as i64 })));
+    let records = column(n, |i, o| {
+        put_varint(
+            o,
+            zigzag(recs[i] as i64 - if i == 0 { 0 } else { recs[i - 1] as i64 }),
+        )
+    });
     drop(recs);
-    let parents = column(n, |i, o| put_varint(o, if e[i].parent == NONE { 0 } else { zigzag(i as i64 - e[i].parent as i64) + 1 }));
+    let parents = column(n, |i, o| {
+        put_varint(
+            o,
+            if e[i].parent == NONE {
+                0
+            } else {
+                zigzag(i as i64 - e[i].parent as i64) + 1
+            },
+        )
+    });
     let sizes = column(n, |i, o| put_varint(o, e[i].size));
-    let modified = column(n, |i, o| put_varint(o, zigzag(e[i].modified.wrapping_sub(prev(i).map_or(0, |p| p.modified)))));
+    let modified = column(n, |i, o| {
+        put_varint(
+            o,
+            zigzag(
+                e[i].modified
+                    .wrapping_sub(prev(i).map_or(0, |p| p.modified)),
+            ),
+        )
+    });
     let created = if with_created {
-        column(n, |i, o| put_varint(o, zigzag(ix.created[i].wrapping_sub(if i == 0 { 0 } else { ix.created[i - 1] }))))
+        column(n, |i, o| {
+            put_varint(
+                o,
+                zigzag(ix.created[i].wrapping_sub(if i == 0 { 0 } else { ix.created[i - 1] })),
+            )
+        })
     } else {
         Vec::new()
     };
-    let flags = column(n, |i, o| o.extend_from_slice(&(e[i].flags & !DERIVED_FLAGS).to_le_bytes()));
+    let flags = column(n, |i, o| {
+        o.extend_from_slice(&(e[i].flags & !DERIVED_FLAGS).to_le_bytes())
+    });
     let seqs = column(n, |i, o| put_varint(o, ix.seq(i as u32) as u64));
     let mut recent = Vec::new();
     for (&i, &t) in &ix.recent {
@@ -254,10 +290,18 @@ fn write_to(ix: &Index, tmp: &Path) -> io::Result<()> {
         w.write_all(&ix.journal_id.to_le_bytes())?;
         w.write_all(&ix.next_usn.to_le_bytes())?;
         w.write_all(&ix.root.to_le_bytes())?;
-        w.write_all(&[ix.has_sizes as u8, (ix.fold_mode == FoldMode::StripDiacritics) as u8, with_created as u8, 0])?;
+        w.write_all(&[
+            ix.has_sizes as u8,
+            (ix.fold_mode == FoldMode::StripDiacritics) as u8,
+            with_created as u8,
+            0,
+        ])?;
         w.write_all(&(n as u64).to_le_bytes())?;
         w.write_all(&(ix.rec_count as u64).to_le_bytes())?;
-        let all: [&Vec<u8>; STREAMS] = [&names, &name_lens, &records, &parents, &sizes, &modified, &created, &flags, &seqs, &recent, &ids];
+        let all: [&Vec<u8>; STREAMS] = [
+            &names, &name_lens, &records, &parents, &sizes, &modified, &created, &flags, &seqs,
+            &recent, &ids,
+        ];
         for s in all {
             write_stream(&mut w, s)?;
         }
@@ -270,7 +314,10 @@ pub fn load(path: &Path) -> io::Result<Index> {
     let data = std::fs::read(path)?;
     let mut r: &[u8] = &data;
     if r.len() < 8 || &r[..8] != MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "not a rapidfind index (or old version)"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a rapidfind index (or old version)",
+        ));
     }
     r = &r[8..];
     let letter = char::from_u32(read_u32(&mut r)?).unwrap_or('?');
@@ -288,9 +335,23 @@ pub fn load(path: &Path) -> io::Result<Index> {
     for _ in 0..STREAMS {
         located.push(take_stream(&mut r)?);
     }
-    let streams: Vec<Vec<u8>> = located.par_iter().map(|(raw, b)| decompress(*raw, b)).collect::<io::Result<_>>()?;
-    let [names, name_lens, records, parents, sizes, modified, created, flags, seqs, recent, ids]: [Vec<u8>; STREAMS] =
-        streams.try_into().map_err(|_| bad())?;
+    let streams: Vec<Vec<u8>> = located
+        .par_iter()
+        .map(|(raw, b)| decompress(*raw, b))
+        .collect::<io::Result<_>>()?;
+    let [
+        names,
+        name_lens,
+        records,
+        parents,
+        sizes,
+        modified,
+        created,
+        flags,
+        seqs,
+        recent,
+        ids,
+    ]: [Vec<u8>; STREAMS] = streams.try_into().map_err(|_| bad())?;
     if flags.len() != n * 2 {
         return Err(bad());
     }
@@ -319,7 +380,18 @@ pub fn load(path: &Path) -> io::Result<Index> {
                 || rayon::join(|| col(&parents, false), || col(&sizes, false)),
                 || {
                     rayon::join(
-                        || rayon::join(|| col(&modified, true), || if has_created { col(&created, true) } else { Ok(Vec::new()) }),
+                        || {
+                            rayon::join(
+                                || col(&modified, true),
+                                || {
+                                    if has_created {
+                                        col(&created, true)
+                                    } else {
+                                        Ok(Vec::new())
+                                    }
+                                },
+                            )
+                        },
                         || col(&seqs, false),
                     )
                 },
@@ -377,7 +449,12 @@ pub fn load(path: &Path) -> io::Result<Index> {
     }
     let id_map = (!ids.is_empty()).then(|| {
         ids.chunks_exact(20)
-            .map(|c| (u128::from_le_bytes(c[..16].try_into().unwrap()), u32::from_le_bytes(c[16..].try_into().unwrap())))
+            .map(|c| {
+                (
+                    u128::from_le_bytes(c[..16].try_into().unwrap()),
+                    u32::from_le_bytes(c[16..].try_into().unwrap()),
+                )
+            })
             .collect()
     });
     let mut ix = Index {
@@ -388,8 +465,15 @@ pub fn load(path: &Path) -> io::Result<Index> {
         recent: recent_map,
         id_map,
         created: cre,
-        opts: IndexOptions { created: has_created, ..IndexOptions::default() },
-        fold_mode: if hdr[1] != 0 { FoldMode::StripDiacritics } else { FoldMode::Lower },
+        opts: IndexOptions {
+            created: has_created,
+            ..IndexOptions::default()
+        },
+        fold_mode: if hdr[1] != 0 {
+            FoldMode::StripDiacritics
+        } else {
+            FoldMode::Lower
+        },
         root,
         has_sizes: hdr[0] != 0,
         garbage,
@@ -444,15 +528,25 @@ mod tests {
         save(&mut ix, &p).unwrap();
         let mut back = load(&p).unwrap();
         std::fs::remove_file(&p).ok();
-        assert_eq!((back.journal_id, back.next_usn, back.letter), (77, 1234, 'C'));
+        assert_eq!(
+            (back.journal_id, back.next_usn, back.letter),
+            (77, 1234, 'C')
+        );
         assert_eq!(back.entries.len(), ix.entries.len());
         for i in 0..ix.entries.len() as u32 {
             assert_eq!(back.path(i), ix.path(i));
             assert_eq!(back.fold_name(i), ix.fold_name(i));
-            assert_eq!({ back.entries[i as usize].size }, { ix.entries[i as usize].size });
-            assert_eq!({ back.entries[i as usize].modified }, { ix.entries[i as usize].modified });
+            assert_eq!({ back.entries[i as usize].size }, {
+                ix.entries[i as usize].size
+            });
+            assert_eq!({ back.entries[i as usize].modified }, {
+                ix.entries[i as usize].modified
+            });
             assert_eq!(back.created(i), ix.created(i));
-            assert_eq!(back.entries[i as usize].attrs(), ix.entries[i as usize].attrs());
+            assert_eq!(
+                back.entries[i as usize].attrs(),
+                ix.entries[i as usize].attrs()
+            );
         }
         assert_eq!(back.links(35).count(), 1);
         assert_eq!(back.recent.get(&by_name(&back, "notes.txt")), Some(&-5));
@@ -464,7 +558,10 @@ mod tests {
     #[test]
     fn roundtrip_with_garbage_renames_and_no_created() {
         let mut ix = sample();
-        ix.set_options(IndexOptions { created: false, ..Default::default() });
+        ix.set_options(IndexOptions {
+            created: false,
+            ..Default::default()
+        });
         let r = by_name(&ix, "notes.txt");
         let p = ix.entries[r as usize].parent;
         ix.rename_entry(r, p, "Renamed.TXT");
@@ -479,7 +576,10 @@ mod tests {
         assert_eq!(back.links(35).count(), 0);
         assert!(back.created.is_empty() && !back.opts.created);
         let q = crate::query::Query::parse("note").unwrap();
-        assert_eq!(crate::search::search(&[&back], &q, &Default::default()).total, 0);
+        assert_eq!(
+            crate::search::search(&[&back], &q, &Default::default()).total,
+            0
+        );
     }
 
     #[test]

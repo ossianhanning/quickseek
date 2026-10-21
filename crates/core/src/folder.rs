@@ -5,14 +5,15 @@
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_CREATION,
-    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY,
+    FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
+    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResultEx, OVERLAPPED};
 use windows_sys::Win32::System::Threading::CreateEventW;
@@ -47,8 +48,16 @@ fn meta_of(m: &std::fs::Metadata) -> Meta {
 pub fn walk(root: &Path) -> Scan {
     let next = AtomicU32::new(ntfs::FIRST_USER_RECORD);
     let out: Mutex<Vec<(u32, u32, String, Meta)>> = Mutex::new(Vec::new());
-    fn visit<'a>(dir: PathBuf, rec: u32, next: &'a AtomicU32, out: &'a Mutex<Vec<(u32, u32, String, Meta)>>, s: &rayon::Scope<'a>) {
-        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    fn visit<'a>(
+        dir: PathBuf,
+        rec: u32,
+        next: &'a AtomicU32,
+        out: &'a Mutex<Vec<(u32, u32, String, Meta)>>,
+        s: &rayon::Scope<'a>,
+    ) {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return;
+        };
         let mut local = Vec::new();
         for ent in rd.flatten() {
             let Ok(m) = ent.metadata() else { continue };
@@ -64,14 +73,32 @@ pub fn walk(root: &Path) -> Scan {
     }
     rayon::scope(|s| visit(root.to_path_buf(), ntfs::ROOT_RECORD, &next, &out, s));
     let items = out.into_inner().unwrap();
-    let mut scan = Scan { has_sizes: true, ..Default::default() };
+    let mut scan = Scan {
+        has_sizes: true,
+        ..Default::default()
+    };
     scan.meta = vec![Meta::default(); next.load(Ordering::Relaxed) as usize];
-    scan.meta[ntfs::ROOT_RECORD as usize] = Meta { in_use: true, is_dir: true, attrs: FILE_ATTRIBUTE_DIRECTORY, ..Default::default() };
-    scan.names.push(ScanName { record: ntfs::ROOT_RECORD, parent: ntfs::ROOT_RECORD, off: 0, len: 1 });
+    scan.meta[ntfs::ROOT_RECORD as usize] = Meta {
+        in_use: true,
+        is_dir: true,
+        attrs: FILE_ATTRIBUTE_DIRECTORY,
+        ..Default::default()
+    };
+    scan.names.push(ScanName {
+        record: ntfs::ROOT_RECORD,
+        parent: ntfs::ROOT_RECORD,
+        off: 0,
+        len: 1,
+    });
     scan.strings.push(b'.');
     for (r, p, name, m) in items {
         scan.meta[r as usize] = m;
-        scan.names.push(ScanName { record: r, parent: p, off: scan.strings.len() as u32, len: name.len() as u32 });
+        scan.names.push(ScanName {
+            record: r,
+            parent: p,
+            off: scan.strings.len() as u32,
+            len: name.len() as u32,
+        });
         scan.strings.extend_from_slice(name.as_bytes());
     }
     scan
@@ -83,7 +110,12 @@ pub fn build(root: &str, fold: FoldMode) -> Index {
 
 /// Walks with `token`'s identity (network shares reached by the service).
 /// Every walker thread impersonates, since impersonation is per thread.
-pub fn build_as(root: &str, fold: FoldMode, token: Option<Arc<Token>>, opts: crate::index::IndexOptions) -> Index {
+pub fn build_as(
+    root: &str,
+    fold: FoldMode,
+    token: Option<Arc<Token>>,
+    opts: crate::index::IndexOptions,
+) -> Index {
     let letter = root.chars().next().unwrap_or('?').to_ascii_uppercase();
     let dir = PathBuf::from(format!("{}\\", root_name(root)));
     let scan = match token {
@@ -110,10 +142,23 @@ pub fn build_as(root: &str, fold: FoldMode, token: Option<Arc<Token>>, opts: cra
 /// An index holding only the root (before the first walk finishes).
 pub fn empty(root: &str, fold: FoldMode) -> Index {
     let letter = root.chars().next().unwrap_or('?').to_ascii_uppercase();
-    let mut scan = Scan { has_sizes: true, ..Default::default() };
+    let mut scan = Scan {
+        has_sizes: true,
+        ..Default::default()
+    };
     scan.meta = vec![Meta::default(); ntfs::FIRST_USER_RECORD as usize];
-    scan.meta[ntfs::ROOT_RECORD as usize] = Meta { in_use: true, is_dir: true, attrs: FILE_ATTRIBUTE_DIRECTORY, ..Default::default() };
-    scan.names.push(ScanName { record: ntfs::ROOT_RECORD, parent: ntfs::ROOT_RECORD, off: 0, len: 1 });
+    scan.meta[ntfs::ROOT_RECORD as usize] = Meta {
+        in_use: true,
+        is_dir: true,
+        attrs: FILE_ATTRIBUTE_DIRECTORY,
+        ..Default::default()
+    };
+    scan.names.push(ScanName {
+        record: ntfs::ROOT_RECORD,
+        parent: ntfs::ROOT_RECORD,
+        off: 0,
+        len: 1,
+    });
     scan.strings.push(b'.');
     Index::from_scan_named(letter, &root_name(root), &scan, fold)
 }
@@ -158,13 +203,24 @@ impl Action {
 
 /// Applies one change notification. `root` is the folder's real path.
 /// Returns false when the index can't follow (caller should rescan).
-pub fn apply_change(ix: &mut Index, root: &Path, action: Action, rel: &str, pending_old: &mut Option<u32>, now: i64) -> bool {
+pub fn apply_change(
+    ix: &mut Index,
+    root: &Path,
+    action: Action,
+    rel: &str,
+    pending_old: &mut Option<u32>,
+    now: i64,
+) -> bool {
     let (parent_rel, name) = split_parent(rel);
     match action {
         Action::Added => {
-            let Some(parent) = resolve(ix, parent_rel) else { return false };
+            let Some(parent) = resolve(ix, parent_rel) else {
+                return false;
+            };
             let full = root.join(rel);
-            let Ok(m) = std::fs::symlink_metadata(&full) else { return true }; // already gone
+            let Ok(m) = std::fs::symlink_metadata(&full) else {
+                return true;
+            }; // already gone
             let meta = meta_of(&m);
             if let Some(existing) = ix.find_child(parent, name) {
                 let rec = ix.record(existing);
@@ -200,7 +256,9 @@ pub fn apply_change(ix: &mut Index, root: &Path, action: Action, rel: &str, pend
             true
         }
         Action::RenamedNew => {
-            let Some(parent) = resolve(ix, parent_rel) else { return false };
+            let Some(parent) = resolve(ix, parent_rel) else {
+                return false;
+            };
             match pending_old.take() {
                 Some(old) if ix.is_live(old) => {
                     ix.rename_entry(old, parent, name);
@@ -215,11 +273,27 @@ pub fn apply_change(ix: &mut Index, root: &Path, action: Action, rel: &str, pend
 
 fn add(ix: &mut Index, parent: u32, name: &str, m: &Meta) -> u32 {
     let rec = ix.rec_count.max(ntfs::FIRST_USER_RECORD);
-    ix.add_link(rec, 0, parent, name, m.attrs | if m.is_dir { FILE_ATTRIBUTE_DIRECTORY } else { 0 }, m.size, m.modified, m.created)
+    ix.add_link(
+        rec,
+        0,
+        parent,
+        name,
+        m.attrs
+            | if m.is_dir {
+                FILE_ATTRIBUTE_DIRECTORY
+            } else {
+                0
+            },
+        m.size,
+        m.modified,
+        m.created,
+    )
 }
 
 fn add_tree(ix: &mut Index, dir_idx: u32, dir: &Path) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for ent in rd.flatten() {
         let Ok(m) = ent.metadata() else { continue };
         let meta = meta_of(&m);
@@ -246,8 +320,12 @@ pub fn parse_notifications(buf: &[u8]) -> Vec<(Action, String)> {
         if name_start + len > buf.len() {
             break;
         }
-        let units = buf[name_start..name_start + len].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
-        let name: String = char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).collect();
+        let units = buf[name_start..name_start + len]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]));
+        let name: String = char::decode_utf16(units)
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
         if let Some(a) = Action::from_raw(action) {
             out.push((a, name));
         }
@@ -300,7 +378,13 @@ impl Watcher {
             return Err(std::io::Error::last_os_error());
         }
         // 64 KB is the limit for network shares.
-        Ok(Watcher { dir: Handle(h), event: Handle(ev), buf: vec![0u64; 8192], ov: Box::new(unsafe { std::mem::zeroed() }), armed: false })
+        Ok(Watcher {
+            dir: Handle(h),
+            event: Handle(ev),
+            buf: vec![0u64; 8192],
+            ov: Box::new(unsafe { std::mem::zeroed() }),
+            armed: false,
+        })
     }
 
     pub fn next(&mut self, timeout_ms: u32) -> std::io::Result<WatchEvent> {
@@ -313,7 +397,16 @@ impl Watcher {
                 | FILE_NOTIFY_CHANGE_LAST_WRITE
                 | FILE_NOTIFY_CHANGE_CREATION;
             let ok = unsafe {
-                ReadDirectoryChangesW(self.dir.0, self.buf.as_mut_ptr() as *mut _, (self.buf.len() * 8) as u32, 1, filter, std::ptr::null_mut(), &mut *self.ov, None)
+                ReadDirectoryChangesW(
+                    self.dir.0,
+                    self.buf.as_mut_ptr() as *mut _,
+                    (self.buf.len() * 8) as u32,
+                    1,
+                    filter,
+                    std::ptr::null_mut(),
+                    &mut *self.ov,
+                    None,
+                )
             };
             if ok == 0 {
                 return Err(std::io::Error::last_os_error());
@@ -335,7 +428,9 @@ impl Watcher {
             return Ok(WatchEvent::Overflow);
         }
         let bytes: &[u8] = bytemuck::cast_slice(&self.buf);
-        Ok(WatchEvent::Changes(parse_notifications(&bytes[..n as usize])))
+        Ok(WatchEvent::Changes(parse_notifications(
+            &bytes[..n as usize],
+        )))
     }
 }
 
@@ -368,7 +463,14 @@ mod tests {
     }
 
     fn names(ix: &Index, q: &str) -> Vec<String> {
-        let h = search(&[ix], &Query::parse(q).unwrap(), &SearchOptions { limit: 0, ..Default::default() });
+        let h = search(
+            &[ix],
+            &Query::parse(q).unwrap(),
+            &SearchOptions {
+                limit: 0,
+                ..Default::default()
+            },
+        );
         h.items.iter().map(|h| ix.path(h.idx)).collect()
     }
 
@@ -392,15 +494,29 @@ mod tests {
         std::fs::create_dir_all(d.join("new").join("x")).unwrap();
         std::fs::write(d.join("new").join("x").join("y.txt"), b"1234").unwrap();
         assert!(apply_change(&mut ix, &d, Action::Added, "new", &mut old, 1));
-        assert_eq!(names(&ix, "y.txt").len(), 1, "added folder brings its subtree");
+        assert_eq!(
+            names(&ix, "y.txt").len(),
+            1,
+            "added folder brings its subtree"
+        );
         std::fs::rename(d.join("a.txt"), d.join("sub").join("moved.txt")).unwrap();
         apply_change(&mut ix, &d, Action::RenamedOld, "a.txt", &mut old, 2);
-        apply_change(&mut ix, &d, Action::RenamedNew, "sub\\moved.txt", &mut old, 2);
+        apply_change(
+            &mut ix,
+            &d,
+            Action::RenamedNew,
+            "sub\\moved.txt",
+            &mut old,
+            2,
+        );
         assert!(names(&ix, "a.txt").is_empty());
         assert!(names(&ix, "moved.txt")[0].ends_with("sub\\moved.txt"));
         std::fs::write(d.join("sub").join("moved.txt"), b"longer content").unwrap();
         apply_change(&mut ix, &d, Action::Modified, "sub\\moved.txt", &mut old, 3);
-        assert_eq!({ ix.entries[resolve(&ix, "sub\\moved.txt").unwrap() as usize].size }, 14);
+        assert_eq!(
+            { ix.entries[resolve(&ix, "sub\\moved.txt").unwrap() as usize].size },
+            14
+        );
         apply_change(&mut ix, &d, Action::Removed, "sub", &mut old, 4);
         assert!(names(&ix, "b.rs").is_empty() && names(&ix, "moved.txt").is_empty());
         std::fs::remove_dir_all(&d).ok();
@@ -417,11 +533,18 @@ mod tests {
             if let WatchEvent::Changes(c) = w.next(200).unwrap() {
                 seen.extend(c);
             }
-            if seen.iter().any(|(a, p)| *a == Action::Added && p == "sub\\fresh.txt") {
+            if seen
+                .iter()
+                .any(|(a, p)| *a == Action::Added && p == "sub\\fresh.txt")
+            {
                 break;
             }
         }
-        assert!(seen.iter().any(|(a, p)| *a == Action::Added && p == "sub\\fresh.txt"), "{seen:?}");
+        assert!(
+            seen.iter()
+                .any(|(a, p)| *a == Action::Added && p == "sub\\fresh.txt"),
+            "{seen:?}"
+        );
         drop(w);
         std::fs::remove_dir_all(&d).ok();
     }
@@ -429,7 +552,10 @@ mod tests {
     #[test]
     fn parses_notify_buffer() {
         let mut b = Vec::new();
-        for (i, (a, n)) in [(1u32, "x.txt"), (4, "old"), (5, "dir\\new")].iter().enumerate() {
+        for (i, (a, n)) in [(1u32, "x.txt"), (4, "old"), (5, "dir\\new")]
+            .iter()
+            .enumerate()
+        {
             let u: Vec<u16> = n.encode_utf16().collect();
             let len = (12 + u.len() * 2).next_multiple_of(4);
             let next = if i == 2 { 0 } else { len as u32 };
@@ -443,6 +569,13 @@ mod tests {
             b.resize(start + len, 0);
         }
         let v = parse_notifications(&b);
-        assert_eq!(v, vec![(Action::Added, "x.txt".into()), (Action::RenamedOld, "old".into()), (Action::RenamedNew, "dir\\new".into())]);
+        assert_eq!(
+            v,
+            vec![
+                (Action::Added, "x.txt".into()),
+                (Action::RenamedOld, "old".into()),
+                (Action::RenamedNew, "dir\\new".into())
+            ]
+        );
     }
 }

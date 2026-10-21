@@ -10,7 +10,10 @@
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 use windows::Win32::Storage::IndexServer::*;
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CLSIDFromString, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, STGM_READ, STGM_SHARE_DENY_NONE};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, CLSIDFromString, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+    STGM_READ, STGM_SHARE_DENY_NONE,
+};
 use windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream;
 use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
 use windows::core::{HSTRING, IUnknown, Interface, PWSTR};
@@ -41,14 +44,26 @@ fn load(path: &str) -> Option<IFilter> {
     if unsafe { LoadIFilter(&HSTRING::from(path), None, &mut raw) }.is_ok() && !raw.is_null() {
         return unsafe { IUnknown::from_raw(raw) }.cast::<IFilter>().ok();
     }
-    let ext = std::path::Path::new(path).extension()?.to_string_lossy().to_ascii_lowercase();
+    let ext = std::path::Path::new(path)
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
     let handler = reg_default(&format!(r".{ext}\PersistentHandler"))?;
-    let clsid = reg_default(&format!(r"CLSID\{handler}\PersistentAddinsRegistered\{{89BCB740-6119-101A-BCB7-00DD010655AF}}"))?;
+    let clsid = reg_default(&format!(
+        r"CLSID\{handler}\PersistentAddinsRegistered\{{89BCB740-6119-101A-BCB7-00DD010655AF}}"
+    ))?;
     unsafe {
         let clsid = CLSIDFromString(&HSTRING::from(clsid)).ok()?;
         let filter: IFilter = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER).ok()?;
         let init = filter.cast::<IInitializeWithStream>().ok()?;
-        let stream = SHCreateStreamOnFileEx(&HSTRING::from(path), (STGM_READ | STGM_SHARE_DENY_NONE).0, 0, false, None).ok()?;
+        let stream = SHCreateStreamOnFileEx(
+            &HSTRING::from(path),
+            (STGM_READ | STGM_SHARE_DENY_NONE).0,
+            0,
+            false,
+            None,
+        )
+        .ok()?;
         init.Initialize(&stream, STGM_READ.0).ok()?;
         Some(filter)
     }
@@ -60,7 +75,17 @@ fn reg_default(key: &str) -> Option<String> {
     let k = crate::ntfs::win::wide(key);
     let mut buf = [0u16; 128];
     let mut n = (buf.len() * 2) as u32;
-    let r = unsafe { RegGetValueW(HKEY_CLASSES_ROOT, k.as_ptr(), std::ptr::null(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr() as _, &mut n) };
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CLASSES_ROOT,
+            k.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as _,
+            &mut n,
+        )
+    };
     (r == 0).then(|| String::from_utf16_lossy(&buf[..(n as usize / 2).saturating_sub(1)]))
 }
 
@@ -78,8 +103,13 @@ pub fn extract(path: &str, max_bytes: u64, budget: &Budget, cancel: &AtomicBool)
     if !budget.take(len) {
         return Extracted::Unchecked;
     }
-    let Some(filter) = load(path) else { return Extracted::NoFilter };
-    let init = IFILTER_INIT_CANON_PARAGRAPHS.0 | IFILTER_INIT_HARD_LINE_BREAKS.0 | IFILTER_INIT_CANON_SPACES.0 | IFILTER_INIT_APPLY_INDEX_ATTRIBUTES.0;
+    let Some(filter) = load(path) else {
+        return Extracted::NoFilter;
+    };
+    let init = IFILTER_INIT_CANON_PARAGRAPHS.0
+        | IFILTER_INIT_HARD_LINE_BREAKS.0
+        | IFILTER_INIT_CANON_SPACES.0
+        | IFILTER_INIT_APPLY_INDEX_ATTRIBUTES.0;
     let mut flags = 0u32;
     if unsafe { filter.Init(init as u32, &[], &mut flags) } < 0 {
         return Extracted::Failed;
@@ -113,7 +143,9 @@ pub fn extract(path: &str, max_bytes: u64, budget: &Budget, cancel: &AtomicBool)
             if hr < 0 {
                 break; // FILTER_E_NO_MORE_TEXT, or a broken chunk
             }
-            text.push_str(&String::from_utf16_lossy(&buf[..(n as usize).min(buf.len())]));
+            text.push_str(&String::from_utf16_lossy(
+                &buf[..(n as usize).min(buf.len())],
+            ));
             if text.len() as u64 > max_bytes {
                 break 'chunks;
             }

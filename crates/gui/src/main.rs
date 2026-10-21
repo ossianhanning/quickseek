@@ -29,8 +29,13 @@ use rapidfind_core::ntfs::win as ntwin;
 use rapidfind_core::persist;
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::Controls::{ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx};
-use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
+use windows_sys::Win32::UI::Controls::{
+    ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES,
+    INITCOMMONCONTROLSEX, InitCommonControlsEx,
+};
+use windows_sys::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+};
 use windows_sys::Win32::UI::Shell::{SHGSI_ICON, SHGetStockIconInfo, SHSTOCKICONINFO, SIID_FIND};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -45,7 +50,11 @@ pub fn app_icon() -> HICON {
     *ICON.get_or_init(|| unsafe {
         let mut sii: SHSTOCKICONINFO = std::mem::zeroed();
         sii.cbSize = size_of::<SHSTOCKICONINFO>() as u32;
-        if SHGetStockIconInfo(SIID_FIND, SHGSI_ICON, &mut sii) == 0 { sii.hIcon as isize } else { LoadIconW(null_mut(), IDI_APPLICATION) as isize }
+        if SHGetStockIconInfo(SIID_FIND, SHGSI_ICON, &mut sii) == 0 {
+            sii.hIcon as isize
+        } else {
+            LoadIconW(null_mut(), IDI_APPLICATION) as isize
+        }
     }) as HICON
 }
 
@@ -53,7 +62,11 @@ fn connect(local: bool) -> Result<Box<dyn Backend>, String> {
     if !local {
         match ipc::Client::connect() {
             Ok(c) => return Ok(Box::new(ipc::Remote(c))),
-            Err(e) if ipc::is_version_mismatch(&e) => return Err(format!("{e}.\n\nUpdate or reinstall rapidfind (rapidfind-setup.exe) so they match.")),
+            Err(e) if ipc::is_version_mismatch(&e) => {
+                return Err(format!(
+                    "{e}.\n\nUpdate or reinstall rapidfind (rapidfind-setup.exe) so they match."
+                ));
+            }
             Err(e) => log::info!("service not reachable: {e}"),
         }
     }

@@ -57,7 +57,11 @@ struct Link {
 impl Link {
     fn connect(pipe: &str, timeout: Duration, fault: Arc<AtomicU8>) -> io::Result<Link> {
         let mut c = ipc::Client::connect_to(pipe)?;
-        eprintln!("rapidfind-mcp: connected to the service ({}, protocol v{})", c.service_build().unwrap_or("an older build"), c.protocol());
+        eprintln!(
+            "rapidfind-mcp: connected to the service ({}, protocol v{})",
+            c.service_build().unwrap_or("an older build"),
+            c.protocol()
+        );
         let (tx, requests) = mpsc::channel::<Request>();
         let (answers, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -67,7 +71,13 @@ impl Link {
                 }
             }
         });
-        Ok(Link { tx, rx, timeout, fault, dead: false })
+        Ok(Link {
+            tx,
+            rx,
+            timeout,
+            fault,
+            dead: false,
+        })
     }
 
     fn fail(&self, kind: u8, e: io::Error) -> io::Result<Response> {
@@ -79,7 +89,13 @@ impl Link {
 impl Backend for Link {
     fn call(&mut self, req: &Request) -> io::Result<Response> {
         if self.dead || self.tx.send(req.clone()).is_err() {
-            return self.fail(BROKEN, io::Error::new(io::ErrorKind::BrokenPipe, "the connection to the service was lost"));
+            return self.fail(
+                BROKEN,
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "the connection to the service was lost",
+                ),
+            );
         }
         match self.rx.recv_timeout(self.timeout) {
             Ok(Ok(r)) => Ok(r),
@@ -89,9 +105,18 @@ impl Backend for Link {
             Ok(Err(e)) => self.fail(BROKEN, e),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 self.dead = true;
-                self.fail(TIMED_OUT, io::Error::new(io::ErrorKind::TimedOut, "the service didn't answer in time"))
+                self.fail(
+                    TIMED_OUT,
+                    io::Error::new(io::ErrorKind::TimedOut, "the service didn't answer in time"),
+                )
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => self.fail(BROKEN, io::Error::new(io::ErrorKind::BrokenPipe, "the connection to the service was lost")),
+            Err(mpsc::RecvTimeoutError::Disconnected) => self.fail(
+                BROKEN,
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "the connection to the service was lost",
+                ),
+            ),
         }
     }
     fn label(&self) -> &'static str {
@@ -111,7 +136,9 @@ impl ExeStamp {
         ExeStamp { path, stamp }
     }
     fn read(path: &std::path::Path) -> Option<(u64, SystemTime)> {
-        std::fs::metadata(path).ok().and_then(|m| Some((m.len(), m.modified().ok()?)))
+        std::fs::metadata(path)
+            .ok()
+            .and_then(|m| Some((m.len(), m.modified().ok()?)))
     }
     /// A different file is there now (an update moved the running one aside).
     fn replaced(&self) -> bool {
@@ -131,8 +158,18 @@ struct Server {
 
 impl Server {
     fn new() -> Server {
-        let pipe = std::env::var("RAPIDFIND_PIPE").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| ipc::PIPE_NAME.to_string());
-        Server { be: None, pipe, timeout: CALL_TIMEOUT, fault: Arc::default(), exe: std::env::current_exe().ok().map(ExeStamp::of), exit: None }
+        let pipe = std::env::var("RAPIDFIND_PIPE")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| ipc::PIPE_NAME.to_string());
+        Server {
+            be: None,
+            pipe,
+            timeout: CALL_TIMEOUT,
+            fault: Arc::default(),
+            exe: std::env::current_exe().ok().map(ExeStamp::of),
+            exit: None,
+        }
     }
 
     fn backend(&mut self) -> Result<&mut Box<dyn Backend>, String> {
@@ -140,7 +177,11 @@ impl Server {
             match Link::connect(&self.pipe, self.timeout, self.fault.clone()) {
                 Ok(l) => self.be = Some(Box::new(l)),
                 Err(e) if ipc::is_version_mismatch(&e) => return Err(self.mismatch(&e.to_string())),
-                Err(e) => return Err(format!("can't reach the rapidfind service ({e}). Install/start it with `rapidfind service install` from an elevated terminal.")),
+                Err(e) => {
+                    return Err(format!(
+                        "can't reach the rapidfind service ({e}). Install/start it with `rapidfind service install` from an elevated terminal."
+                    ));
+                }
             }
         }
         Ok(self.be.as_mut().unwrap())
@@ -178,20 +219,35 @@ impl Server {
     /// the AI app starts the new one.
     fn mismatch(&mut self, detail: &str) -> String {
         if self.exe.as_ref().is_some_and(ExeStamp::replaced) {
-            eprintln!("rapidfind-mcp: {detail}; this server ({}) was updated on disk: exiting so the new one is started", ipc::BUILD);
+            eprintln!(
+                "rapidfind-mcp: {detail}; this server ({}) was updated on disk: exiting so the new one is started",
+                ipc::BUILD
+            );
             self.exit = Some(EXIT_UPDATED);
-            format!("rapidfind was updated and this MCP server is still the old version ({detail}). It is restarting to load the new one: retry the call.")
+            format!(
+                "rapidfind was updated and this MCP server is still the old version ({detail}). It is restarting to load the new one: retry the call."
+            )
         } else {
-            let exe = self.exe.as_ref().map_or_else(String::new, |x| format!(" ({})", x.path.display()));
-            format!("{detail}. Update or reinstall rapidfind (rapidfind-setup.exe) so the service and this MCP server{exe} are the same version, then retry.")
+            let exe = self
+                .exe
+                .as_ref()
+                .map_or_else(String::new, |x| format!(" ({})", x.path.display()));
+            format!(
+                "{detail}. Update or reinstall rapidfind (rapidfind-setup.exe) so the service and this MCP server{exe} are the same version, then retry."
+            )
         }
     }
 
     /// The error for a call the service didn't answer in time, with what its
     /// status says (asked on a new connection, briefly).
     fn timed_out(&mut self) -> String {
-        let mut msg = format!("the rapidfind service didn't answer within {} s", self.timeout.as_secs_f32());
-        let status = Link::connect(&self.pipe, Duration::from_secs(3), Arc::default()).ok().and_then(|mut l| l.status());
+        let mut msg = format!(
+            "the rapidfind service didn't answer within {} s",
+            self.timeout.as_secs_f32()
+        );
+        let status = Link::connect(&self.pipe, Duration::from_secs(3), Arc::default())
+            .ok()
+            .and_then(|mut l| l.status());
         match status.map(|s| tools::index_warnings(&s)) {
             Some(w) if !w.is_empty() => msg = format!("{msg}: {}", w.join("; ")),
             Some(_) => msg.push_str(" (it may be busy loading or rescanning a drive); try again shortly"),
@@ -213,8 +269,15 @@ impl Server {
                     eprintln!("rapidfind-mcp: {e}");
                 }
                 self.exit = None; // a server that was just started is the newest there is
-                let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOLS[0]);
-                let version = if PROTOCOLS.contains(&asked) { asked } else { PROTOCOLS[0] };
+                let asked = params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or(PROTOCOLS[0]);
+                let version = if PROTOCOLS.contains(&asked) {
+                    asked
+                } else {
+                    PROTOCOLS[0]
+                };
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
@@ -226,34 +289,51 @@ impl Server {
             "tools/list" => Ok(tools::list()),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
                 Ok(match self.call_tool(name, &args) {
                     Ok(v) => json!({
                         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v).unwrap() }],
                         "structuredContent": v,
                         "isError": false,
                     }),
-                    Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+                    Err(e) => {
+                        json!({ "content": [{ "type": "text", "text": e }], "isError": true })
+                    }
                 })
             }
             "resources/list" => Ok(json!({ "resources": [] })),
             "prompts/list" => Ok(guide::prompts_list()),
             "prompts/get" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                guide::prompt_get(name, params.get("arguments").unwrap_or(&Value::Null)).map_err(|e| (-32602, e))
+                guide::prompt_get(name, params.get("arguments").unwrap_or(&Value::Null))
+                    .map_err(|e| (-32602, e))
             }
             _ => Err((-32601, format!("method not found: {method}"))),
         };
         Some(match result {
             Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),
-            Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+            Err((code, message)) => {
+                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+            }
         })
     }
 }
 
 fn main() {
     let mut server = Server::new();
-    eprintln!("rapidfind-mcp {} (protocol v{}-v{}) from {}", ipc::BUILD, ipc::MIN_PROTOCOL, ipc::PROTOCOL, server.exe.as_ref().map_or_else(String::new, |x| x.path.display().to_string()));
+    eprintln!(
+        "rapidfind-mcp {} (protocol v{}-v{}) from {}",
+        ipc::BUILD,
+        ipc::MIN_PROTOCOL,
+        ipc::PROTOCOL,
+        server
+            .exe
+            .as_ref()
+            .map_or_else(String::new, |x| x.path.display().to_string())
+    );
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -269,7 +349,9 @@ fn main() {
                 (!r.is_empty()).then_some(Value::Array(r))
             }
             Ok(msg) => server.handle(&msg),
-            Err(e) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("parse error: {e}") } })),
+            Err(e) => Some(
+                json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("parse error: {e}") } }),
+            ),
         };
         if let Some(r) = reply
             && writeln!(out, "{r}").and_then(|_| out.flush()).is_err()
@@ -302,26 +384,61 @@ mod tests {
             (34, 5, "Windows", true, 0),
             (35, 34, "notepad.exe", false, 200),
         ];
-        let mut s = Scan { has_sizes: true, ..Default::default() };
+        let mut s = Scan {
+            has_sizes: true,
+            ..Default::default()
+        };
         s.meta = vec![Meta::default(); 36];
-        s.meta[5] = Meta { in_use: true, is_dir: true, ..Default::default() };
-        s.names.push(ScanName { record: 5, parent: 5, off: 0, len: 1 });
+        s.meta[5] = Meta {
+            in_use: true,
+            is_dir: true,
+            ..Default::default()
+        };
+        s.names.push(ScanName {
+            record: 5,
+            parent: 5,
+            off: 0,
+            len: 1,
+        });
         s.strings.push(b'.');
         for &(r, p, n, d, size) in items {
-            s.meta[r as usize] = Meta { in_use: true, is_dir: d, size, modified: 134_037_072_000_000_000, ..Default::default() };
-            s.names.push(ScanName { record: r, parent: p, off: s.strings.len() as u32, len: n.len() as u32 });
+            s.meta[r as usize] = Meta {
+                in_use: true,
+                is_dir: d,
+                size,
+                modified: 134_037_072_000_000_000,
+                ..Default::default()
+            };
+            s.names.push(ScanName {
+                record: r,
+                parent: p,
+                off: s.strings.len() as u32,
+                len: n.len() as u32,
+            });
             s.strings.extend_from_slice(n.as_bytes());
         }
         Index::from_scan('C', &s)
     }
 
     fn server() -> Server {
-        Server { be: Some(Box::new(ipc::Local::new(Arc::new(Engine::from_indexes(vec![sample()]))))), ..remote("unused") }
+        Server {
+            be: Some(Box::new(ipc::Local::new(Arc::new(Engine::from_indexes(
+                vec![sample()],
+            ))))),
+            ..remote("unused")
+        }
     }
 
     /// A server for the service on `pipe`, started from an unknown file.
     fn remote(pipe: &str) -> Server {
-        Server { be: None, pipe: pipe.into(), timeout: Duration::from_millis(500), fault: Arc::default(), exe: None, exit: None }
+        Server {
+            be: None,
+            pipe: pipe.into(),
+            timeout: Duration::from_millis(500),
+            fault: Arc::default(),
+            exe: None,
+            exit: None,
+        }
     }
 
     fn pipe(tag: &str) -> String {
@@ -331,7 +448,10 @@ mod tests {
     fn tool_error(s: &mut Server) -> String {
         let r = s.handle(&json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": "disk_overview", "arguments": {} } })).unwrap();
         assert_eq!(r["result"]["isError"], true, "{r}");
-        r["result"]["content"][0]["text"].as_str().unwrap().to_string()
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     /// The first error once the test service's pipe is up.
@@ -351,20 +471,35 @@ mod tests {
     #[test]
     fn version_mismatch_exits_only_after_an_update() {
         let name = pipe("v9");
-        ipc::serve_frames(&name, |_| Response::Error("malformed message: protocol version".into()).encode_for(9));
-        let exe = std::env::temp_dir().join(format!("rapidfind-mcp-test-{}.exe", std::process::id()));
+        ipc::serve_frames(&name, |_| {
+            Response::Error("malformed message: protocol version".into()).encode_for(9)
+        });
+        let exe =
+            std::env::temp_dir().join(format!("rapidfind-mcp-test-{}.exe", std::process::id()));
         std::fs::write(&exe, b"old").unwrap();
-        let mut s = Server { exe: Some(ExeStamp::of(exe.clone())), ..remote(&name) };
+        let mut s = Server {
+            exe: Some(ExeStamp::of(exe.clone())),
+            ..remote(&name)
+        };
         let e = first_error(&mut s);
-        assert!(e.contains("are different versions") && e.contains("reinstall rapidfind"), "{e}");
+        assert!(
+            e.contains("are different versions") && e.contains("reinstall rapidfind"),
+            "{e}"
+        );
         assert_eq!(s.exit, None, "same program file: restarting wouldn't help");
         std::fs::write(&exe, b"new build").unwrap();
         let e = tool_error(&mut s);
-        assert!(e.contains("was updated") && e.contains("retry the call"), "{e}");
+        assert!(
+            e.contains("was updated") && e.contains("retry the call"),
+            "{e}"
+        );
         assert_eq!(s.exit, Some(EXIT_UPDATED));
         std::fs::remove_file(&exe).ok();
 
-        let mut s = Server { exe: Some(ExeStamp::of(std::env::current_exe().unwrap())), ..remote(&pipe("nobody")) };
+        let mut s = Server {
+            exe: Some(ExeStamp::of(std::env::current_exe().unwrap())),
+            ..remote(&pipe("nobody"))
+        };
         assert!(tool_error(&mut s).contains("can't reach the rapidfind service"));
         assert_eq!(s.exit, None);
     }
@@ -389,7 +524,10 @@ mod tests {
         std::thread::spawn(move || ipc::serve_on(&n2, factory));
         let mut s = remote(&name);
         let e = first_error(&mut s);
-        assert!(e.contains("didn't answer within 0.5 s") && e.contains("busy"), "{e}");
+        assert!(
+            e.contains("didn't answer within 0.5 s") && e.contains("busy"),
+            "{e}"
+        );
         assert_eq!(s.exit, None);
         assert!(s.be.is_none(), "reconnects next time");
     }
@@ -407,21 +545,70 @@ mod tests {
         let init = s.handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-03-26", "capabilities": {} } })).unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(init["result"]["serverInfo"]["name"], "rapidfind");
-        assert!(s.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).is_none());
-        let list = s.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
-        let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["search_files", "folder_sizes", "folder_growth", "disk_overview", "cleanup_candidates", "delete_paths", "empty_recycle_bin"]);
+        assert!(
+            s.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+                .is_none()
+        );
+        let list = s
+            .handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+            .unwrap();
+        let names: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "search_files",
+                "folder_sizes",
+                "folder_growth",
+                "disk_overview",
+                "cleanup_candidates",
+                "delete_paths",
+                "empty_recycle_bin"
+            ]
+        );
         assert!(init["result"]["capabilities"]["prompts"].is_object());
-        assert!(init["result"]["instructions"].as_str().unwrap().contains("search_files"));
-        let prompts = s.handle(&json!({ "jsonrpc": "2.0", "id": 5, "method": "prompts/list" })).unwrap();
-        let names: Vec<&str> = prompts["result"]["prompts"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["free_disk_space", "whats_using_space", "whats_growing", "find_files", "find_large_files"]);
+        assert!(
+            init["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("search_files")
+        );
+        let prompts = s
+            .handle(&json!({ "jsonrpc": "2.0", "id": 5, "method": "prompts/list" }))
+            .unwrap();
+        let names: Vec<&str> = prompts["result"]["prompts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "free_disk_space",
+                "whats_using_space",
+                "whats_growing",
+                "find_files",
+                "find_large_files"
+            ]
+        );
         let got = s.handle(&json!({ "jsonrpc": "2.0", "id": 6, "method": "prompts/get", "params": { "name": "free_disk_space", "arguments": { "drive": "D:" } } })).unwrap();
-        let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap();
-        assert!(text.contains(r"D:\") && text.contains("cleanup_candidates"), "{text}");
+        let text = got["result"]["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(
+            text.contains(r"D:\") && text.contains("cleanup_candidates"),
+            "{text}"
+        );
         let missing = s.handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "prompts/get", "params": { "name": "find_files" } })).unwrap();
         assert_eq!(missing["error"]["code"], -32602);
-        let unknown = s.handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "nope" })).unwrap();
+        let unknown = s
+            .handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "nope" }))
+            .unwrap();
         assert_eq!(unknown["error"]["code"], -32601);
         let bad = s.handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "search_files", "arguments": { "query": "size:banana" } } })).unwrap();
         assert_eq!(bad["result"]["isError"], true);
@@ -430,14 +617,29 @@ mod tests {
     #[test]
     fn search_and_sizes() {
         let mut s = server();
-        let r = call(&mut s, "search_files", json!({ "extensions": ["pdf", "txt"], "sort": "size" }));
+        let r = call(
+            &mut s,
+            "search_files",
+            json!({ "extensions": ["pdf", "txt"], "sort": "size" }),
+        );
         assert_eq!(r["total"], 2);
         assert_eq!(r["results"][0]["path"], r"C:\Users\Me\Report.PDF");
         assert_eq!(r["results"][0]["size"], 1000);
         let r = call(&mut s, "search_files", json!({ "query": r"users\*\*.txt" }));
         assert_eq!(r["results"][0]["path"], r"C:\Users\Me\notes.txt");
-        let r = call(&mut s, "search_files", json!({ "path": r"C:\Users", "type": "file", "limit": 1, "offset": 1, "sort": "name" }));
-        assert_eq!((r["total"].as_u64(), r["results"][0]["path"].as_str(), r["has_more"].as_bool()), (Some(2), Some(r"C:\Users\Me\Report.PDF"), Some(false)));
+        let r = call(
+            &mut s,
+            "search_files",
+            json!({ "path": r"C:\Users", "type": "file", "limit": 1, "offset": 1, "sort": "name" }),
+        );
+        assert_eq!(
+            (
+                r["total"].as_u64(),
+                r["results"][0]["path"].as_str(),
+                r["has_more"].as_bool()
+            ),
+            (Some(2), Some(r"C:\Users\Me\Report.PDF"), Some(false))
+        );
 
         let r = call(&mut s, "folder_sizes", json!({ "depth": 3 }));
         let c = &r["children"][0];
@@ -445,7 +647,11 @@ mod tests {
         assert_eq!(c["children"][0]["name"], "Users");
         assert_eq!(c["children"][0]["size"], 1024);
         assert_eq!(c["children"][0]["children"][0]["name"], "Me");
-        let r = call(&mut s, "folder_sizes", json!({ "path": r"C:\Users\Me", "limit": 1 }));
+        let r = call(
+            &mut s,
+            "folder_sizes",
+            json!({ "path": r"C:\Users\Me", "limit": 1 }),
+        );
         assert_eq!(r["children"][0]["name"], "Report.PDF");
         assert_eq!(r["children"][0]["percent_of_parent"], 97.7);
         assert_eq!(r["children"][1]["name"], "(1 more)");
@@ -461,7 +667,11 @@ mod tests {
         let mut s = server();
         let r = call(&mut s, "cleanup_candidates", json!({}));
         assert!(r["categories"].is_array());
-        let r = call(&mut s, "delete_paths", json!({ "paths": [r"C:\", r"C:\Windows", r"Z:\definitely\not\here.txt"], "dry_run": true }));
+        let r = call(
+            &mut s,
+            "delete_paths",
+            json!({ "paths": [r"C:\", r"C:\Windows", r"Z:\definitely\not\here.txt"], "dry_run": true }),
+        );
         assert_eq!(r["failed"], 3);
         // A real temp file: dry run keeps it, a delete recycles it.
         let dir = std::env::temp_dir().join(format!("rapidfind-mcp-{}", std::process::id()));
@@ -469,10 +679,21 @@ mod tests {
         let f = dir.join("junk.bin");
         std::fs::write(&f, vec![0u8; 4096]).unwrap();
         let p = f.to_string_lossy().into_owned();
-        let r = call(&mut s, "delete_paths", json!({ "paths": [p], "dry_run": true }));
-        assert_eq!((r["failed"].as_u64(), r["results"][0]["size"].as_u64()), (Some(0), Some(4096)));
+        let r = call(
+            &mut s,
+            "delete_paths",
+            json!({ "paths": [p], "dry_run": true }),
+        );
+        assert_eq!(
+            (r["failed"].as_u64(), r["results"][0]["size"].as_u64()),
+            (Some(0), Some(4096))
+        );
         assert!(f.exists());
-        let r = call(&mut s, "delete_paths", json!({ "paths": [p], "permanent": true }));
+        let r = call(
+            &mut s,
+            "delete_paths",
+            json!({ "paths": [p], "permanent": true }),
+        );
         assert_eq!(r["freed_now"], 4096, "{r}");
         assert!(!f.exists());
         std::fs::remove_dir_all(&dir).ok();

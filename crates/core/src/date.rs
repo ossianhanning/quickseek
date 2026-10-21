@@ -47,7 +47,10 @@ pub struct DateEnv {
 impl DateEnv {
     /// Uses the system clock and time zone (with DST).
     pub fn system() -> DateEnv {
-        let mut now = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut now = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
         let mut local = now;
         unsafe {
             GetSystemTimeAsFileTime(&mut now);
@@ -58,8 +61,14 @@ impl DateEnv {
             now_local_min: (local_ft - EPOCH_1970) / TICKS_PER_MIN,
             to_filetime: Box::new(|m| {
                 let lft = m * TICKS_PER_MIN + EPOCH_1970;
-                let l = FILETIME { dwLowDateTime: lft as u32, dwHighDateTime: (lft >> 32) as u32 };
-                let mut u = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+                let l = FILETIME {
+                    dwLowDateTime: lft as u32,
+                    dwHighDateTime: (lft >> 32) as u32,
+                };
+                let mut u = FILETIME {
+                    dwLowDateTime: 0,
+                    dwHighDateTime: 0,
+                };
                 if unsafe { LocalFileTimeToFileTime(&l, &mut u) } == 0 {
                     return lft;
                 }
@@ -85,9 +94,17 @@ fn period(v: &str, env: &DateEnv) -> Option<(i64, i64)> {
     let (y, m, _) = civil_from_days(today);
     let month = |y: i64, m: u32| {
         let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-        (days_from_civil(y, m, 1) * 1440, days_from_civil(ny, nm, 1) * 1440)
+        (
+            days_from_civil(y, m, 1) * 1440,
+            days_from_civil(ny, nm, 1) * 1440,
+        )
     };
-    let year = |y: i64| (days_from_civil(y, 1, 1) * 1440, days_from_civil(y + 1, 1, 1) * 1440);
+    let year = |y: i64| {
+        (
+            days_from_civil(y, 1, 1) * 1440,
+            days_from_civil(y + 1, 1, 1) * 1440,
+        )
+    };
     let monday = today - (today + 3).rem_euclid(7);
     Some(match v.as_str() {
         "today" => day(today),
@@ -96,7 +113,11 @@ fn period(v: &str, env: &DateEnv) -> Option<(i64, i64)> {
         "lastweek" => ((monday - 7) * 1440, monday * 1440),
         "thismonth" => month(y, m),
         "lastmonth" => {
-            if m == 1 { month(y - 1, 12) } else { month(y, m - 1) }
+            if m == 1 {
+                month(y - 1, 12)
+            } else {
+                month(y, m - 1)
+            }
         }
         "thisyear" => year(y),
         "lastyear" => year(y - 1),
@@ -144,10 +165,24 @@ fn period(v: &str, env: &DateEnv) -> Option<(i64, i64)> {
 pub fn parse_date_filter(v: &str, env: &DateEnv) -> Option<(i64, i64)> {
     const OPEN_HI: i64 = i64::MAX;
     const OPEN_LO: i64 = i64::MIN;
-    let ft = |m: i64| if m >= i64::MAX / 8 { OPEN_HI } else { (env.to_filetime)(m) };
+    let ft = |m: i64| {
+        if m >= i64::MAX / 8 {
+            OPEN_HI
+        } else {
+            (env.to_filetime)(m)
+        }
+    };
     let (lo, hi) = if let Some((a, b)) = v.split_once("..") {
-        let lo = if a.is_empty() { OPEN_LO } else { ft(period(a, env)?.0) };
-        let hi = if b.is_empty() { OPEN_HI } else { ft(period(b, env)?.1) };
+        let lo = if a.is_empty() {
+            OPEN_LO
+        } else {
+            ft(period(a, env)?.0)
+        };
+        let hi = if b.is_empty() {
+            OPEN_HI
+        } else {
+            ft(period(b, env)?.1)
+        };
         (lo, hi)
     } else if let Some(x) = v.strip_prefix(">=") {
         (ft(period(x, env)?.0), OPEN_HI)
@@ -206,7 +241,10 @@ mod tests {
         assert_eq!(p("last2hours").0, now - 120 * TICKS_PER_MIN);
         // January → last month is December of the previous year.
         let jan = DateEnv::fixed_utc(2026, 1, 5, 0, 0);
-        assert_eq!(parse_date_filter("lastmonth", &jan).unwrap(), (ft(2025, 12, 1), ft(2026, 1, 1)));
+        assert_eq!(
+            parse_date_filter("lastmonth", &jan).unwrap(),
+            (ft(2025, 12, 1), ft(2026, 1, 1))
+        );
         assert!(parse_date_filter("2026-13", &env).is_none());
         assert!(parse_date_filter("soon", &env).is_none());
     }

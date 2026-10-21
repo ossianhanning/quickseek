@@ -11,16 +11,22 @@ use parking_lot::Mutex;
 use rapidfind_core::content::{self, ContentOptions, ContentQuery, Scan, Stats};
 use rapidfind_core::fmt;
 use rapidfind_core::fold::FoldMode;
+use rapidfind_core::history::SnapInfo;
 use rapidfind_core::ipc::{Backend, Page, Row, StatusInfo};
 use rapidfind_core::query::{FILTERS, Query, SearchFlags};
 use rapidfind_core::search::SortKey;
-use rapidfind_core::history::SnapInfo;
 use rapidfind_core::tree::{TreeLevel, TreeSort};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Controls::*;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, ReleaseCapture, SetCapture, GetKeyState, RegisterHotKey, SetFocus, UnregisterHotKey, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_RETURN, VK_SHIFT};
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, SetWindowSubclass, Shell_NotifyIconW};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetFocus, GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus, UnregisterHotKey,
+    VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_RETURN, VK_SHIFT,
+};
+use windows_sys::Win32::UI::Shell::{
+    DefSubclassProc, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    SetWindowSubclass, Shell_NotifyIconW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::highlight;
@@ -92,7 +98,13 @@ const CMD_SYNTAX: u32 = 600;
 const CMD_ABOUT: u32 = 601;
 const CMD_SHOW: u32 = 700;
 
-const COLUMNS: [(&str, i32, bool); 5] = [("Name", 260, false), ("Path", 440, false), ("Size", 120, true), ("Date Modified", 140, false), ("Type", 170, false)];
+const COLUMNS: [(&str, i32, bool); 5] = [
+    ("Name", 260, false),
+    ("Path", 440, false),
+    ("Size", 120, true),
+    ("Date Modified", 140, false),
+    ("Type", 170, false),
+];
 
 pub struct Conn {
     pub be: Box<dyn Backend>,
@@ -103,10 +115,23 @@ pub struct Conn {
 }
 
 enum Job {
-    Search { seq: u64, query: String, flags: SearchFlags, sort: SortKey, desc: bool, keep: bool },
+    Search {
+        seq: u64,
+        query: String,
+        flags: SearchFlags,
+        sort: SortKey,
+        desc: bool,
+        keep: bool,
+    },
     Poll,
     Run(String),
-    Tree { seq: u64, query: String, flags: SearchFlags, sort: TreeSort, desc: bool },
+    Tree {
+        seq: u64,
+        query: String,
+        flags: SearchFlags,
+        sort: TreeSort,
+        desc: bool,
+    },
     TreeClose,
 }
 
@@ -134,9 +159,21 @@ struct ContentUpdate {
 /// Reads the files of search `seq`'s results (as this user) and drops the
 /// rows that don't match from the service's result set, posting progress
 /// about three times a second.
-fn content_scan(conn: Arc<Mutex<Conn>>, hwnd: isize, seq: u64, q: Arc<ContentQuery>, opts: ContentOptions, cancel: Arc<AtomicBool>) {
+fn content_scan(
+    conn: Arc<Mutex<Conn>>,
+    hwnd: isize,
+    seq: u64,
+    q: Arc<ContentQuery>,
+    opts: ContentOptions,
+    cancel: Arc<AtomicBool>,
+) {
     let post = |u: ContentUpdate| unsafe {
-        PostMessageW(hwnd as HWND, WM_APP_CONTENT, 0, Box::into_raw(Box::new(u)) as isize);
+        PostMessageW(
+            hwnd as HWND,
+            WM_APP_CONTENT,
+            0,
+            Box::into_raw(Box::new(u)) as isize,
+        );
     };
     let superseded = || std::io::Error::other("superseded");
     let mut scan = Scan::new(q, opts, cancel);
@@ -155,7 +192,12 @@ fn content_scan(conn: Arc<Mutex<Conn>>, hwnd: isize, seq: u64, q: Arc<ContentQue
             Err(e) => {
                 if conn.lock().seq == seq {
                     scan.stats.done = true;
-                    post(ContentUpdate { seq, ver: 0, page: Some(Err(e)), stats: scan.stats.clone() });
+                    post(ContentUpdate {
+                        seq,
+                        ver: 0,
+                        page: Some(Err(e)),
+                        stats: scan.stats.clone(),
+                    });
                 }
                 return;
             }
@@ -173,11 +215,17 @@ fn content_scan(conn: Arc<Mutex<Conn>>, hwnd: isize, seq: u64, q: Arc<ContentQue
                 if c.seq != seq {
                     return;
                 }
-                let p = c.be.drop_rows(std::mem::take(&mut pending), BLOCK as u32 * 2);
+                let p =
+                    c.be.drop_rows(std::mem::take(&mut pending), BLOCK as u32 * 2);
                 c.ver += 1;
                 (Some(p), c.ver)
             };
-            post(ContentUpdate { seq, ver, page, stats: scan.stats.clone() });
+            post(ContentUpdate {
+                seq,
+                ver,
+                page,
+                stats: scan.stats.clone(),
+            });
         }
         if done {
             return;
@@ -294,7 +342,14 @@ fn worker(conn: Arc<Mutex<Conn>>, rx: Receiver<Job>, hwnd: isize) {
             }
         }
         match job {
-            Job::Search { seq, query, flags, sort, desc, keep } => {
+            Job::Search {
+                seq,
+                query,
+                flags,
+                sort,
+                desc,
+                keep,
+            } => {
                 let mut c = conn.lock();
                 let res = c.be.search(&query, flags, sort, desc, BLOCK as u32 * 2);
                 c.seq = seq;
@@ -307,10 +362,20 @@ fn worker(conn: Arc<Mutex<Conn>>, rx: Receiver<Job>, hwnd: isize) {
             Job::Run(p) => {
                 conn.lock().be.record_run(&p);
             }
-            Job::Tree { seq, query, flags, sort, desc } => {
+            Job::Tree {
+                seq,
+                query,
+                flags,
+                sort,
+                desc,
+            } => {
                 let t = std::time::Instant::now();
                 let res = conn.lock().be.tree(&query, flags, sort, desc);
-                let b = Box::new(TreeDone { seq, res, ms: t.elapsed().as_secs_f64() * 1000.0 });
+                let b = Box::new(TreeDone {
+                    seq,
+                    res,
+                    ms: t.elapsed().as_secs_f64() * 1000.0,
+                });
                 post(WM_APP_TREE, 0, Box::into_raw(b) as isize);
             }
             Job::TreeClose => conn.lock().be.tree_close(),
@@ -324,7 +389,12 @@ fn worker(conn: Arc<Mutex<Conn>>, rx: Receiver<Job>, hwnd: isize) {
 impl App {
     fn flags(&self) -> SearchFlags {
         let s = self.settings.borrow();
-        SearchFlags { case: s.match_case, whole_word: s.whole_word, path: s.match_path, regex: s.regex }
+        SearchFlags {
+            case: s.match_case,
+            whole_word: s.whole_word,
+            path: s.match_path,
+            regex: s.regex,
+        }
     }
 
     fn sort(&self) -> (SortKey, bool) {
@@ -372,9 +442,20 @@ impl App {
         *self.scan_stats.borrow_mut() = None;
         self.searching.set(true);
         let (sort, desc) = self.sort();
-        let _ = self.jobs.send(Job::Search { seq, query: names, flags: self.flags(), sort, desc, keep });
+        let _ = self.jobs.send(Job::Search {
+            seq,
+            query: names,
+            flags: self.flags(),
+            sort,
+            desc,
+            keep,
+        });
         let text = w::get_text(self.edit.get());
-        let title = if text.is_empty() { "rapidfind".to_string() } else { format!("{text} - rapidfind") };
+        let title = if text.is_empty() {
+            "rapidfind".to_string()
+        } else {
+            format!("{text} - rapidfind")
+        };
         w::set_text(self.hwnd.get(), &title);
     }
 
@@ -389,12 +470,28 @@ impl App {
                 let total = page.total.min(i32::MAX as u64) as usize;
                 *self.results.borrow_mut() = Results::new(done.seq, page);
                 let text = self.query_text();
-                let terms = Query::parse_with(&text, self.flags(), FoldMode::Lower, &rapidfind_core::date::DateEnv::system())
-                    .map(|q| if self.flags().case { Vec::new() } else { q.highlight_terms() })
-                    .unwrap_or_default();
+                let terms = Query::parse_with(
+                    &text,
+                    self.flags(),
+                    FoldMode::Lower,
+                    &rapidfind_core::date::DateEnv::system(),
+                )
+                .map(|q| {
+                    if self.flags().case {
+                        Vec::new()
+                    } else {
+                        q.highlight_terms()
+                    }
+                })
+                .unwrap_or_default();
                 *self.hl_terms.borrow_mut() = terms;
                 if done.keep {
-                    send(list, LVM_SETITEMCOUNT, total, (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize);
+                    send(
+                        list,
+                        LVM_SETITEMCOUNT,
+                        total,
+                        (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize,
+                    );
                 } else {
                     send(list, LVM_SETITEMCOUNT, total, 0);
                     let mut it: LVITEMW = unsafe { std::mem::zeroed() };
@@ -413,7 +510,11 @@ impl App {
             Err(e) => {
                 *self.results.borrow_mut() = Results::default();
                 send(list, LVM_SETITEMCOUNT, 0, 0);
-                self.set_status_left(&if e == rapidfind_core::ipc::LOADING { "Index is still loading…".to_string() } else { e });
+                self.set_status_left(&if e == rapidfind_core::ipc::LOADING {
+                    "Index is still loading…".to_string()
+                } else {
+                    e
+                });
                 return;
             }
         }
@@ -425,7 +526,13 @@ impl App {
 
     fn content_options(&self) -> ContentOptions {
         let s = self.settings.borrow();
-        ContentOptions { max_size: s.content_max_mb.max(1) << 20, binary: s.content_binary, ifilter: s.content_ifilter, byte_budget: None, time_limit: None }
+        ContentOptions {
+            max_size: s.content_max_mb.max(1) << 20,
+            binary: s.content_binary,
+            ifilter: s.content_ifilter,
+            byte_budget: None,
+            time_limit: None,
+        }
     }
 
     /// Starts reading the files of search `seq`'s results.
@@ -433,8 +540,15 @@ impl App {
         let cancel = Arc::new(AtomicBool::new(false));
         *self.scan_cancel.borrow_mut() = Some(cancel.clone());
         *self.scan_stats.borrow_mut() = Some(Stats::default());
-        let (conn, hwnd, opts) = (self.conn.clone(), self.hwnd.get() as isize, self.content_options());
-        std::thread::Builder::new().name("content".into()).spawn(move || content_scan(conn, hwnd, seq, cq, opts, cancel)).unwrap();
+        let (conn, hwnd, opts) = (
+            self.conn.clone(),
+            self.hwnd.get() as isize,
+            self.content_options(),
+        );
+        std::thread::Builder::new()
+            .name("content".into())
+            .spawn(move || content_scan(conn, hwnd, seq, cq, opts, cancel))
+            .unwrap();
         let pb = self.progress.get();
         send(pb, PBM_SETPOS, 0, 0);
         unsafe { ShowWindow(pb, SW_SHOW) };
@@ -462,7 +576,12 @@ impl App {
                 let mut r = Results::new(u.seq, page);
                 r.ver = u.ver;
                 *self.results.borrow_mut() = r;
-                send(list, LVM_SETITEMCOUNT, total, (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize);
+                send(
+                    list,
+                    LVM_SETITEMCOUNT,
+                    total,
+                    (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize,
+                );
                 unsafe { InvalidateRect(list, null(), 0) };
             }
             Some(Err(e)) if e == rapidfind_core::ipc::STALE => {
@@ -478,8 +597,15 @@ impl App {
             None => {}
         }
         let done = u.stats.done;
-        let pos = (u.stats.checked * 1000).checked_div(u.stats.total).unwrap_or(0);
-        send(self.progress.get(), PBM_SETPOS, if done { 1000 } else { pos as usize }, 0);
+        let pos = (u.stats.checked * 1000)
+            .checked_div(u.stats.total)
+            .unwrap_or(0);
+        send(
+            self.progress.get(),
+            PBM_SETPOS,
+            if done { 1000 } else { pos as usize },
+            0,
+        );
         *self.scan_stats.borrow_mut() = Some(u.stats);
         if done {
             self.scan_cancel.borrow_mut().take();
@@ -523,11 +649,29 @@ impl App {
         let row = if self.tree_mode() {
             self.selected_rows().into_iter().next()
         } else {
-            let i = send(self.list.get(), LVM_GETNEXTITEM, usize::MAX, (LVNI_FOCUSED | LVNI_SELECTED) as isize);
-            let i = if i < 0 { send(self.list.get(), LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize) } else { i };
+            let i = send(
+                self.list.get(),
+                LVM_GETNEXTITEM,
+                usize::MAX,
+                (LVNI_FOCUSED | LVNI_SELECTED) as isize,
+            );
+            let i = if i < 0 {
+                send(
+                    self.list.get(),
+                    LVM_GETNEXTITEM,
+                    usize::MAX,
+                    LVNI_SELECTED as isize,
+                )
+            } else {
+                i
+            };
             if i < 0 { None } else { self.row(i as usize) }
         };
-        let cq = if self.tree_mode() { None } else { self.content.borrow().clone() };
+        let cq = if self.tree_mode() {
+            None
+        } else {
+            self.content.borrow().clone()
+        };
         self.preview.show(row.as_ref(), cq, &self.query_text());
     }
 
@@ -548,15 +692,35 @@ impl App {
         let (sort, desc) = self.tree_sort();
         self.stop_scan();
         // The tree counts names only: content terms are left out.
-        let query = content::split_query(&self.query_text(), self.flags()).map(|(names, _)| names).unwrap_or_else(|_| self.query_text());
-        let _ = self.jobs.send(Job::Tree { seq, query, flags: self.flags(), sort, desc });
-        self.tree_gen.set(self.last_status.borrow().as_ref().map_or(0, |s| s.generation));
+        let query = content::split_query(&self.query_text(), self.flags())
+            .map(|(names, _)| names)
+            .unwrap_or_else(|_| self.query_text());
+        let _ = self.jobs.send(Job::Tree {
+            seq,
+            query,
+            flags: self.flags(),
+            sort,
+            desc,
+        });
+        self.tree_gen.set(
+            self.last_status
+                .borrow()
+                .as_ref()
+                .map_or(0, |s| s.generation),
+        );
         self.tree_at.set(Some(Instant::now()));
         if !self.tree_quiet.get() {
             self.set_status_left("Adding up folder sizes…");
         }
         let text = w::get_text(self.edit.get());
-        w::set_text(self.hwnd.get(), &if text.is_empty() { "Folder sizes - rapidfind".to_string() } else { format!("{text} - folder sizes - rapidfind") });
+        w::set_text(
+            self.hwnd.get(),
+            &if text.is_empty() {
+                "Folder sizes - rapidfind".to_string()
+            } else {
+                format!("{text} - folder sizes - rapidfind")
+            },
+        );
     }
 
     fn on_tree(&self, done: TreeDone) {
@@ -589,17 +753,32 @@ impl App {
                 } else {
                     for p in &restore {
                         // Look up first: the borrow must end before expand() changes the tree.
-                        let at = { let m = self.tree.borrow(); m.find(p).filter(|&i| !m.nodes[i].expanded) };
+                        let at = {
+                            let m = self.tree.borrow();
+                            m.find(p).filter(|&i| !m.nodes[i].expanded)
+                        };
                         if let Some(i) = at {
                             self.expand(i);
                         }
                     }
                 }
                 let n = self.tree.borrow().nodes.len();
-                send(list, LVM_SETITEMCOUNT, n, if restore.is_empty() { 0 } else { (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize });
+                send(
+                    list,
+                    LVM_SETITEMCOUNT,
+                    n,
+                    if restore.is_empty() {
+                        0
+                    } else {
+                        (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize
+                    },
+                );
                 self.tree_quiet.set(false);
                 let keep = std::mem::take(&mut *self.keep_sel.borrow_mut());
-                let found: Vec<usize> = { let m = self.tree.borrow(); keep.iter().filter_map(|p| m.find(p)).collect() };
+                let found: Vec<usize> = {
+                    let m = self.tree.borrow();
+                    keep.iter().filter_map(|p| m.find(p)).collect()
+                };
                 if !found.is_empty() {
                     self.select_tree_rows(&found);
                 }
@@ -616,25 +795,36 @@ impl App {
             Err(e) => {
                 self.tree.borrow_mut().nodes.clear();
                 send(list, LVM_SETITEMCOUNT, 0, 0);
-                self.set_status_left(&if e == rapidfind_core::ipc::LOADING { "Index is still loading…".to_string() } else { e });
+                self.set_status_left(&if e == rapidfind_core::ipc::LOADING {
+                    "Index is still loading…".to_string()
+                } else {
+                    e
+                });
             }
         }
     }
 
     /// Fetches node `i`'s children and shows them below it.
     fn expand(&self, i: usize) {
-        let Some(node) = self.tree.borrow().nodes.get(i).cloned() else { return };
+        let Some(node) = self.tree.borrow().nodes.get(i).cloned() else {
+            return;
+        };
         if !node.expandable() || node.expanded {
             return;
         }
         let (sort, desc) = self.tree_sort();
-        let Some(mut c) = self.conn.try_lock_for(Duration::from_secs(5)) else { return };
+        let Some(mut c) = self.conn.try_lock_for(Duration::from_secs(5)) else {
+            return;
+        };
         let res = c.be.children(&node.node_ref(), sort, desc, 0, 200_000);
         drop(c);
         match res {
             Ok(level) => {
                 // A folder whose only content is one folder opens through to it.
-                let drill = level.rows.len() == 1 && level.rows[0].is_dir && level.rows[0].has_children && node.depth < 32;
+                let drill = level.rows.len() == 1
+                    && level.rows[0].is_dir
+                    && level.rows[0].has_children
+                    && node.depth < 32;
                 self.tree.borrow_mut().expand(i, level.rows);
                 if drill {
                     self.expand(i + 1);
@@ -649,7 +839,9 @@ impl App {
     }
 
     fn toggle_node(&self, i: usize) {
-        let Some(expanded) = self.tree.borrow().nodes.get(i).map(|n| n.expanded) else { return };
+        let Some(expanded) = self.tree.borrow().nodes.get(i).map(|n| n.expanded) else {
+            return;
+        };
         if expanded {
             self.tree.borrow_mut().collapse(i);
         } else {
@@ -657,7 +849,12 @@ impl App {
         }
         let n = self.tree.borrow().nodes.len();
         let list = self.tree_list.get();
-        send(list, LVM_SETITEMCOUNT, n, (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize);
+        send(
+            list,
+            LVM_SETITEMCOUNT,
+            n,
+            (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize,
+        );
         unsafe { InvalidateRect(list, null(), 0) };
         self.update_status();
     }
@@ -679,7 +876,11 @@ impl App {
         it.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
         send(list, LVM_SETITEMSTATE, usize::MAX, &it as *const _ as isize);
         for (k, &i) in rows.iter().enumerate() {
-            it.state = if k == 0 { LVIS_SELECTED | LVIS_FOCUSED } else { LVIS_SELECTED };
+            it.state = if k == 0 {
+                LVIS_SELECTED | LVIS_FOCUSED
+            } else {
+                LVIS_SELECTED
+            };
             send(list, LVM_SETITEMSTATE, i, &it as *const _ as isize);
         }
     }
@@ -694,12 +895,17 @@ impl App {
                     None => 0..m.nodes.len(),
                     Some(i) => {
                         let d = m.nodes[i].depth;
-                        let end = m.nodes[i + 1..].iter().position(|x| x.depth <= d).map_or(m.nodes.len(), |p| i + 1 + p);
+                        let end = m.nodes[i + 1..]
+                            .iter()
+                            .position(|x| x.depth <= d)
+                            .map_or(m.nodes.len(), |p| i + 1 + p);
                         i + 1..end
                     }
                 };
                 let want = at.map_or(0, |i| m.nodes[i].depth + 1);
-                range.into_iter().find(|&j| m.nodes[j].depth == want && tv::contains(&m.nodes[j].path(), path))
+                range
+                    .into_iter()
+                    .find(|&j| m.nodes[j].depth == want && tv::contains(&m.nodes[j].path(), path))
             };
             let Some(j) = next else { break };
             at = Some(j);
@@ -709,7 +915,12 @@ impl App {
             self.expand(j);
         }
         let n = self.tree.borrow().nodes.len();
-        send(self.tree_list.get(), LVM_SETITEMCOUNT, n, LVSICF_NOSCROLL as isize);
+        send(
+            self.tree_list.get(),
+            LVM_SETITEMCOUNT,
+            n,
+            LVSICF_NOSCROLL as isize,
+        );
         if let Some(j) = at {
             self.select_tree_row(j);
         }
@@ -751,7 +962,12 @@ impl App {
         let mut out = Vec::new();
         let mut i: isize = -1;
         loop {
-            i = send(self.tree_list.get(), LVM_GETNEXTITEM, i as usize, LVNI_SELECTED as isize);
+            i = send(
+                self.tree_list.get(),
+                LVM_GETNEXTITEM,
+                i as usize,
+                LVNI_SELECTED as isize,
+            );
             if i < 0 || out.len() >= 10_000 {
                 break;
             }
@@ -762,7 +978,10 @@ impl App {
 
     fn tree_selected_paths(&self) -> Vec<String> {
         let m = self.tree.borrow();
-        self.tree_selected().into_iter().filter_map(|i| m.nodes.get(i).map(tv::Node::path)).collect()
+        self.tree_selected()
+            .into_iter()
+            .filter_map(|i| m.nodes.get(i).map(tv::Node::path))
+            .collect()
     }
 
     fn update_header_tree(&self) {
@@ -790,25 +1009,57 @@ impl App {
     fn tree_status(&self) -> String {
         let m = self.tree.borrow();
         let sel = self.tree_selected();
-        let what = if m.query.trim().is_empty() { "indexed".to_string() } else { format!("matching \"{}\"", m.query.trim()) };
-        let cloud = if m.cloud > 0 { format!(" (+ {} online-only)", fmt::size(m.cloud)) } else { String::new() };
-        let mut s = format!("{}{cloud} in {} files {what}  ·  {:.0} ms", fmt::size(m.size), shell::group(m.files), m.elapsed_ms);
+        let what = if m.query.trim().is_empty() {
+            "indexed".to_string()
+        } else {
+            format!("matching \"{}\"", m.query.trim())
+        };
+        let cloud = if m.cloud > 0 {
+            format!(" (+ {} online-only)", fmt::size(m.cloud))
+        } else {
+            String::new()
+        };
+        let mut s = format!(
+            "{}{cloud} in {} files {what}  ·  {:.0} ms",
+            fmt::size(m.size),
+            shell::group(m.files),
+            m.elapsed_ms
+        );
         if let Some(b) = &self.growth.borrow().base {
             let roots: Vec<String> = m
                 .nodes
                 .iter()
                 .filter(|n| n.depth == 0 && n.row.has_before)
                 .map(|n| {
-                    let free = if n.row.free_before > 0 { format!(", free {} → {}", fmt::size(n.row.free_before), fmt::size(n.row.free)) } else { String::new() };
+                    let free = if n.row.free_before > 0 {
+                        format!(
+                            ", free {} → {}",
+                            fmt::size(n.row.free_before),
+                            fmt::size(n.row.free)
+                        )
+                    } else {
+                        String::new()
+                    };
                     format!("{} {}{free}", n.row.name, tv::signed_size(n.row.change()))
                 })
                 .collect();
-            s = format!("Compared with {} ({}): {}  ·  Esc stops  ·  {s}", crate::growth::day(b.time, false), crate::growth::ago(b.time), roots.join("; "));
+            s = format!(
+                "Compared with {} ({}): {}  ·  Esc stops  ·  {s}",
+                crate::growth::day(b.time, false),
+                crate::growth::ago(b.time),
+                roots.join("; ")
+            );
         }
         if let [i] = sel[..]
             && let Some(n) = m.nodes.get(i)
         {
-            s = format!("{}: {} ({:.1} % of its folder), {} files  ·  {s}", n.path(), fmt::size(n.row.size), n.fraction() * 100.0, shell::group(n.row.files));
+            s = format!(
+                "{}: {} ({:.1} % of its folder), {} files  ·  {s}",
+                n.path(),
+                fmt::size(n.row.size),
+                n.fraction() * 100.0,
+                shell::group(n.row.files)
+            );
         }
         s
     }
@@ -826,26 +1077,63 @@ impl App {
         }
         if !matches!(cd.iSubItem, 0 | 2 | tv::COL_CHANGE | tv::COL_TREND) {
             // Default-drawn columns: grey while being deleted.
-            let dim = self.tree.borrow().nodes.get(cd.nmcd.dwItemSpec).is_some_and(|n| n.deleting);
-            cd.clrText = unsafe { GetSysColor(if dim { COLOR_GRAYTEXT } else { COLOR_WINDOWTEXT }) };
+            let dim = self
+                .tree
+                .borrow()
+                .nodes
+                .get(cd.nmcd.dwItemSpec)
+                .is_some_and(|n| n.deleting);
+            cd.clrText = unsafe {
+                GetSysColor(if dim {
+                    COLOR_GRAYTEXT
+                } else {
+                    COLOR_WINDOWTEXT
+                })
+            };
             return CDRF_NEWFONT as LRESULT;
         }
         let i = cd.nmcd.dwItemSpec;
-        let Some(node) = self.tree.borrow().nodes.get(i).cloned() else { return CDRF_DODEFAULT as LRESULT };
+        let Some(node) = self.tree.borrow().nodes.get(i).cloned() else {
+            return CDRF_DODEFAULT as LRESULT;
+        };
         let list = self.tree_list.get();
         let rc = tv::cell_rect(list, i, cd.iSubItem);
-        let selected = send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
+        let selected =
+            send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
         let focused = unsafe { GetFocus() } == list;
-        let p = tv::Paint { hdc: cd.nmcd.hdc, font: self.font.get(), bold: self.bold.get(), selected, classic_sel: selected && focused && !crate::themed(), dim: node.deleting };
+        let p = tv::Paint {
+            hdc: cd.nmcd.hdc,
+            font: self.font.get(),
+            bold: self.bold.get(),
+            selected,
+            classic_sel: selected && focused && !crate::themed(),
+            dim: node.deleting,
+        };
         if cd.iSubItem == 0 {
-            let icon = self.files.borrow_mut().get(&node.row.name, node.row.is_dir).0;
+            let icon = self
+                .files
+                .borrow_mut()
+                .get(&node.row.name, node.row.is_dir)
+                .0;
             let il = self.files.borrow().image_list;
             tv::draw_name(list, &p, &node, rc, icon, il);
         } else if cd.iSubItem == tv::COL_CHANGE {
             tv::draw_change(list, &p, &node, rc);
         } else if cd.iSubItem == tv::COL_TREND {
             let g = self.growth.borrow();
-            tv::draw_trend(list, &p, &node, rc, if node.row.is_dir { g.series.get(&crate::growth::key(&node.path())).map(|v| v.as_slice()) } else { None });
+            tv::draw_trend(
+                list,
+                &p,
+                &node,
+                rc,
+                if node.row.is_dir {
+                    g.series
+                        .get(&crate::growth::key(&node.path()))
+                        .map(|v| v.as_slice())
+                } else {
+                    None
+                },
+            );
         } else {
             tv::draw_bar(list, &p, &node, rc);
         }
@@ -860,7 +1148,11 @@ impl App {
             self.delete_paths(self.tree_selected_paths(), 0, permanent);
         } else {
             let rows = self.selected_rows();
-            self.delete_paths(rows.iter().map(|r| r.full_path()).collect(), rows.iter().map(|r| r.size).sum(), permanent);
+            self.delete_paths(
+                rows.iter().map(|r| r.full_path()).collect(),
+                rows.iter().map(|r| r.size).sum(),
+                permanent,
+            );
         }
     }
 
@@ -872,32 +1164,52 @@ impl App {
             return;
         }
         if let Some(p) = paths.iter().find(|p| is_root(p)) {
-            self.set_status_left(&format!("{p} is a whole drive or share: rapidfind doesn't delete those."));
+            self.set_status_left(&format!(
+                "{p} is a whole drive or share: rapidfind doesn't delete those."
+            ));
             return;
         }
         {
             let mut d = self.deleting.borrow_mut();
             d.extend(paths.iter().map(|p| delete_key(p)));
         }
-        let freed = if self.tree_mode() { self.tree.borrow_mut().mark_deleting(&paths) } else { bytes };
+        let freed = if self.tree_mode() {
+            self.tree.borrow_mut().mark_deleting(&paths)
+        } else {
+            bytes
+        };
         unsafe {
             InvalidateRect(self.tree_list.get(), null(), 0);
             InvalidateRect(self.list.get(), null(), 0);
         }
         self.deletes_running.set(self.deletes_running.get() + 1);
         let what = items_label(&paths);
-        let size = if freed > 0 { format!(" ({})", fmt::size(freed)) } else { String::new() };
-        let note = if permanent { format!("Deleting {what}{size}…") } else { format!("Moving {what}{size} to the Recycle Bin…") };
+        let size = if freed > 0 {
+            format!(" ({})", fmt::size(freed))
+        } else {
+            String::new()
+        };
+        let note = if permanent {
+            format!("Deleting {what}{size}…")
+        } else {
+            format!("Moving {what}{size} to the Recycle Bin…")
+        };
         *self.delete_note.borrow_mut() = Some((note, None));
         self.update_status();
         let hwnd = self.hwnd.get() as isize;
         shell::delete_async(paths, permanent, self.test_mode, move |d| unsafe {
-            PostMessageW(hwnd as HWND, WM_APP_DELETED, 0, Box::into_raw(Box::new(d)) as isize);
+            PostMessageW(
+                hwnd as HWND,
+                WM_APP_DELETED,
+                0,
+                Box::into_raw(Box::new(d)) as isize,
+            );
         });
     }
 
     fn on_deleted(&self, d: shell::DeleteDone) {
-        self.deletes_running.set(self.deletes_running.get().saturating_sub(1));
+        self.deletes_running
+            .set(self.deletes_running.get().saturating_sub(1));
         {
             let mut set = self.deleting.borrow_mut();
             for p in &d.paths {
@@ -909,9 +1221,12 @@ impl App {
             (Some(e), _, _) => format!("Couldn't delete {what}: {}", e.trim()),
             (None, true, _) => format!("Deleting {what} was cancelled or skipped some items"),
             (None, false, true) => format!("Deleted {what}"),
-            (None, false, false) => format!("Moved {what} to the Recycle Bin (the space comes back when it's emptied)"),
+            (None, false, false) => {
+                format!("Moved {what} to the Recycle Bin (the space comes back when it's emptied)")
+            }
         };
-        *self.delete_note.borrow_mut() = Some((note, Some(Instant::now() + Duration::from_secs(10))));
+        *self.delete_note.borrow_mut() =
+            Some((note, Some(Instant::now() + Duration::from_secs(10))));
         if self.tree_mode() {
             self.refresh_tree_quietly();
         } else {
@@ -939,19 +1254,34 @@ impl App {
     /// most every few seconds, not while deleting, not while the user is in
     /// the middle of clicking or scrolling, and not while hidden.
     fn maybe_refresh_tree(&self, generation: u64) {
-        if generation == self.tree_gen.get() || self.deletes_running.get() > 0 || self.tree_quiet.get() {
+        if generation == self.tree_gen.get()
+            || self.deletes_running.get() > 0
+            || self.tree_quiet.get()
+        {
             return;
         }
-        if self.tree_at.get().is_some_and(|t| t.elapsed() < Duration::from_secs(if self.test_mode { 1 } else { 5 })) {
+        if self
+            .tree_at
+            .get()
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(if self.test_mode { 1 } else { 5 }))
+        {
             return;
         }
         let hwnd = self.hwnd.get();
         if unsafe { IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 } {
             return;
         }
-        let mut li = windows_sys::Win32::UI::Input::KeyboardAndMouse::LASTINPUTINFO { cbSize: size_of::<windows_sys::Win32::UI::Input::KeyboardAndMouse::LASTINPUTINFO>() as u32, dwTime: 0 };
+        let mut li = windows_sys::Win32::UI::Input::KeyboardAndMouse::LASTINPUTINFO {
+            cbSize: size_of::<windows_sys::Win32::UI::Input::KeyboardAndMouse::LASTINPUTINFO>()
+                as u32,
+            dwTime: 0,
+        };
         let now = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() };
-        if unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetLastInputInfo(&mut li) } != 0 && now.wrapping_sub(li.dwTime) < 1200 && !self.test_mode {
+        if unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetLastInputInfo(&mut li) }
+            != 0
+            && now.wrapping_sub(li.dwTime) < 1200
+            && !self.test_mode
+        {
             return;
         }
         self.refresh_tree_quietly();
@@ -965,17 +1295,31 @@ impl App {
         let single_dir = {
             let m = self.tree.borrow();
             let sel = self.tree_selected();
-            (sel.len() == 1).then(|| m.nodes[sel[0]].clone()).filter(|n| n.row.is_dir)
+            (sel.len() == 1)
+                .then(|| m.nodes[sel[0]].clone())
+                .filter(|n| n.row.is_dir)
         };
         let mut own: Vec<(u32, &str)> = Vec::new();
         if let Some(n) = &single_dir {
             if n.expandable() {
-                own.push(if n.expanded { (CMD_COLLAPSE, "&Collapse") } else { (CMD_EXPAND, "&Expand") });
+                own.push(if n.expanded {
+                    (CMD_COLLAPSE, "&Collapse")
+                } else {
+                    (CMD_EXPAND, "&Expand")
+                });
             }
             own.push((CMD_SEARCH_HERE, "&Search in This Folder"));
             own.push((0, ""));
         }
-        own.extend([(CMD_OPEN, "&Open"), (CMD_OPEN_PATH, "Open &Path"), (0, ""), (CMD_COPY_FULL, "Copy &Full Path"), (CMD_COPY_NAME, "Copy &Name"), (0, ""), (CMD_PROPERTIES, "P&roperties")]);
+        own.extend([
+            (CMD_OPEN, "&Open"),
+            (CMD_OPEN_PATH, "Open &Path"),
+            (0, ""),
+            (CMD_COPY_FULL, "Copy &Full Path"),
+            (CMD_COPY_NAME, "Copy &Name"),
+            (0, ""),
+            (CMD_PROPERTIES, "P&roperties"),
+        ]);
         match shell::context_menu(self.hwnd.get(), &paths, &own, x, y) {
             MenuChoice::Own(id) => self.command(id),
             MenuChoice::Shell => self.refresh_tree_quietly(), // e.g. renamed: show it
@@ -989,12 +1333,17 @@ impl App {
             LVN_GETDISPINFOW => {
                 let di = unsafe { &mut *(lparam as *mut NMLVDISPINFOW) };
                 let item = &mut di.item;
-                let Some(node) = self.tree.borrow().nodes.get(item.iItem as usize).cloned() else { return Some(0) };
+                let Some(node) = self.tree.borrow().nodes.get(item.iItem as usize).cloned() else {
+                    return Some(0);
+                };
                 if item.mask & LVIF_TEXT != 0 {
                     let text = tv::cell_text(&node, item.iSubItem);
                     let mut buf = self.disp.borrow_mut();
                     buf.clear();
-                    buf.extend(text.encode_utf16().take(item.cchTextMax.max(1) as usize - 1));
+                    buf.extend(
+                        text.encode_utf16()
+                            .take(item.cchTextMax.max(1) as usize - 1),
+                    );
                     buf.push(0);
                     item.pszText = buf.as_mut_ptr();
                 }
@@ -1009,7 +1358,9 @@ impl App {
                         let rc = tv::cell_rect(self.tree_list.get(), i, 0);
                         let (a, b) = tv::glyph_span(self.tree_list.get(), &rc, d);
                         if ia.ptAction.x >= a && ia.ptAction.x < b {
-                            self.glyph_click.set(unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() });
+                            self.glyph_click.set(unsafe {
+                                windows_sys::Win32::System::SystemInformation::GetTickCount()
+                            });
                             self.toggle_node(i);
                         }
                     }
@@ -1022,7 +1373,11 @@ impl App {
                 if now.wrapping_sub(self.glyph_click.get()) < 600 {
                     return Some(0); // second click of a +/− double-click
                 }
-                let i = if ia.iItem >= 0 { ia.iItem as usize } else { self.tree_selected().first().copied().unwrap_or(usize::MAX) };
+                let i = if ia.iItem >= 0 {
+                    ia.iItem as usize
+                } else {
+                    self.tree_selected().first().copied().unwrap_or(usize::MAX)
+                };
                 let node = self.tree.borrow().nodes.get(i).cloned();
                 match node {
                     Some(n) if n.row.is_dir => self.toggle_node(i),
@@ -1106,7 +1461,9 @@ impl App {
                 self.tree_context_menu(pt.x, pt.y);
                 Some(0)
             }
-            NM_CUSTOMDRAW => Some(self.tree_custom_draw(unsafe { &mut *(lparam as *mut NMLVCUSTOMDRAW) })),
+            NM_CUSTOMDRAW => {
+                Some(self.tree_custom_draw(unsafe { &mut *(lparam as *mut NMLVCUSTOMDRAW) }))
+            }
             _ => None,
         }
     }
@@ -1133,7 +1490,10 @@ impl App {
 
     /// Re-reads the snapshot list (cheap); forgets cached series if it changed.
     fn refresh_history(&self) {
-        let list = self.conn.try_lock_for(Duration::from_secs(5)).and_then(|mut c| c.be.history().ok());
+        let list = self
+            .conn
+            .try_lock_for(Duration::from_secs(5))
+            .and_then(|mut c| c.be.history().ok());
         let mut g = self.growth.borrow_mut();
         if let Some(l) = list
             && l != g.snaps
@@ -1152,12 +1512,25 @@ impl App {
                 return;
             }
             let mut seen = std::collections::HashSet::new();
-            paths.iter().filter(|p| !g.series.contains_key(&crate::growth::key(p)) && seen.insert(crate::growth::key(p))).cloned().collect()
+            paths
+                .iter()
+                .filter(|p| {
+                    !g.series.contains_key(&crate::growth::key(p))
+                        && seen.insert(crate::growth::key(p))
+                })
+                .cloned()
+                .collect()
         };
         if missing.is_empty() {
             return;
         }
-        let Some(reply) = self.conn.try_lock_for(Duration::from_secs(5)).and_then(|mut c| c.be.series(&missing).ok()) else { return };
+        let Some(reply) = self
+            .conn
+            .try_lock_for(Duration::from_secs(5))
+            .and_then(|mut c| c.be.series(&missing).ok())
+        else {
+            return;
+        };
         let mut g = self.growth.borrow_mut();
         if reply.snaps != g.snaps {
             g.snaps = reply.snaps.clone();
@@ -1175,7 +1548,14 @@ impl App {
 
     /// Series for every folder in the tree (for the Trend column).
     fn load_tree_series(&self) {
-        let paths: Vec<String> = self.tree.borrow().nodes.iter().filter(|n| n.row.is_dir).map(tv::Node::path).collect();
+        let paths: Vec<String> = self
+            .tree
+            .borrow()
+            .nodes
+            .iter()
+            .filter(|n| n.row.is_dir)
+            .map(tv::Node::path)
+            .collect();
         self.ensure_series(&paths);
         unsafe { InvalidateRect(self.tree_list.get(), null(), 0) };
     }
@@ -1184,14 +1564,23 @@ impl App {
         let (tl, hwnd) = (self.tree_list.get(), self.hwnd.get());
         for c in [tv::COL_CHANGE, tv::COL_TREND] {
             let w = tv::COLUMNS[c as usize].1;
-            send(tl, LVM_SETCOLUMNWIDTH, c as usize, if on { px(hwnd, w) } else { 0 } as isize);
+            send(
+                tl,
+                LVM_SETCOLUMNWIDTH,
+                c as usize,
+                if on { px(hwnd, w) } else { 0 } as isize,
+            );
         }
     }
 
     /// Compares the tree with `snap` (`None`: stop). Sorts by change while comparing.
     pub fn set_compare(&self, snap: Option<SnapInfo>) {
         let id = snap.as_ref().map_or(String::new(), |s| s.id.clone());
-        match self.conn.try_lock_for(Duration::from_secs(5)).map(|mut c| c.be.compare(&id)) {
+        match self
+            .conn
+            .try_lock_for(Duration::from_secs(5))
+            .map(|mut c| c.be.compare(&id))
+        {
             Some(Err(e)) => {
                 self.set_status_left(&e);
                 return;
@@ -1229,11 +1618,24 @@ impl App {
 
     /// Opens the path that grew most, while one child holds most of the growth.
     fn drill_growth(&self) {
-        let roots: Vec<usize> = { self.tree.borrow().nodes.iter().enumerate().filter(|(_, n)| n.depth == 0).map(|(i, _)| i).collect() };
+        let roots: Vec<usize> = {
+            self.tree
+                .borrow()
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.depth == 0)
+                .map(|(i, _)| i)
+                .collect()
+        };
         // The root that grew most (after expanding, indices shift: find by path).
         let best_root = {
             let m = self.tree.borrow();
-            roots.iter().copied().max_by_key(|&i| m.nodes[i].row.change()).map(|i| m.nodes[i].path())
+            roots
+                .iter()
+                .copied()
+                .max_by_key(|&i| m.nodes[i].row.change())
+                .map(|i| m.nodes[i].path())
         };
         let Some(mut path) = best_root else { return };
         for _ in 0..12 {
@@ -1251,9 +1653,16 @@ impl App {
                     continue;
                 }
                 let d = n.depth;
-                let kids: Vec<&tv::Node> = m.nodes[i + 1..].iter().take_while(|x| x.depth > d).filter(|x| x.depth == d + 1).collect();
+                let kids: Vec<&tv::Node> = m.nodes[i + 1..]
+                    .iter()
+                    .take_while(|x| x.depth > d)
+                    .filter(|x| x.depth == d + 1)
+                    .collect();
                 let total = n.row.change();
-                kids.iter().max_by_key(|k| k.row.change()).filter(|k| k.row.is_dir && k.row.change() > 0 && k.row.change() * 2 >= total).map(|k| k.path())
+                kids.iter()
+                    .max_by_key(|k| k.row.change())
+                    .filter(|k| k.row.is_dir && k.row.change() > 0 && k.row.change() * 2 >= total)
+                    .map(|k| k.path())
             };
             match next {
                 Some(p) => path = p,
@@ -1274,7 +1683,9 @@ impl App {
             let Some(d) = g.strip.as_ref() else { return };
             let rc = w::client_rect(self.strip.get());
             let pr = crate::growth::plot_rect(self.strip.get(), &rc);
-            crate::growth::nearest(&d.times, x, pr.left, pr.right).filter(|&i| i + 1 < d.times.len()).and_then(|i| g.snaps.get(i).cloned())
+            crate::growth::nearest(&d.times, x, pr.left, pr.right)
+                .filter(|&i| i + 1 < d.times.len())
+                .and_then(|i| g.snaps.get(i).cloned())
         };
         if let Some(s) = pick {
             self.set_compare(Some(s));
@@ -1285,7 +1696,10 @@ impl App {
     fn growth_scope(&self) -> Option<tv::Node> {
         let sel = self.tree_selected();
         let m = self.tree.borrow();
-        sel.first().and_then(|&i| m.nodes.get(i)).filter(|n| n.row.is_dir).cloned()
+        sel.first()
+            .and_then(|&i| m.nodes.get(i))
+            .filter(|n| n.row.is_dir)
+            .cloned()
     }
 
     /// Children of a node: from the tree if it's open, else asked for.
@@ -1296,10 +1710,19 @@ impl App {
                 && m.nodes[i].expanded
             {
                 let d = m.nodes[i].depth;
-                return m.nodes[i + 1..].iter().take_while(|x| x.depth > d).filter(|x| x.depth == d + 1).map(|x| x.row.clone()).collect();
+                return m.nodes[i + 1..]
+                    .iter()
+                    .take_while(|x| x.depth > d)
+                    .filter(|x| x.depth == d + 1)
+                    .map(|x| x.row.clone())
+                    .collect();
             }
         }
-        self.conn.try_lock_for(Duration::from_secs(5)).and_then(|mut c| c.be.children(&n.node_ref(), sort, true, 0, 40).ok()).map(|l| l.rows).unwrap_or_default()
+        self.conn
+            .try_lock_for(Duration::from_secs(5))
+            .and_then(|mut c| c.be.children(&n.node_ref(), sort, true, 0, 40).ok())
+            .map(|l| l.rows)
+            .unwrap_or_default()
     }
 
     /// Rebuilds what the strip and the pane show for the current selection.
@@ -1310,9 +1733,26 @@ impl App {
         let scope = self.growth_scope();
         let comparing = self.comparing();
         // Layers: the scope's biggest children (by change when comparing), or the volumes.
-        let (title, scope_path, kids, capacity, root_path): (String, Option<String>, Vec<rapidfind_core::tree::TreeRow>, u64, Option<String>) = match &scope {
+        let (title, scope_path, kids, capacity, root_path): (
+            String,
+            Option<String>,
+            Vec<rapidfind_core::tree::TreeRow>,
+            u64,
+            Option<String>,
+        ) = match &scope {
             Some(n) => {
-                let mut kids: Vec<_> = self.growth_children(n, if comparing { TreeSort::Change } else { TreeSort::Size }).into_iter().filter(|r| r.is_dir).collect();
+                let mut kids: Vec<_> = self
+                    .growth_children(
+                        n,
+                        if comparing {
+                            TreeSort::Change
+                        } else {
+                            TreeSort::Size
+                        },
+                    )
+                    .into_iter()
+                    .filter(|r| r.is_dir)
+                    .collect();
                 if comparing {
                     kids.sort_by_key(|r| std::cmp::Reverse(r.change().unsigned_abs()));
                 } else {
@@ -1320,17 +1760,40 @@ impl App {
                 }
                 kids.truncate(4);
                 let root = (n.depth == 0 && n.row.capacity > 0).then(|| n.path());
-                (n.row.name.clone(), Some(n.path()), kids, if n.depth == 0 { n.row.capacity } else { 0 }, root)
+                (
+                    n.row.name.clone(),
+                    Some(n.path()),
+                    kids,
+                    if n.depth == 0 { n.row.capacity } else { 0 },
+                    root,
+                )
             }
             None => {
                 let m = self.tree.borrow();
-                let mut roots: Vec<_> = m.nodes.iter().filter(|n| n.depth == 0).map(|n| n.row.clone()).collect();
+                let mut roots: Vec<_> = m
+                    .nodes
+                    .iter()
+                    .filter(|n| n.depth == 0)
+                    .map(|n| n.row.clone())
+                    .collect();
                 roots.sort_by_key(|r| std::cmp::Reverse(r.size));
-                ("All drives".into(), None, roots.into_iter().take(4).collect(), 0, None)
+                (
+                    "All drives".into(),
+                    None,
+                    roots.into_iter().take(4).collect(),
+                    0,
+                    None,
+                )
             }
         };
         // The pane is about the selection, else the first drive.
-        let pane_node = if comparing { scope.clone().or_else(|| self.tree.borrow().nodes.first().cloned()) } else { None };
+        let pane_node = if comparing {
+            scope
+                .clone()
+                .or_else(|| self.tree.borrow().nodes.first().cloned())
+        } else {
+            None
+        };
         let mut paths: Vec<String> = kids.iter().map(|r| r.full_path()).collect();
         paths.extend(scope_path.iter().cloned());
         paths.extend(pane_node.iter().map(tv::Node::path));
@@ -1342,42 +1805,87 @@ impl App {
             times.push(now);
             let at = |v: u64| if v == u64::MAX { 0 } else { v };
             let series_of = |p: &str, now_v: u64| -> Vec<u64> {
-                let mut v: Vec<u64> = g.series.get(&crate::growth::key(p)).map(|s| s.iter().map(|&x| at(x)).collect()).unwrap_or_else(|| vec![0; g.snaps.len()]);
+                let mut v: Vec<u64> = g
+                    .series
+                    .get(&crate::growth::key(p))
+                    .map(|s| s.iter().map(|&x| at(x)).collect())
+                    .unwrap_or_else(|| vec![0; g.snaps.len()]);
                 v.resize(g.snaps.len(), 0);
                 v.push(now_v);
                 v
             };
-            let mut layers: Vec<crate::growth::Layer> = kids.iter().map(|r| crate::growth::Layer { label: r.name.clone(), values: series_of(&r.full_path(), r.size) }).collect();
+            let mut layers: Vec<crate::growth::Layer> = kids
+                .iter()
+                .map(|r| crate::growth::Layer {
+                    label: r.name.clone(),
+                    values: series_of(&r.full_path(), r.size),
+                })
+                .collect();
             let scope_vals = match (&scope, &scope_path) {
                 (Some(n), Some(p)) => series_of(p, n.row.size),
-                _ => (0..times.len()).map(|i| layers.iter().map(|l| l.values[i]).sum()).collect(),
+                _ => (0..times.len())
+                    .map(|i| layers.iter().map(|l| l.values[i]).sum())
+                    .collect(),
             };
-            let summed: Vec<u64> = (0..times.len()).map(|i| layers.iter().map(|l| l.values[i]).sum()).collect();
-            let other: Vec<u64> = scope_vals.iter().zip(&summed).map(|(a, b)| a.saturating_sub(*b)).collect();
+            let summed: Vec<u64> = (0..times.len())
+                .map(|i| layers.iter().map(|l| l.values[i]).sum())
+                .collect();
+            let other: Vec<u64> = scope_vals
+                .iter()
+                .zip(&summed)
+                .map(|(a, b)| a.saturating_sub(*b))
+                .collect();
             if other.iter().any(|&v| v > 0) || layers.is_empty() {
-                layers.push(crate::growth::Layer { label: "everything else".into(), values: other });
+                layers.push(crate::growth::Layer {
+                    label: "everything else".into(),
+                    values: other,
+                });
             } else {
                 // Keep the "everything else" slot so colors stay put.
-                layers.push(crate::growth::Layer { label: "everything else".into(), values: vec![0; times.len()] });
+                layers.push(crate::growth::Layer {
+                    label: "everything else".into(),
+                    values: vec![0; times.len()],
+                });
             }
             let free = match (&root_path, &scope) {
                 (Some(p), Some(n)) => {
-                    let mut f = g.free.get(&crate::growth::key(p)).cloned().unwrap_or_default();
+                    let mut f = g
+                        .free
+                        .get(&crate::growth::key(p))
+                        .cloned()
+                        .unwrap_or_default();
                     f.resize(g.snaps.len(), u64::MAX);
                     f.push(n.row.free);
                     f
                 }
                 _ => Vec::new(),
             };
-            let base = g.base.as_ref().and_then(|b| g.snaps.iter().position(|s| s.id == b.id));
-            let save_points = g.snaps.iter().enumerate().filter(|(_, s)| s.is_save_point()).map(|(i, _)| i).collect();
+            let base = g
+                .base
+                .as_ref()
+                .and_then(|b| g.snaps.iter().position(|s| s.id == b.id));
+            let save_points = g
+                .snaps
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.is_save_point())
+                .map(|(i, _)| i)
+                .collect();
             let size_now = *scope_vals.last().unwrap_or(&0);
             let change = base.map(|b| size_now as i64 - scope_vals[b] as i64);
             let mut t = format!("{}  {}", title.trim_end_matches('\\'), fmt::size(size_now));
             if let Some(c) = change {
                 t.push_str(&format!(" ({})", tv::signed_size(c)));
             }
-            crate::growth::StripData { title: t, times, layers, capacity, free, base, save_points }
+            crate::growth::StripData {
+                title: t,
+                times,
+                layers,
+                capacity,
+                free,
+                base,
+                save_points,
+            }
         };
         let pane = pane_node.map(|n| {
             let mut d = self.pane_for(&n);
@@ -1385,7 +1893,11 @@ impl App {
                 let g = self.growth.borrow();
                 let mut times: Vec<i64> = g.snaps.iter().map(|s| s.time).collect();
                 times.push(rapidfind_core::history::now_unix());
-                let mut vals = g.series.get(&crate::growth::key(&n.path())).cloned().unwrap_or_default();
+                let mut vals = g
+                    .series
+                    .get(&crate::growth::key(&n.path()))
+                    .cloned()
+                    .unwrap_or_default();
                 vals.resize(g.snaps.len(), u64::MAX);
                 vals.push(n.row.size);
                 crate::growth::daily(&times, &vals)
@@ -1408,14 +1920,34 @@ impl App {
 
     /// One level of the treemap under `n`: its biggest entries, then one box
     /// for the rest (or for what was there then and is gone).
-    fn map_level(&self, n: &tv::Node, max: usize) -> Vec<(crate::growth::MapItem, rapidfind_core::tree::TreeRow)> {
+    fn map_level(
+        &self,
+        n: &tv::Node,
+        max: usize,
+    ) -> Vec<(crate::growth::MapItem, rapidfind_core::tree::TreeRow)> {
         use crate::growth::MapItem;
         let rows = self.growth_children(n, TreeSort::Size);
-        let mut out: Vec<(MapItem, rapidfind_core::tree::TreeRow)> =
-            rows.into_iter().map(|r| (MapItem { name: r.name.clone(), path: r.full_path(), size: r.size, before: r.before, kids: Vec::new() }, r)).filter(|(i, _)| i.area() > 0).collect();
+        let mut out: Vec<(MapItem, rapidfind_core::tree::TreeRow)> = rows
+            .into_iter()
+            .map(|r| {
+                (
+                    MapItem {
+                        name: r.name.clone(),
+                        path: r.full_path(),
+                        size: r.size,
+                        before: r.before,
+                        kids: Vec::new(),
+                    },
+                    r,
+                )
+            })
+            .filter(|(i, _)| i.area() > 0)
+            .collect();
         out.sort_by_key(|(i, _)| std::cmp::Reverse(i.area()));
         out.truncate(max);
-        let (now_sum, before_sum) = out.iter().fold((0u64, 0u64), |(a, b), (i, _)| (a + i.size, b + i.before));
+        let (now_sum, before_sum) = out
+            .iter()
+            .fold((0u64, 0u64), |(a, b), (i, _)| (a + i.size, b + i.before));
         let rest = MapItem {
             name: String::new(),
             path: String::new(),
@@ -1425,8 +1957,15 @@ impl App {
         };
         // Below 1 % it would only be a sliver.
         if rest.area() * 100 > n.row.size.max(n.row.before) {
-            let name = if rest.size == 0 { "deleted or moved".to_string() } else { "smaller items".to_string() };
-            out.push((MapItem { name, ..rest }, rapidfind_core::tree::TreeRow::default()));
+            let name = if rest.size == 0 {
+                "deleted or moved".to_string()
+            } else {
+                "smaller items".to_string()
+            };
+            out.push((
+                MapItem { name, ..rest },
+                rapidfind_core::tree::TreeRow::default(),
+            ));
         }
         out
     }
@@ -1436,8 +1975,18 @@ impl App {
         let mut top = self.map_level(n, 30);
         for (item, row) in top.iter_mut().take(10) {
             if row.is_dir && row.has_children {
-                let child = tv::Node { row: row.clone(), depth: n.depth + 1, expanded: false, parent_size: 0, deleting: false };
-                item.kids = self.map_level(&child, 16).into_iter().map(|(i, _)| i).collect();
+                let child = tv::Node {
+                    row: row.clone(),
+                    depth: n.depth + 1,
+                    expanded: false,
+                    parent_size: 0,
+                    deleting: false,
+                };
+                item.kids = self
+                    .map_level(&child, 16)
+                    .into_iter()
+                    .map(|(i, _)| i)
+                    .collect();
             }
         }
         top.into_iter().map(|(i, _)| i).collect()
@@ -1458,8 +2007,12 @@ impl App {
     pub fn map_up(&self) {
         let parent = {
             let m = self.tree.borrow();
-            let Some(&i) = self.tree_selected().first() else { return };
-            let Some(d) = m.nodes.get(i).map(|n| n.depth).filter(|&d| d > 0) else { return };
+            let Some(&i) = self.tree_selected().first() else {
+                return;
+            };
+            let Some(d) = m.nodes.get(i).map(|n| n.depth).filter(|&d| d > 0) else {
+                return;
+            };
             (0..i).rev().find(|&j| m.nodes[j].depth == d - 1)
         };
         if let Some(j) = parent {
@@ -1470,7 +2023,13 @@ impl App {
 
     /// Calendar click: compare with the snapshot nearest that day's start.
     pub fn compare_day(&self, day: i64) {
-        let pick = self.growth.borrow().snaps.iter().min_by_key(|s| (s.time - day).abs()).cloned();
+        let pick = self
+            .growth
+            .borrow()
+            .snaps
+            .iter()
+            .min_by_key(|s| (s.time - day).abs())
+            .cloned();
         if let Some(s) = pick {
             self.set_compare(Some(s));
         }
@@ -1478,21 +2037,39 @@ impl App {
 
     fn pane_for(&self, n: &tv::Node) -> crate::growth::PaneData {
         let base = self.growth.borrow().base.clone();
-        let since = base.as_ref().map_or(String::new(), |b| format!("{} ({})", crate::growth::day(b.time, false), crate::growth::ago(b.time)));
+        let since = base.as_ref().map_or(String::new(), |b| {
+            format!(
+                "{} ({})",
+                crate::growth::day(b.time, false),
+                crate::growth::ago(b.time)
+            )
+        });
         let mut kids = self.growth_children(n, TreeSort::Change);
         kids.sort_by_key(|r| std::cmp::Reverse(r.change().unsigned_abs()));
-        let mut parts: Vec<(String, i64)> = kids.iter().filter(|r| r.change() != 0).take(5).map(|r| (r.name.clone(), r.change())).collect();
+        let mut parts: Vec<(String, i64)> = kids
+            .iter()
+            .filter(|r| r.change() != 0)
+            .take(5)
+            .map(|r| (r.name.clone(), r.change()))
+            .collect();
         let rest: i64 = (n.row.change()) - parts.iter().map(|p| p.1).sum::<i64>();
         if rest != 0 {
             parts.push(("everything else".into(), rest));
         }
-        let free = (n.depth == 0 && n.row.capacity > 0 && n.row.free_before > 0).then_some((n.row.free_before, n.row.free));
+        let free = (n.depth == 0 && n.row.capacity > 0 && n.row.free_before > 0)
+            .then_some((n.row.free_before, n.row.free));
         // The chain of biggest growers, a few levels down.
         let mut chain = Vec::new();
         let mut cur = n.clone();
         for _ in 0..7 {
             let kids = self.growth_children(&cur, TreeSort::Change);
-            let Some(best) = kids.into_iter().filter(|r| r.change() > 0).max_by_key(|r| r.change()) else { break };
+            let Some(best) = kids
+                .into_iter()
+                .filter(|r| r.change() > 0)
+                .max_by_key(|r| r.change())
+            else {
+                break;
+            };
             if best.change() * 5 < cur.row.change().max(1) {
                 break;
             }
@@ -1500,9 +2077,24 @@ impl App {
             if !best.is_dir || !best.has_children {
                 break;
             }
-            cur = tv::Node { row: best, depth: cur.depth + 1, expanded: false, parent_size: 0, deleting: false };
+            cur = tv::Node {
+                row: best,
+                depth: cur.depth + 1,
+                expanded: false,
+                parent_size: 0,
+                deleting: false,
+            };
         }
-        crate::growth::PaneData { title: n.path(), since, before: n.row.before, now: n.row.size, parts, free, chain, ..Default::default() }
+        crate::growth::PaneData {
+            title: n.path(),
+            since,
+            before: n.row.before,
+            now: n.row.size,
+            parts,
+            free,
+            chain,
+            ..Default::default()
+        }
     }
 
     fn set_status_left(&self, s: &str) {
@@ -1513,7 +2105,9 @@ impl App {
     /// The delete note, while it's current.
     fn note(&self) -> Option<String> {
         let mut n = self.delete_note.borrow_mut();
-        if n.as_ref().is_some_and(|(_, until)| until.is_some_and(|t| Instant::now() > t)) {
+        if n.as_ref()
+            .is_some_and(|(_, until)| until.is_some_and(|t| Instant::now() > t))
+        {
             *n = None;
         }
         n.as_ref().map(|(s, _)| s.clone())
@@ -1540,16 +2134,27 @@ impl App {
                 shell::group(st.matched)
             )),
             Some(st) => {
-                s.push_str(&format!("  ·  {} files read in {:.1} s", shell::group(st.checked), st.elapsed.as_secs_f64()));
+                s.push_str(&format!(
+                    "  ·  {} files read in {:.1} s",
+                    shell::group(st.checked),
+                    st.elapsed.as_secs_f64()
+                ));
                 if st.cancelled {
-                    s.push_str(&format!(" (stopped: {} not read and still listed)", shell::group(st.total.saturating_sub(st.checked))));
+                    s.push_str(&format!(
+                        " (stopped: {} not read and still listed)",
+                        shell::group(st.total.saturating_sub(st.checked))
+                    ));
                 }
                 let skipped = st.skipped();
                 if !skipped.is_empty() {
                     s.push_str(&format!("; skipped {skipped}"));
                 }
             }
-            None if !w::get_text(self.edit.get()).is_empty() || self.settings.borrow().filter != 0 => s.push_str(&format!("  ·  {:.1} ms", r.elapsed_ms)),
+            None if !w::get_text(self.edit.get()).is_empty()
+                || self.settings.borrow().filter != 0 =>
+            {
+                s.push_str(&format!("  ·  {:.1} ms", r.elapsed_ms))
+            }
             None => {}
         }
         drop(r);
@@ -1586,7 +2191,9 @@ impl App {
             return;
         }
         // Don't stall painting behind a running search.
-        let Some(mut c) = self.conn.try_lock_for(Duration::from_millis(50)) else { return };
+        let Some(mut c) = self.conn.try_lock_for(Duration::from_millis(50)) else {
+            return;
+        };
         if c.seq != seq || c.ver != ver {
             return; // the session already holds a newer search (or filtering step)
         }
@@ -1624,7 +2231,12 @@ impl App {
         let mut out = Vec::new();
         let mut i: isize = -1;
         loop {
-            i = send(self.list.get(), LVM_GETNEXTITEM, i as usize, LVNI_SELECTED as isize);
+            i = send(
+                self.list.get(),
+                LVM_GETNEXTITEM,
+                i as usize,
+                LVNI_SELECTED as isize,
+            );
             if i < 0 || out.len() >= 100_000 {
                 break;
             }
@@ -1643,11 +2255,22 @@ impl App {
                 .map(|n| {
                     let r = &n.row;
                     // A root's name is "C:" with an empty dir, like a result row.
-                    Row { name: r.name.clone(), dir: r.dir.clone(), size: r.size, modified: r.modified, is_dir: r.is_dir, has_size: r.has_size, ..Default::default() }
+                    Row {
+                        name: r.name.clone(),
+                        dir: r.dir.clone(),
+                        size: r.size,
+                        modified: r.modified,
+                        is_dir: r.is_dir,
+                        has_size: r.has_size,
+                        ..Default::default()
+                    }
                 })
                 .collect();
         }
-        self.selected().into_iter().filter_map(|i| self.row(i)).collect()
+        self.selected()
+            .into_iter()
+            .filter_map(|i| self.row(i))
+            .collect()
     }
 
     fn open_selected(&self, mut rows: Vec<Row>) {
@@ -1737,12 +2360,20 @@ impl App {
                 self.sync_menu();
             }
             CMD_SYNTAX => {
-                w::message_box(hwnd, SYNTAX_HELP, "rapidfind search syntax", MB_OK | MB_ICONINFORMATION);
+                w::message_box(
+                    hwnd,
+                    SYNTAX_HELP,
+                    "rapidfind search syntax",
+                    MB_OK | MB_ICONINFORMATION,
+                );
             }
             CMD_ABOUT => {
                 w::message_box(
                     hwnd,
-                    &format!("rapidfind {}\nInstant filename search for NTFS, ReFS, folders and network shares.", env!("CARGO_PKG_VERSION")),
+                    &format!(
+                        "rapidfind {}\nInstant filename search for NTFS, ReFS, folders and network shares.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
                     "About rapidfind",
                     MB_OK | MB_ICONINFORMATION,
                 );
@@ -1782,12 +2413,21 @@ impl App {
                 }
             }
             CMD_SAVE_POINT => {
-                let name = format!("Save point {}", crate::growth::day(rapidfind_core::history::now_unix(), true));
-                let res = self.conn.try_lock_for(Duration::from_secs(10)).map(|mut c| c.be.save_point(&name));
+                let name = format!(
+                    "Save point {}",
+                    crate::growth::day(rapidfind_core::history::now_unix(), true)
+                );
+                let res = self
+                    .conn
+                    .try_lock_for(Duration::from_secs(10))
+                    .map(|mut c| c.be.save_point(&name));
                 match res {
                     Some(Ok(s)) => {
                         self.refresh_history();
-                        self.set_status_left(&format!("Saved \"{}\": compare with it later on the timeline (the dot).", s.name));
+                        self.set_status_left(&format!(
+                            "Saved \"{}\": compare with it later on the timeline (the dot).",
+                            s.name
+                        ));
                         self.growth_soon();
                     }
                     Some(Err(e)) => self.set_status_left(&e),
@@ -1814,7 +2454,10 @@ impl App {
             } else {
                 s.sort = sort_name(key).into();
                 // Like Everything: sizes, dates and counts sort descending first.
-                s.descending = matches!(key, SortKey::Size | SortKey::Modified | SortKey::Created | SortKey::RunCount);
+                s.descending = matches!(
+                    key,
+                    SortKey::Size | SortKey::Modified | SortKey::Created | SortKey::RunCount
+                );
             }
         }
         self.update_header();
@@ -1853,7 +2496,11 @@ impl App {
         w::check_menu(m, CMD_BACKGROUND, s.run_in_background);
         drop(s);
         w::check_menu(m, CMD_LOGIN, shell::start_on_login());
-        let diacritics = self.conn.try_lock().and_then(|mut c| c.be.get_config().ok()).map(|c| c.match_diacritics);
+        let diacritics = self
+            .conn
+            .try_lock()
+            .and_then(|mut c| c.be.get_config().ok())
+            .map(|c| c.match_diacritics);
         if let Some(d) = diacritics {
             w::check_menu(m, CMD_DIACRITICS, d);
         }
@@ -1867,7 +2514,9 @@ impl App {
         }
         let hk = self.settings.borrow().hotkey.clone();
         if let Some((mods, vk)) = parse_hotkey(&hk)
-            && unsafe { RegisterHotKey(hwnd, HOTKEY_ID, mods | 0x4000 /* MOD_NOREPEAT */, vk) } == 0
+            && unsafe {
+                RegisterHotKey(hwnd, HOTKEY_ID, mods | 0x4000 /* MOD_NOREPEAT */, vk)
+            } == 0
         {
             self.set_status_left(&format!("Hotkey {hk} is used by another program"));
         }
@@ -1876,7 +2525,14 @@ impl App {
     pub fn show(&self) {
         let hwnd = self.hwnd.get();
         unsafe {
-            ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
+            ShowWindow(
+                hwnd,
+                if IsIconic(hwnd) != 0 {
+                    SW_RESTORE
+                } else {
+                    SW_SHOW
+                },
+            );
             SetForegroundWindow(hwnd);
             SetFocus(self.edit.get());
         }
@@ -1885,7 +2541,9 @@ impl App {
 
     fn toggle(&self) {
         let hwnd = self.hwnd.get();
-        let visible = unsafe { IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 && GetForegroundWindow() == hwnd };
+        let visible = unsafe {
+            IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 && GetForegroundWindow() == hwnd
+        };
         if visible {
             unsafe { ShowWindow(hwnd, SW_HIDE) };
         } else {
@@ -1894,25 +2552,40 @@ impl App {
     }
 
     fn export(&self) {
-        let Some(path) = shell::pick_save_file(self.hwnd.get(), "rapidfind results.csv") else { return };
+        let Some(path) = shell::pick_save_file(self.hwnd.get(), "rapidfind results.csv") else {
+            return;
+        };
         let total = self.results.borrow().total;
         let mut out = String::from("Name,Path,Size,Date Modified\r\n");
         let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
         let mut c = self.conn.lock();
         let mut off = 0;
         while off < total {
-            let Ok(p) = c.be.fetch(off as u64, 10_000) else { break };
+            let Ok(p) = c.be.fetch(off as u64, 10_000) else {
+                break;
+            };
             if p.rows.is_empty() {
                 break;
             }
             for r in &p.rows {
-                out.push_str(&format!("{},{},{},{}\r\n", q(&r.name), q(&r.dir), r.size, fmt::time(r.modified)));
+                out.push_str(&format!(
+                    "{},{},{},{}\r\n",
+                    q(&r.name),
+                    q(&r.dir),
+                    r.size,
+                    fmt::time(r.modified)
+                ));
             }
             off += p.rows.len();
         }
         drop(c);
         if let Err(e) = std::fs::write(&path, out) {
-            w::message_box(self.hwnd.get(), &format!("Export failed: {e}"), "rapidfind", MB_OK | MB_ICONERROR);
+            w::message_box(
+                self.hwnd.get(),
+                &format!("Export failed: {e}"),
+                "rapidfind",
+                MB_OK | MB_ICONERROR,
+            );
         }
     }
 
@@ -1926,29 +2599,63 @@ impl App {
         let bw = px(hwnd, 64);
         let pbw = px(hwnd, 72);
         w::move_to(self.tree_btn.get(), pad, pad, bw, eh);
-        w::move_to(self.edit.get(), 2 * pad + bw, pad, cw - fw - bw - pbw - 5 * pad, eh);
-        w::move_to(self.combo.get(), cw - fw - pbw - 2 * pad, pad, fw, px(hwnd, 300));
+        w::move_to(
+            self.edit.get(),
+            2 * pad + bw,
+            pad,
+            cw - fw - bw - pbw - 5 * pad,
+            eh,
+        );
+        w::move_to(
+            self.combo.get(),
+            cw - fw - pbw - 2 * pad,
+            pad,
+            fw,
+            px(hwnd, 300),
+        );
         w::move_to(self.preview_btn.get(), cw - pbw - pad, pad, pbw, eh);
         send(self.status.get(), WM_SIZE, 0, 0);
-        let mut sr = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut sr = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         unsafe { GetWindowRect(self.status.get(), &mut sr) };
         let sh = sr.bottom - sr.top;
         let parts = [cw - px(hwnd, 420), -1];
         send(self.status.get(), SB_SETPARTS, 2, parts.as_ptr() as isize);
-        w::move_to(self.progress.get(), parts[0] - px(hwnd, 168), px(hwnd, 4), px(hwnd, 160), sh - px(hwnd, 7));
+        w::move_to(
+            self.progress.get(),
+            parts[0] - px(hwnd, 168),
+            px(hwnd, 4),
+            px(hwnd, 160),
+            sh - px(hwnd, 7),
+        );
         let top = pad * 2 + eh;
         let (mut lw, gap) = (cw, px(hwnd, 5));
         if self.preview_on() {
-            let pw = px(hwnd, self.settings.borrow().preview_width).clamp(px(hwnd, 120), (cw - px(hwnd, 200)).max(px(hwnd, 120)));
+            let pw = px(hwnd, self.settings.borrow().preview_width)
+                .clamp(px(hwnd, 120), (cw - px(hwnd, 200)).max(px(hwnd, 120)));
             lw = (cw - pw - gap).max(0);
             self.split_x.set(lw);
-            w::move_to(self.preview.host.get(), lw + gap, top, cw - lw - gap, ch - top - sh);
+            w::move_to(
+                self.preview.host.get(),
+                lw + gap,
+                top,
+                cw - lw - gap,
+                ch - top - sh,
+            );
         }
         w::move_to(self.list.get(), 0, top, lw, ch - top - sh);
         // Tree mode: the history strip on top, the growth pane on the right when comparing.
         let tree = self.tree_mode();
         let strip_h = if tree { px(hwnd, 124) } else { 0 };
-        let pane_w = if tree && self.comparing() { px(hwnd, 360).min(lw / 2) } else { 0 };
+        let pane_w = if tree && self.comparing() {
+            px(hwnd, 360).min(lw / 2)
+        } else {
+            0
+        };
         let body = (ch - top - sh - strip_h).max(0);
         w::move_to(self.strip.get(), 0, top, lw, strip_h);
         w::move_to(self.tree_list.get(), 0, top + strip_h, lw - pane_w, body);
@@ -1963,14 +2670,25 @@ impl App {
     fn on_splitter(&self, x: i32, y: i32) -> bool {
         let hwnd = self.hwnd.get();
         let top = px(hwnd, 4) * 2 + px(hwnd, 26);
-        self.preview_on() && x >= self.split_x.get() && x < self.split_x.get() + px(hwnd, 5) && y >= top
+        self.preview_on()
+            && x >= self.split_x.get()
+            && x < self.split_x.get() + px(hwnd, 5)
+            && y >= top
     }
 
     fn apply_fonts(&self) {
         let hwnd = self.hwnd.get();
         let (f, b) = (w::ui_font(hwnd, false), w::ui_font(hwnd, true));
         let (of, ob) = (self.font.replace(f), self.bold.replace(b));
-        for c in [self.edit.get(), self.combo.get(), self.list.get(), self.status.get(), self.tree_btn.get(), self.tree_list.get(), self.preview_btn.get()] {
+        for c in [
+            self.edit.get(),
+            self.combo.get(),
+            self.list.get(),
+            self.status.get(),
+            self.tree_btn.get(),
+            self.tree_list.get(),
+            self.preview_btn.get(),
+        ] {
             w::set_font(c, f);
         }
         self.preview.set_font(w::dpi(hwnd));
@@ -2018,7 +2736,14 @@ impl App {
         unsafe {
             GetCursorPos(&mut pt);
             SetForegroundWindow(self.hwnd.get());
-            let cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, self.hwnd.get(), null());
+            let cmd = TrackPopupMenuEx(
+                menu,
+                TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                pt.x,
+                pt.y,
+                self.hwnd.get(),
+                null(),
+            );
             DestroyMenu(menu);
             if cmd != 0 {
                 self.command(cmd as u32);
@@ -2046,7 +2771,9 @@ impl App {
         match shell::context_menu(self.hwnd.get(), &paths, &own, x, y) {
             MenuChoice::Own(id) => self.command(id),
             MenuChoice::Shell => self.search(true), // e.g. rename: show the effect
-            MenuChoice::Delete { permanent } => self.delete_paths(paths, rows.iter().map(|r| r.size).sum(), permanent),
+            MenuChoice::Delete { permanent } => {
+                self.delete_paths(paths, rows.iter().map(|r| r.size).sum(), permanent)
+            }
             MenuChoice::None => {}
         }
     }
@@ -2064,29 +2791,64 @@ impl App {
             return CDRF_DODEFAULT as LRESULT;
         }
         // Grey while being deleted.
-        let dim = !self.deleting.borrow().is_empty() && self.row(cd.nmcd.dwItemSpec).is_some_and(|r| self.is_deleting(&r.full_path()));
-        cd.clrText = unsafe { GetSysColor(if dim { COLOR_GRAYTEXT } else { COLOR_WINDOWTEXT }) };
+        let dim = !self.deleting.borrow().is_empty()
+            && self
+                .row(cd.nmcd.dwItemSpec)
+                .is_some_and(|r| self.is_deleting(&r.full_path()));
+        cd.clrText = unsafe {
+            GetSysColor(if dim {
+                COLOR_GRAYTEXT
+            } else {
+                COLOR_WINDOWTEXT
+            })
+        };
         if cd.iSubItem > 1 || self.hl_terms.borrow().is_empty() {
             return CDRF_NEWFONT as LRESULT;
         }
         let i = cd.nmcd.dwItemSpec;
-        let Some(row) = self.row(i) else { return CDRF_DODEFAULT as LRESULT };
-        let text = if cd.iSubItem == 0 { row.name.clone() } else { row.dir.clone() };
+        let Some(row) = self.row(i) else {
+            return CDRF_DODEFAULT as LRESULT;
+        };
+        let text = if cd.iSubItem == 0 {
+            row.name.clone()
+        } else {
+            row.dir.clone()
+        };
         let ranges = highlight::ranges(&text, &self.hl_terms.borrow());
         if ranges.is_empty() {
             return CDRF_DODEFAULT as LRESULT;
         }
         // Let the list paint background/selection and the icon, then draw our text.
         let list = self.list.get();
-        let mut rc = RECT { left: if cd.iSubItem == 0 { LVIR_LABEL as i32 } else { LVIR_BOUNDS as i32 }, top: cd.iSubItem, right: 0, bottom: 0 };
+        let mut rc = RECT {
+            left: if cd.iSubItem == 0 {
+                LVIR_LABEL as i32
+            } else {
+                LVIR_BOUNDS as i32
+            },
+            top: cd.iSubItem,
+            right: 0,
+            bottom: 0,
+        };
         send(list, LVM_GETSUBITEMRECT, i, &mut rc as *mut _ as isize);
         let hdc = cd.nmcd.hdc;
         unsafe {
-            let selected = send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
+            let selected =
+                send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
             let focused = GetFocus() == list;
             let classic_sel = selected && focused && !crate::themed();
-            let bg: COLORREF = if classic_sel { GetSysColor(COLOR_HIGHLIGHT) } else { GetSysColor(COLOR_WINDOW) };
-            let fg: COLORREF = if classic_sel { GetSysColor(COLOR_HIGHLIGHTTEXT) } else if dim { GetSysColor(COLOR_GRAYTEXT) } else { GetSysColor(COLOR_WINDOWTEXT) };
+            let bg: COLORREF = if classic_sel {
+                GetSysColor(COLOR_HIGHLIGHT)
+            } else {
+                GetSysColor(COLOR_WINDOW)
+            };
+            let fg: COLORREF = if classic_sel {
+                GetSysColor(COLOR_HIGHLIGHTTEXT)
+            } else if dim {
+                GetSysColor(COLOR_GRAYTEXT)
+            } else {
+                GetSysColor(COLOR_WINDOWTEXT)
+            };
             if !selected {
                 let br = CreateSolidBrush(bg);
                 FillRect(hdc, &rc, br);
@@ -2095,24 +2857,62 @@ impl App {
             SetBkMode(hdc, TRANSPARENT as i32);
             SetTextColor(hdc, fg);
             // Same text inset the list view uses for its own drawing.
-            let edge = windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXEDGE, w::dpi(list) as u32);
-            let mut x = if cd.iSubItem == 0 { rc.left + edge } else { rc.left + 2 * edge + edge / 2 };
+            let edge = windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(
+                SM_CXEDGE,
+                w::dpi(list) as u32,
+            );
+            let mut x = if cd.iSubItem == 0 {
+                rc.left + edge
+            } else {
+                rc.left + 2 * edge + edge / 2
+            };
             if cd.iSubItem == 0 {
                 // We skip the default paint, so draw the icon too.
-                let mut ir = RECT { left: LVIR_ICON as i32, top: 0, right: 0, bottom: 0 };
+                let mut ir = RECT {
+                    left: LVIR_ICON as i32,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
                 send(list, LVM_GETSUBITEMRECT, i, &mut ir as *mut _ as isize);
                 let icon = self.files.borrow_mut().get(&row.name, row.is_dir).0;
                 let il = self.files.borrow().image_list;
-                let sz = windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXSMICON, w::dpi(list) as u32);
-                ImageList_Draw(il as HIMAGELIST, icon, hdc, ir.left + (ir.right - ir.left - sz) / 2, ir.top + (ir.bottom - ir.top - sz) / 2, ILD_TRANSPARENT);
+                let sz = windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(
+                    SM_CXSMICON,
+                    w::dpi(list) as u32,
+                );
+                ImageList_Draw(
+                    il as HIMAGELIST,
+                    icon,
+                    hdc,
+                    ir.left + (ir.right - ir.left - sz) / 2,
+                    ir.top + (ir.bottom - ir.top - sz) / 2,
+                    ILD_TRANSPARENT,
+                );
             }
             for (seg, hot) in highlight::segments(&text, &ranges) {
-                let old = SelectObject(hdc, if hot { self.bold.get() } else { self.font.get() } as _);
+                let old = SelectObject(
+                    hdc,
+                    if hot {
+                        self.bold.get()
+                    } else {
+                        self.font.get()
+                    } as _,
+                );
                 let w16: Vec<u16> = seg.encode_utf16().collect();
                 let mut sz = windows_sys::Win32::Foundation::SIZE { cx: 0, cy: 0 };
                 GetTextExtentPoint32W(hdc, w16.as_ptr(), w16.len() as i32, &mut sz);
                 let y = rc.top + (rc.bottom - rc.top - sz.cy) / 2;
-                ExtTextOutW(hdc, x, y, ETO_CLIPPED, &rc, w16.as_ptr(), w16.len() as u32, null());
+                ExtTextOutW(
+                    hdc,
+                    x,
+                    y,
+                    ETO_CLIPPED,
+                    &rc,
+                    w16.as_ptr(),
+                    w16.len() as u32,
+                    null(),
+                );
                 SelectObject(hdc, old);
                 x += sz.cx;
                 if x > rc.right {
@@ -2134,12 +2934,17 @@ impl App {
             LVN_GETDISPINFOW => {
                 let di = unsafe { &mut *(lparam as *mut NMLVDISPINFOW) };
                 let item = &mut di.item;
-                let Some(row) = self.row(item.iItem as usize) else { return Some(0) };
+                let Some(row) = self.row(item.iItem as usize) else {
+                    return Some(0);
+                };
                 if item.mask & LVIF_TEXT != 0 {
                     let text = self.cell_text(&row, item.iSubItem);
                     let mut buf = self.disp.borrow_mut();
                     buf.clear();
-                    buf.extend(text.encode_utf16().take(item.cchTextMax.max(1) as usize - 1));
+                    buf.extend(
+                        text.encode_utf16()
+                            .take(item.cchTextMax.max(1) as usize - 1),
+                    );
                     buf.push(0);
                     item.pszText = buf.as_mut_ptr();
                 }
@@ -2174,7 +2979,8 @@ impl App {
                 Some(0)
             }
             LVN_BEGINDRAG => {
-                let paths: Vec<String> = self.selected_rows().iter().map(|r| r.full_path()).collect();
+                let paths: Vec<String> =
+                    self.selected_rows().iter().map(|r| r.full_path()).collect();
                 shell::drag_out(self.hwnd.get(), &paths);
                 Some(0)
             }
@@ -2190,7 +2996,12 @@ impl App {
                     let mut it: LVITEMW = unsafe { std::mem::zeroed() };
                     it.stateMask = LVIS_SELECTED;
                     it.state = LVIS_SELECTED;
-                    send(self.list.get(), LVM_SETITEMSTATE, usize::MAX, &it as *const _ as isize);
+                    send(
+                        self.list.get(),
+                        LVM_SETITEMSTATE,
+                        usize::MAX,
+                        &it as *const _ as isize,
+                    );
                 }
                 Some(0)
             }
@@ -2200,7 +3011,9 @@ impl App {
                 self.context_menu(pt.x, pt.y);
                 Some(0)
             }
-            NM_CUSTOMDRAW => Some(self.custom_draw(unsafe { &mut *(lparam as *mut NMLVCUSTOMDRAW) })),
+            NM_CUSTOMDRAW => {
+                Some(self.custom_draw(unsafe { &mut *(lparam as *mut NMLVCUSTOMDRAW) }))
+            }
             _ => None,
         }
     }
@@ -2214,8 +3027,14 @@ impl App {
             let r = wp.rcNormalPosition;
             s.window = Some((r.left, r.top, r.right - r.left, r.bottom - r.top));
         }
-        s.column_widths = (0..COLUMNS.len()).map(|c| send(self.list.get(), LVM_GETCOLUMNWIDTH, c, 0) as i32 * 96 / w::dpi(hwnd)).collect();
-        s.tree_column_widths = (0..tv::COLUMNS.len()).map(|c| send(self.tree_list.get(), LVM_GETCOLUMNWIDTH, c, 0) as i32 * 96 / w::dpi(hwnd)).collect();
+        s.column_widths = (0..COLUMNS.len())
+            .map(|c| send(self.list.get(), LVM_GETCOLUMNWIDTH, c, 0) as i32 * 96 / w::dpi(hwnd))
+            .collect();
+        s.tree_column_widths = (0..tv::COLUMNS.len())
+            .map(|c| {
+                send(self.tree_list.get(), LVM_GETCOLUMNWIDTH, c, 0) as i32 * 96 / w::dpi(hwnd)
+            })
+            .collect();
         if let Ok(i) = usize::try_from(send(self.combo.get(), CB_GETCURSEL, 0, 0)) {
             s.filter = i;
         }
@@ -2250,13 +3069,24 @@ case:content:  ww:content:  regex:content:  !content:
 
 // ---- window procedures ---------------------------------------------------------
 
-unsafe extern "system" fn edit_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM, _id: usize, _data: usize) -> LRESULT {
+unsafe extern "system" fn edit_proc(
+    h: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
     if msg == WM_KEYDOWN
         && let Some(app) = app()
     {
         match w as u16 {
             k if k == VK_DOWN || k == VK_NEXT => {
-                let list = if app.tree_mode() { app.tree_list.get() } else { app.list.get() };
+                let list = if app.tree_mode() {
+                    app.tree_list.get()
+                } else {
+                    app.list.get()
+                };
                 if send(list, LVM_GETITEMCOUNT, 0, 0) > 0 {
                     unsafe { SetFocus(list) };
                     if send(list, LVM_GETSELECTEDCOUNT, 0, 0) == 0 {
@@ -2294,9 +3124,13 @@ unsafe extern "system" fn edit_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM, _id
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-    let Some(app) = app() else { return unsafe { DefWindowProcW(hwnd, msg, w, l) } };
-    if matches!(msg, WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR)
-        && let Some(r) = shell::forward_menu_message(msg, w, l)
+    let Some(app) = app() else {
+        return unsafe { DefWindowProcW(hwnd, msg, w, l) };
+    };
+    if matches!(
+        msg,
+        WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR
+    ) && let Some(r) = shell::forward_menu_message(msg, w, l)
     {
         return r;
     }
@@ -2307,12 +3141,25 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
         }
         WM_GETMINMAXINFO => {
             let mmi = unsafe { &mut *(l as *mut MINMAXINFO) };
-            mmi.ptMinTrackSize = POINT { x: px(hwnd, 420), y: px(hwnd, 240) };
+            mmi.ptMinTrackSize = POINT {
+                x: px(hwnd, 420),
+                y: px(hwnd, 240),
+            };
             0
         }
         WM_DPICHANGED => {
             let r = unsafe { &*(l as *const RECT) };
-            unsafe { SetWindowPos(hwnd, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE) };
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
             app.apply_fonts();
             app.layout();
             0
@@ -2337,7 +3184,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
         }
         WM_NOTIFY => {
             let nm = unsafe { &*(l as *const NMHDR) };
-            app.notify(nm, l).unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, w, l) })
+            app.notify(nm, l)
+                .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, w, l) })
         }
         WM_APP_TREE => {
             let done = unsafe { Box::from_raw(l as *mut TreeDone) };
@@ -2372,7 +3220,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             unsafe { DefWindowProcW(hwnd, msg, w, l) }
         }
         WM_LBUTTONDOWN => {
-            let (x, y) = (w::loword(l as usize) as i16 as i32, w::hiword(l as usize) as i16 as i32);
+            let (x, y) = (
+                w::loword(l as usize) as i16 as i32,
+                w::hiword(l as usize) as i16 as i32,
+            );
             if app.on_splitter(x, y) {
                 app.split_drag.set(Some(x - app.split_x.get()));
                 unsafe { SetCapture(hwnd) };
@@ -2408,7 +3259,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
                     app.maybe_refresh_tree(generation);
                     app.update_status();
                 }
-            } else if ((changed && app.content.borrow().is_none()) || was_loading) && !app.searching.get() {
+            } else if ((changed && app.content.borrow().is_none()) || was_loading)
+                && !app.searching.get()
+            {
                 // A content search isn't redone for every change (F5 does).
                 app.search(true);
             } else {
@@ -2550,9 +3403,24 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         }));
         APP.with(|a| *a.borrow_mut() = Some(app));
 
-        let (x, y, cw, ch) = settings.window.unwrap_or((CW_USEDEFAULT, CW_USEDEFAULT, 1180, 720));
+        let (x, y, cw, ch) = settings
+            .window
+            .unwrap_or((CW_USEDEFAULT, CW_USEDEFAULT, 1180, 720));
         let title = wide("rapidfind");
-        let hwnd = CreateWindowExW(0, class.as_ptr(), title.as_ptr(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, cw, ch, null_mut(), null_mut(), w::hinstance(), null());
+        let hwnd = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            title.as_ptr(),
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            x,
+            y,
+            cw,
+            ch,
+            null_mut(),
+            null_mut(),
+            w::hinstance(),
+            null(),
+        );
         app.hwnd.set(hwnd);
         if settings.window.is_none() {
             // Default size is in 96-DPI units.
@@ -2607,24 +3475,70 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         app.menu.set(bar);
 
         // Controls.
-        let btn = w::child(hwnd, "Button", "Tree", WS_TABSTOP | (BS_AUTOCHECKBOX | BS_PUSHLIKE) as u32, 0, ID_TREE_BTN);
+        let btn = w::child(
+            hwnd,
+            "Button",
+            "Tree",
+            WS_TABSTOP | (BS_AUTOCHECKBOX | BS_PUSHLIKE) as u32,
+            0,
+            ID_TREE_BTN,
+        );
         app.tree_btn.set(btn);
-        let edit = w::child(hwnd, "Edit", "", WS_TABSTOP | ES_AUTOHSCROLL as u32, WS_EX_CLIENTEDGE, ID_SEARCH);
+        let edit = w::child(
+            hwnd,
+            "Edit",
+            "",
+            WS_TABSTOP | ES_AUTOHSCROLL as u32,
+            WS_EX_CLIENTEDGE,
+            ID_SEARCH,
+        );
         send(edit, EM_SETCUEBANNER, 1, wide("Search").as_ptr() as isize);
         SetWindowSubclass(edit, Some(edit_proc), 1, 0);
         app.edit.set(edit);
 
-        let combo = w::child(hwnd, "ComboBox", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32, 0, ID_FILTER);
+        let combo = w::child(
+            hwnd,
+            "ComboBox",
+            "",
+            WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+            0,
+            ID_FILTER,
+        );
         for (name, _) in FILTERS {
             send(combo, CB_ADDSTRING, 0, wide(name).as_ptr() as isize);
         }
-        send(combo, CB_SETCURSEL, settings.filter.min(FILTERS.len() - 1), 0);
+        send(
+            combo,
+            CB_SETCURSEL,
+            settings.filter.min(FILTERS.len() - 1),
+            0,
+        );
         app.combo.set(combo);
-        let pbtn = w::child(hwnd, "Button", "Preview", WS_TABSTOP | (BS_AUTOCHECKBOX | BS_PUSHLIKE) as u32, 0, ID_PREVIEW_BTN);
+        let pbtn = w::child(
+            hwnd,
+            "Button",
+            "Preview",
+            WS_TABSTOP | (BS_AUTOCHECKBOX | BS_PUSHLIKE) as u32,
+            0,
+            ID_PREVIEW_BTN,
+        );
         app.preview_btn.set(pbtn);
 
-        let list = w::child(hwnd, "SysListView32", "", WS_TABSTOP | (LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS), 0, ID_LIST);
-        send(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP | LVS_EX_LABELTIP) as isize);
+        let list = w::child(
+            hwnd,
+            "SysListView32",
+            "",
+            WS_TABSTOP | (LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS),
+            0,
+            ID_LIST,
+        );
+        send(
+            list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            0,
+            (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP | LVS_EX_LABELTIP)
+                as isize,
+        );
         if crate::themed() {
             SetWindowTheme(list, wide("Explorer").as_ptr(), null());
         }
@@ -2633,7 +3547,12 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             let mut col: LVCOLUMNW = std::mem::zeroed();
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
             col.fmt = if *right { LVCFMT_RIGHT } else { LVCFMT_LEFT };
-            let saved = settings.column_widths.get(c).copied().filter(|&w| w > 10).unwrap_or(*width);
+            let saved = settings
+                .column_widths
+                .get(c)
+                .copied()
+                .filter(|&w| w > 10)
+                .unwrap_or(*width);
             col.cx = px(hwnd, saved);
             col.pszText = wname.as_ptr() as *mut u16;
             send(list, LVM_INSERTCOLUMNW, c, &col as *const _ as isize);
@@ -2647,9 +3566,21 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         app.list.set(list);
 
         // Folder-size tree (shown instead of the list in tree mode).
-        let tl = w::child(hwnd, "SysListView32", "", WS_TABSTOP | (LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS), 0, ID_TREE);
+        let tl = w::child(
+            hwnd,
+            "SysListView32",
+            "",
+            WS_TABSTOP | (LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS),
+            0,
+            ID_TREE,
+        );
         ShowWindow(tl, SW_HIDE);
-        send(tl, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP) as isize);
+        send(
+            tl,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            0,
+            (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP) as isize,
+        );
         if crate::themed() {
             SetWindowTheme(tl, wide("Explorer").as_ptr(), null());
         }
@@ -2658,13 +3589,23 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             let mut col: LVCOLUMNW = std::mem::zeroed();
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
             col.fmt = if *right { LVCFMT_RIGHT } else { LVCFMT_LEFT };
-            let saved = settings.tree_column_widths.get(c).copied().filter(|&w| w > 10).unwrap_or(*width);
+            let saved = settings
+                .tree_column_widths
+                .get(c)
+                .copied()
+                .filter(|&w| w > 10)
+                .unwrap_or(*width);
             col.cx = px(hwnd, saved);
             col.pszText = wname.as_ptr() as *mut u16;
             send(tl, LVM_INSERTCOLUMNW, c, &col as *const _ as isize);
         }
         let order = tv::COLUMN_ORDER;
-        send(tl, LVM_SETCOLUMNORDERARRAY, order.len(), order.as_ptr() as isize);
+        send(
+            tl,
+            LVM_SETCOLUMNORDERARRAY,
+            order.len(),
+            order.as_ptr() as isize,
+        );
         for c in [tv::COL_CHANGE, tv::COL_TREND] {
             send(tl, LVM_SETCOLUMNWIDTH, c as usize, 0);
         }
@@ -2690,7 +3631,10 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         app.register_hotkey();
 
         let hw = hwnd as isize;
-        std::thread::Builder::new().name("search".into()).spawn(move || worker(conn, rx, hw)).unwrap();
+        std::thread::Builder::new()
+            .name("search".into())
+            .spawn(move || worker(conn, rx, hw))
+            .unwrap();
         SetTimer(hwnd, TIMER_POLL, 700, None);
 
         if !start_hidden {
@@ -2764,13 +3708,20 @@ fn is_root(p: &str) -> bool {
     if t.len() <= 2 {
         return true;
     }
-    t.strip_prefix("\\\\").is_some_and(|rest| rest.split('\\').filter(|s| !s.is_empty()).count() <= 2)
+    t.strip_prefix("\\\\")
+        .is_some_and(|rest| rest.split('\\').filter(|s| !s.is_empty()).count() <= 2)
 }
 
 /// "notes.txt" or "3 items".
 fn items_label(paths: &[String]) -> String {
     match paths {
-        [one] => format!("\"{}\"", one.trim_end_matches('\\').rsplit('\\').next().unwrap_or(one)),
+        [one] => format!(
+            "\"{}\"",
+            one.trim_end_matches('\\')
+                .rsplit('\\')
+                .next()
+                .unwrap_or(one)
+        ),
         _ => format!("{} items", shell::group(paths.len() as u64)),
     }
 }

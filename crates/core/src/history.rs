@@ -74,7 +74,9 @@ impl SnapInfo {
 }
 
 pub fn now_unix() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 // ---- encoding ----------------------------------------------------------------------
@@ -127,7 +129,10 @@ impl Snapshot {
         let mut head = MAGIC.to_vec();
         put(&mut head, self.time as u64);
         put_str(&mut head, &self.name);
-        put(&mut head, self.volumes.iter().map(|v| v.folders.len() as u64).sum());
+        put(
+            &mut head,
+            self.volumes.iter().map(|v| v.folders.len() as u64).sum(),
+        );
         let mut body = Vec::new();
         put(&mut body, self.volumes.len() as u64);
         for v in &self.volumes {
@@ -137,7 +142,14 @@ impl Snapshot {
             put(&mut body, v.folders.len() as u64);
             // Columns compress better than rows: parents as distance back, names, then numbers.
             for (i, f) in v.folders.iter().enumerate() {
-                put(&mut body, if f.parent == u32::MAX { 0 } else { (i as u64) - f.parent as u64 });
+                put(
+                    &mut body,
+                    if f.parent == u32::MAX {
+                        0
+                    } else {
+                        (i as u64) - f.parent as u64
+                    },
+                );
             }
             for f in &v.folders {
                 put_str(&mut body, &f.name);
@@ -176,7 +188,14 @@ impl Snapshot {
             let mut folders: Vec<SnapFolder> = (0..n)
                 .map(|i| {
                     let back = r.u()?;
-                    Ok(SnapFolder { parent: if back == 0 || back as usize > i { u32::MAX } else { (i as u64 - back) as u32 }, ..Default::default() })
+                    Ok(SnapFolder {
+                        parent: if back == 0 || back as usize > i {
+                            u32::MAX
+                        } else {
+                            (i as u64 - back) as u32
+                        },
+                        ..Default::default()
+                    })
                 })
                 .collect::<io::Result<_>>()?;
             for f in &mut folders {
@@ -191,15 +210,25 @@ impl Snapshot {
             for f in &mut folders {
                 f.files = r.u()?;
             }
-            volumes.push(SnapVolume { key, capacity, free, folders });
+            volumes.push(SnapVolume {
+                key,
+                capacity,
+                free,
+                folders,
+            });
         }
-        Ok(Snapshot { time, name, volumes })
+        Ok(Snapshot {
+            time,
+            name,
+            volumes,
+        })
     }
 
     /// Every stored folder's size by path (see [`PathMap`]). Volume roots
     /// are found by their root name (`C:`).
     pub fn paths(&self) -> PathMap {
-        let mut pairs: Vec<(u64, u64)> = Vec::with_capacity(self.volumes.iter().map(|v| v.folders.len()).sum());
+        let mut pairs: Vec<(u64, u64)> =
+            Vec::with_capacity(self.volumes.iter().map(|v| v.folders.len()).sum());
         let mut roots = HashMap::new();
         for v in &self.volumes {
             let mut full: Vec<String> = Vec::with_capacity(v.folders.len());
@@ -218,7 +247,12 @@ impl Snapshot {
         pairs.sort_unstable();
         pairs.dedup_by_key(|p| p.0);
         let (hashes, sizes) = pairs.into_iter().unzip();
-        PathMap { hashes, sizes, roots, time: self.time }
+        PathMap {
+            hashes,
+            sizes,
+            roots,
+            time: self.time,
+        }
     }
 }
 
@@ -236,7 +270,9 @@ pub struct PathMap {
 /// 64-bit FNV-1a of [`path_key`]: collisions among ~100k folders are
 /// vanishingly unlikely, and a wrong match only mislabels one size.
 pub fn path_hash(p: &str) -> u64 {
-    path_key(p).bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    path_key(p).bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// Lookup key for a path: lower case, `/` → `\`, no trailing `\`.
@@ -247,7 +283,10 @@ pub fn path_key(p: &str) -> String {
 impl PathMap {
     /// The folder's size then, if the snapshot has it.
     pub fn get(&self, path: &str) -> Option<u64> {
-        self.hashes.binary_search(&path_hash(path)).ok().map(|i| self.sizes[i])
+        self.hashes
+            .binary_search(&path_hash(path))
+            .ok()
+            .map(|i| self.sizes[i])
     }
     /// Capacity and free space of a volume root then.
     pub fn disk(&self, root: &str) -> Option<(u64, u64)> {
@@ -318,7 +357,10 @@ const CACHE_FOR: Duration = Duration::from_secs(300);
 
 impl History {
     pub fn new(dir: PathBuf) -> History {
-        History { dir, cache: Mutex::new(HashMap::new()) }
+        History {
+            dir,
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -330,15 +372,29 @@ impl History {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            let Some(id) = name.strip_suffix(".snap") else { continue };
-            let Ok(mut f) = std::fs::File::open(e.path()) else { continue };
+            let Some(id) = name.strip_suffix(".snap") else {
+                continue;
+            };
+            let Ok(mut f) = std::fs::File::open(e.path()) else {
+                continue;
+            };
             let mut head = [0u8; 512];
             let n = f.read(&mut head).unwrap_or(0);
-            let Some(rest) = head[..n].strip_prefix(&MAGIC[..]) else { continue };
+            let Some(rest) = head[..n].strip_prefix(&MAGIC[..]) else {
+                continue;
+            };
             let mut r = Rd(rest);
-            let (Ok(time), Ok(label), Ok(folders)) = (r.u(), r.s(), r.u()) else { continue };
+            let (Ok(time), Ok(label), Ok(folders)) = (r.u(), r.s(), r.u()) else {
+                continue;
+            };
             let bytes = e.metadata().map_or(0, |m| m.len());
-            out.push(SnapInfo { id: id.to_string(), time: time as i64, name: label, folders, bytes });
+            out.push(SnapInfo {
+                id: id.to_string(),
+                time: time as i64,
+                name: label,
+                folders,
+                bytes,
+            });
         }
         out.sort_by_key(|s| s.time);
         out
@@ -354,7 +410,13 @@ impl History {
         std::fs::rename(&tmp, self.dir.join(format!("{id}.snap")))?;
         self.prune(now_unix().max(s.time));
         let folders = s.volumes.iter().map(|v| v.folders.len() as u64).sum();
-        Ok(SnapInfo { id, time: s.time, name: s.name.clone(), folders, bytes: data.len() as u64 })
+        Ok(SnapInfo {
+            id,
+            time: s.time,
+            name: s.name.clone(),
+            folders,
+            bytes: data.len() as u64,
+        })
     }
 
     pub fn prune(&self, now: i64) {
@@ -369,7 +431,10 @@ impl History {
 
     pub fn load(&self, id: &str) -> io::Result<Snapshot> {
         if id.contains(['/', '\\', '.']) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad snapshot id"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bad snapshot id",
+            ));
         }
         Snapshot::decode(&std::fs::read(self.dir.join(format!("{id}.snap")))?)
     }
@@ -381,13 +446,21 @@ impl History {
             return Ok(l.map.clone());
         }
         let map = Arc::new(self.load(id)?.paths());
-        self.cache.lock().insert(id.to_string(), Loaded { map: map.clone(), used: Instant::now() });
+        self.cache.lock().insert(
+            id.to_string(),
+            Loaded {
+                map: map.clone(),
+                used: Instant::now(),
+            },
+        );
         Ok(map)
     }
 
     /// Forgets decoded snapshots nobody used for a while (call now and then).
     pub fn trim_cache(&self) {
-        self.cache.lock().retain(|_, l| l.used.elapsed() < CACHE_FOR);
+        self.cache
+            .lock()
+            .retain(|_, l| l.used.elapsed() < CACHE_FOR);
     }
 
     pub fn cached(&self) -> usize {
@@ -396,7 +469,9 @@ impl History {
 
     /// The newest snapshot taken today (local date), if any.
     pub fn has_one_since(&self, t: i64) -> bool {
-        self.list().iter().any(|s| s.time >= t && !s.is_save_point())
+        self.list()
+            .iter()
+            .any(|s| s.time >= t && !s.is_save_point())
     }
 }
 
@@ -416,7 +491,13 @@ mod tests {
     use super::*;
 
     fn sample() -> Snapshot {
-        let f = |parent: u32, name: &str, size: u64| SnapFolder { parent, name: name.into(), size, cloud: size / 10, files: size / 1000 };
+        let f = |parent: u32, name: &str, size: u64| SnapFolder {
+            parent,
+            name: name.into(),
+            size,
+            cloud: size / 10,
+            files: size / 1000,
+        };
         Snapshot {
             time: 1_760_000_000,
             name: "before cleanup".into(),
@@ -424,7 +505,13 @@ mod tests {
                 key: "C".into(),
                 capacity: 1000 << 30,
                 free: 30 << 30,
-                folders: vec![f(u32::MAX, "C:", 900 << 30), f(0, "Users", 600 << 30), f(1, "Me", 500 << 30), f(0, "Windows", 40 << 30), f(2, "Ångström", 20 << 20)],
+                folders: vec![
+                    f(u32::MAX, "C:", 900 << 30),
+                    f(0, "Users", 600 << 30),
+                    f(1, "Me", 500 << 30),
+                    f(0, "Windows", 40 << 30),
+                    f(2, "Ångström", 20 << 20),
+                ],
             }],
         }
     }
@@ -464,7 +551,10 @@ mod tests {
         // The two on day -3 collapse to one; 40 days ago is weekly; the save point stays.
         assert_eq!(list.len(), 6, "{list:?}");
         assert!(list.iter().any(SnapInfo::is_save_point));
-        assert_eq!(list.iter().find(|i| i.is_save_point()).unwrap().name, "before cleanup");
+        assert_eq!(
+            list.iter().find(|i| i.is_save_point()).unwrap().name,
+            "before cleanup"
+        );
         let id = &list.last().unwrap().id;
         assert_eq!(h.paths(id).unwrap().len(), 5);
         assert_eq!(h.cached(), 1);
@@ -477,8 +567,15 @@ mod tests {
     fn retention_buckets() {
         const DAY: i64 = 86_400;
         let now = 1_800_000_000;
-        let mk = |age: i64, save: bool| SnapInfo { id: format!("{}-{}", now - age, if save { "s" } else { "a" }), time: now - age, ..Default::default() };
-        let snaps: Vec<SnapInfo> = (0..800).map(|d| mk(d * DAY, false)).chain([mk(200 * DAY, true), mk(400 * DAY, true)]).collect();
+        let mk = |age: i64, save: bool| SnapInfo {
+            id: format!("{}-{}", now - age, if save { "s" } else { "a" }),
+            time: now - age,
+            ..Default::default()
+        };
+        let snaps: Vec<SnapInfo> = (0..800)
+            .map(|d| mk(d * DAY, false))
+            .chain([mk(200 * DAY, true), mk(400 * DAY, true)])
+            .collect();
         let k = keep(&snaps, now);
         let kept = k.iter().filter(|&&x| x).count();
         // 2 recent + ~29 daily + ~22 weekly + ~18 monthly + 1 save point (the other is over a year old).

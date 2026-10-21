@@ -20,7 +20,10 @@ pub struct VolumeConfig {
 
 impl Default for VolumeConfig {
     fn default() -> Self {
-        VolumeConfig { include: true, include_only: Vec::new() }
+        VolumeConfig {
+            include: true,
+            include_only: Vec::new(),
+        }
     }
 }
 
@@ -37,7 +40,11 @@ pub struct FolderConfig {
 
 impl Default for FolderConfig {
     fn default() -> Self {
-        FolderConfig { path: String::new(), watch: true, rescan_minutes: 0 }
+        FolderConfig {
+            path: String::new(),
+            watch: true,
+            rescan_minutes: 0,
+        }
     }
 }
 
@@ -134,7 +141,12 @@ impl Config {
     pub fn index_options(&self) -> crate::index::IndexOptions {
         crate::index::IndexOptions {
             created: self.index_date_created,
-            fast_sort: [true, self.fast_sort_size, self.fast_sort_modified, self.fast_sort_path],
+            fast_sort: [
+                true,
+                self.fast_sort_size,
+                self.fast_sort_modified,
+                self.fast_sort_path,
+            ],
         }
     }
 
@@ -148,17 +160,28 @@ impl Config {
     }
 
     pub fn fold_mode(&self) -> FoldMode {
-        if self.match_diacritics { FoldMode::Lower } else { FoldMode::StripDiacritics }
+        if self.match_diacritics {
+            FoldMode::Lower
+        } else {
+            FoldMode::StripDiacritics
+        }
     }
 
     pub fn volume(&self, letter: char) -> VolumeConfig {
-        self.volumes.get(&letter.to_ascii_uppercase().to_string()).cloned().unwrap_or_default()
+        self.volumes
+            .get(&letter.to_ascii_uppercase().to_string())
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Rules that decide which entries are visible, folded for matching.
     pub fn rules(&self, letter: char) -> Rules {
         let mode = self.fold_mode();
-        let norm_path = |p: &str| fold_mode(p.trim_end_matches('\\'), mode).replace('/', "\\").into_bytes();
+        let norm_path = |p: &str| {
+            fold_mode(p.trim_end_matches('\\'), mode)
+                .replace('/', "\\")
+                .into_bytes()
+        };
         let split = |list: &[String]| -> Vec<Vec<u8>> {
             list.iter()
                 .flat_map(|s| s.split(';'))
@@ -169,14 +192,25 @@ impl Config {
         };
         let mut folder_paths = Vec::new();
         let mut folder_patterns = Vec::new();
-        for f in self.exclude_folders.iter().flat_map(|s| s.split(';')).map(str::trim).filter(|s| !s.is_empty()) {
+        for f in self
+            .exclude_folders
+            .iter()
+            .flat_map(|s| s.split(';'))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if f.contains('\\') || f.contains('/') || f.contains(':') {
                 folder_paths.push(norm_path(f));
             } else {
                 folder_patterns.push(fold_mode(f, mode).into_bytes());
             }
         }
-        let include_only = self.volume(letter).include_only.iter().map(|p| norm_path(p)).collect();
+        let include_only = self
+            .volume(letter)
+            .include_only
+            .iter()
+            .map(|p| norm_path(p))
+            .collect();
         Rules {
             exclude_hidden: self.exclude_hidden,
             exclude_system: self.exclude_system,
@@ -217,24 +251,39 @@ impl Rules {
     /// Does this entry itself get excluded (ignoring its ancestors)?
     /// `path` is the folded full path, only consulted for directories when
     /// [`Rules::needs_paths`] and only built lazily by the caller.
-    pub fn excludes(&self, is_dir: bool, attrs: u32, fold_name: &[u8], path: &mut dyn FnMut() -> Vec<u8>) -> bool {
-        if (self.exclude_hidden && attrs & FILE_ATTRIBUTE_HIDDEN != 0) || (self.exclude_system && attrs & FILE_ATTRIBUTE_SYSTEM != 0) {
+    pub fn excludes(
+        &self,
+        is_dir: bool,
+        attrs: u32,
+        fold_name: &[u8],
+        path: &mut dyn FnMut() -> Vec<u8>,
+    ) -> bool {
+        if (self.exclude_hidden && attrs & FILE_ATTRIBUTE_HIDDEN != 0)
+            || (self.exclude_system && attrs & FILE_ATTRIBUTE_SYSTEM != 0)
+        {
             return true;
         }
         if is_dir {
-            if self.folder_patterns.iter().any(|p| glob_match(p, fold_name)) {
+            if self
+                .folder_patterns
+                .iter()
+                .any(|p| glob_match(p, fold_name))
+            {
                 return true;
             }
             if !self.folder_paths.is_empty() {
-                let last_matches = |p: &Vec<u8>| p.rsplit(|&b| b == b'\\').next() == Some(fold_name);
-                if self.folder_paths.iter().any(last_matches) && self.folder_paths.contains(&path()) {
+                let last_matches =
+                    |p: &Vec<u8>| p.rsplit(|&b| b == b'\\').next() == Some(fold_name);
+                if self.folder_paths.iter().any(last_matches) && self.folder_paths.contains(&path())
+                {
                     return true;
                 }
             }
             false
         } else {
             self.file_patterns.iter().any(|p| glob_match(p, fold_name))
-                || (!self.include_files.is_empty() && !self.include_files.iter().any(|p| glob_match(p, fold_name)))
+                || (!self.include_files.is_empty()
+                    && !self.include_files.iter().any(|p| glob_match(p, fold_name)))
         }
     }
 
@@ -245,7 +294,9 @@ impl Rules {
             return InclusionState::Inside;
         }
         for inc in &self.include_only {
-            if path == inc.as_slice() || (path.starts_with(inc) && path.get(inc.len()) == Some(&b'\\')) {
+            if path == inc.as_slice()
+                || (path.starts_with(inc) && path.get(inc.len()) == Some(&b'\\'))
+            {
                 return InclusionState::Inside;
             }
         }
@@ -273,7 +324,13 @@ mod tests {
     fn json_roundtrip_and_defaults_for_missing_fields() {
         let mut c = Config::default();
         c.exclude_folders.push(r"C:\Users\me\OneDrive".into());
-        c.volumes.insert("S".into(), VolumeConfig { include: false, include_only: vec![] });
+        c.volumes.insert(
+            "S".into(),
+            VolumeConfig {
+                include: false,
+                include_only: vec![],
+            },
+        );
         let s = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<Config>(&s).unwrap(), c);
         let partial: Config = serde_json::from_str(r#"{"exclude_hidden": true}"#).unwrap();
@@ -297,13 +354,21 @@ mod tests {
         assert!(r.excludes(true, 0, b"node_modules", &mut p("x")));
         assert!(r.excludes(false, 0, b"a.tmp", &mut p("x")));
         assert!(!r.excludes(false, 0, b"a.txt", &mut p("x")));
-        let hidden = Config { exclude_hidden: true, ..Default::default() }.rules('C');
+        let hidden = Config {
+            exclude_hidden: true,
+            ..Default::default()
+        }
+        .rules('C');
         assert!(hidden.excludes(false, FILE_ATTRIBUTE_HIDDEN, b"x", &mut p("x")));
     }
 
     #[test]
     fn shares_have_their_own_date_created_switch() {
-        let c = Config { index_date_created: false, share_index_date_created: true, ..Default::default() };
+        let c = Config {
+            index_date_created: false,
+            share_index_date_created: true,
+            ..Default::default()
+        };
         assert!(!c.index_options_for("C").created);
         assert!(!c.index_options_for("G:").created);
         assert!(c.index_options_for(r"\\nas\media").created);
@@ -313,12 +378,33 @@ mod tests {
     #[test]
     fn include_only() {
         let mut c = Config::default();
-        c.volumes.insert("C".into(), VolumeConfig { include: true, include_only: vec![r"C:\Users\me".into()] });
+        c.volumes.insert(
+            "C".into(),
+            VolumeConfig {
+                include: true,
+                include_only: vec![r"C:\Users\me".into()],
+            },
+        );
         let r = c.rules('C');
-        assert_eq!(r.include_only_allows(br"c:\users\me\docs"), InclusionState::Inside);
-        assert_eq!(r.include_only_allows(br"c:\users\me"), InclusionState::Inside);
-        assert_eq!(r.include_only_allows(br"c:\users"), InclusionState::Ancestor);
-        assert_eq!(r.include_only_allows(br"c:\users\meow"), InclusionState::Outside);
-        assert_eq!(r.include_only_allows(br"c:\windows"), InclusionState::Outside);
+        assert_eq!(
+            r.include_only_allows(br"c:\users\me\docs"),
+            InclusionState::Inside
+        );
+        assert_eq!(
+            r.include_only_allows(br"c:\users\me"),
+            InclusionState::Inside
+        );
+        assert_eq!(
+            r.include_only_allows(br"c:\users"),
+            InclusionState::Ancestor
+        );
+        assert_eq!(
+            r.include_only_allows(br"c:\users\meow"),
+            InclusionState::Outside
+        );
+        assert_eq!(
+            r.include_only_allows(br"c:\windows"),
+            InclusionState::Outside
+        );
     }
 }

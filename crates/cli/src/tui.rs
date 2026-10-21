@@ -46,7 +46,13 @@ fn truncate(s: &str, w: usize) -> String {
 
 fn run_query(be: &mut dyn Backend, st: &mut State, height: usize) {
     let limit = st.scroll + height;
-    match be.search(&st.query, SearchFlags::default(), st.sort, st.desc, limit as u32) {
+    match be.search(
+        &st.query,
+        SearchFlags::default(),
+        st.sort,
+        st.desc,
+        limit as u32,
+    ) {
         Ok(page) => {
             st.error = None;
             st.generation = Some(page.generation);
@@ -56,7 +62,11 @@ fn run_query(be: &mut dyn Backend, st: &mut State, height: usize) {
                 .rows
                 .into_iter()
                 .map(|r| Row {
-                    size: if r.is_dir && !r.has_size { String::new() } else { fmt::size(r.size) },
+                    size: if r.is_dir && !r.has_size {
+                        String::new()
+                    } else {
+                        fmt::size(r.size)
+                    },
                     modified: fmt::time(r.modified),
                     full: r.full_path(),
                     name: r.name,
@@ -78,7 +88,13 @@ fn draw(st: &State, w: u16, h: u16) -> std::io::Result<()> {
     let mut out = stdout();
     let w = w as usize;
     queue!(out, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
-    queue!(out, SetAttribute(Attribute::Bold), Print("> "), SetAttribute(Attribute::Reset), Print(&st.query))?;
+    queue!(
+        out,
+        SetAttribute(Attribute::Bold),
+        Print("> "),
+        SetAttribute(Attribute::Reset),
+        Print(&st.query)
+    )?;
     let sort = format!("{:?}{}", st.sort, if st.desc { " ↓" } else { " ↑" });
     let status = match &st.error {
         Some(e) => format!("error: {e}"),
@@ -87,7 +103,13 @@ fn draw(st: &State, w: u16, h: u16) -> std::io::Result<()> {
             st.total, st.ms, st.source
         ),
     };
-    queue!(out, cursor::MoveTo(0, 1), SetAttribute(Attribute::Dim), Print(truncate(&status, w)), SetAttribute(Attribute::Reset))?;
+    queue!(
+        out,
+        cursor::MoveTo(0, 1),
+        SetAttribute(Attribute::Dim),
+        Print(truncate(&status, w)),
+        SetAttribute(Attribute::Reset)
+    )?;
 
     let (size_w, date_w) = (10usize, 16usize);
     let rest = w.saturating_sub(size_w + date_w + 4);
@@ -104,12 +126,20 @@ fn draw(st: &State, w: u16, h: u16) -> std::io::Result<()> {
         );
         queue!(out, cursor::MoveTo(0, (k + 2) as u16))?;
         if st.scroll + k == st.selected {
-            queue!(out, SetAttribute(Attribute::Reverse), Print(truncate(&line, w)), SetAttribute(Attribute::Reset))?;
+            queue!(
+                out,
+                SetAttribute(Attribute::Reverse),
+                Print(truncate(&line, w)),
+                SetAttribute(Attribute::Reset)
+            )?;
         } else {
             queue!(out, Print(truncate(&line, w)))?;
         }
     }
-    queue!(out, cursor::MoveTo((2 + st.query.chars().count()) as u16, 0))?;
+    queue!(
+        out,
+        cursor::MoveTo((2 + st.query.chars().count()) as u16, 0)
+    )?;
     out.flush()
 }
 
@@ -175,17 +205,29 @@ fn run_inner(be: &mut dyn Backend) -> anyhow::Result<()> {
                                 SortKey::Created => SortKey::RunCount,
                                 SortKey::RunCount => SortKey::Name,
                             };
-                            st.desc = matches!(st.sort, SortKey::Size | SortKey::Modified | SortKey::Created | SortKey::RunCount);
+                            st.desc = matches!(
+                                st.sort,
+                                SortKey::Size
+                                    | SortKey::Modified
+                                    | SortKey::Created
+                                    | SortKey::RunCount
+                            );
                             requery = true;
                         }
-                        KeyCode::Down => st.selected = (st.selected + 1).min(st.total.saturating_sub(1)),
+                        KeyCode::Down => {
+                            st.selected = (st.selected + 1).min(st.total.saturating_sub(1))
+                        }
                         KeyCode::Up => st.selected = st.selected.saturating_sub(1),
-                        KeyCode::PageDown => st.selected = (st.selected + page(h)).min(st.total.saturating_sub(1)),
+                        KeyCode::PageDown => {
+                            st.selected = (st.selected + page(h)).min(st.total.saturating_sub(1))
+                        }
                         KeyCode::PageUp => st.selected = st.selected.saturating_sub(page(h)),
                         KeyCode::Home => st.selected = 0,
                         KeyCode::Enter => {
                             if let Some(row) = st.rows.get(st.selected) {
-                                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", row.full)).spawn();
+                                let _ = std::process::Command::new("explorer")
+                                    .arg(format!("/select,{}", row.full))
+                                    .spawn();
                             }
                         }
                         _ => {}

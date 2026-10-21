@@ -14,9 +14,18 @@ pub use rapidfind_core::upgrade::ARP_KEY;
 pub const SETUP_EXE: &str = "rapidfind-setup.exe";
 
 static PAYLOAD: [(&str, &[u8]); 3] = [
-    ("rapidfind.exe", include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind.exe.zst"))),
-    ("rapidfind-gui.exe", include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind-gui.exe.zst"))),
-    ("rapidfind-mcp.exe", include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind-mcp.exe.zst"))),
+    (
+        "rapidfind.exe",
+        include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind.exe.zst")),
+    ),
+    (
+        "rapidfind-gui.exe",
+        include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind-gui.exe.zst")),
+    ),
+    (
+        "rapidfind-mcp.exe",
+        include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind-mcp.exe.zst")),
+    ),
 ];
 
 pub fn has_payload() -> bool {
@@ -40,7 +49,11 @@ pub struct Options {
 }
 
 pub fn default_dir() -> PathBuf {
-    std::env::var_os("ProgramW6432").or_else(|| std::env::var_os("ProgramFiles")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Program Files")).join("rapidfind")
+    std::env::var_os("ProgramW6432")
+        .or_else(|| std::env::var_os("ProgramFiles"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"))
+        .join("rapidfind")
 }
 
 impl Options {
@@ -62,9 +75,21 @@ fn cli(dir: &Path, args: &[&str]) -> Result<String, String> {
     let exe = dir.join("rapidfind.exe");
     // We put every program in place ourselves (maybe in a new --dir): the CLI
     // mustn't copy itself into the previous install's folder.
-    let out = sys::hidden(Command::new(&exe).args(args).env(upgrade::NO_SYNC_ENV, "1")).output().map_err(|e| format!("running {}: {e}", exe.display()))?;
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string();
-    if out.status.success() { Ok(text) } else { Err(format!("rapidfind {}: {text}", args.join(" "))) }
+    let out = sys::hidden(Command::new(&exe).args(args).env(upgrade::NO_SYNC_ENV, "1"))
+        .output()
+        .map_err(|e| format!("running {}: {e}", exe.display()))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+    .trim()
+    .to_string();
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(format!("rapidfind {}: {text}", args.join(" ")))
+    }
 }
 
 /// Installs (or updates) everything `o` asks for. `log` gets one line per step.
@@ -95,7 +120,10 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     // service is the new one too, and delete the moved-aside copies.
     let (ended, _) = upgrade::retire_old_programs(&o.dir);
     if ended > 0 {
-        log(&format!("Restarted {ended} running rapidfind MCP server{}", if ended == 1 { "" } else { "s" }));
+        log(&format!(
+            "Restarted {ended} running rapidfind MCP server{}",
+            if ended == 1 { "" } else { "s" }
+        ));
     }
     service?;
     if o.path {
@@ -105,7 +133,12 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     let gui = o.dir.join("rapidfind-gui.exe");
     if o.shortcut {
         log("Adding a Start menu shortcut");
-        sys::shortcut(&sys::start_menu_link(), &gui, "--", "Instant file search and folder sizes")?;
+        sys::shortcut(
+            &sys::start_menu_link(),
+            &gui,
+            "--",
+            "Instant file search and folder sizes",
+        )?;
     }
     if o.startup {
         sys::set_run_at_login(Some(&gui))?;
@@ -134,7 +167,13 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 fn dir_size_kb(dir: &Path) -> u32 {
-    let bytes: u64 = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
+    let bytes: u64 = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum();
     (bytes / 1024) as u32
 }
 
@@ -152,7 +191,10 @@ pub struct Removal {
 pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     let mcp = r.dir.join(reg::EXE).to_string_lossy().to_lowercase();
     for c in reg::ALL {
-        if reg::status(c).registered.is_some_and(|p| p.to_lowercase() == mcp) {
+        if reg::status(c)
+            .registered
+            .is_some_and(|p| p.to_lowercase() == mcp)
+        {
             match reg::unregister(c) {
                 Ok(_) => log(&format!("Disconnected {}", c.label())),
                 Err(e) => log(&format!("Couldn't disconnect {}: {e}", c.label())),

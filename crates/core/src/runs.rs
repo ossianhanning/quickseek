@@ -25,7 +25,10 @@ pub struct RunHistory {
 
 impl RunHistory {
     pub fn load(path: &Path) -> RunHistory {
-        let mut h: RunHistory = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut h: RunHistory = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         h.reindex();
         h
     }
@@ -38,7 +41,12 @@ impl RunHistory {
     }
 
     fn reindex(&mut self) {
-        self.map = self.entries.iter().enumerate().map(|(k, &(s, r, _))| ((s, r), k)).collect();
+        self.map = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(k, &(s, r, _))| ((s, r), k))
+            .collect();
     }
 
     pub fn record(&mut self, serial: u32, record: u32, now: i64) -> RunInfo {
@@ -50,7 +58,10 @@ impl RunHistory {
                 *e
             }
             None => {
-                let info = RunInfo { count: 1, last: now };
+                let info = RunInfo {
+                    count: 1,
+                    last: now,
+                };
                 self.map.insert((serial, record), self.entries.len());
                 self.entries.push((serial, record, info));
                 info

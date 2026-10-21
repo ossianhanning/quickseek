@@ -25,7 +25,20 @@ pub fn child(parent: HWND, class: &str, text: &str, style: u32, ex: u32, id: i32
     let c = wide(class);
     let t = wide(text);
     unsafe {
-        CreateWindowExW(ex, c.as_ptr(), t.as_ptr(), WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, parent, id as isize as _, hinstance(), null())
+        CreateWindowExW(
+            ex,
+            c.as_ptr(),
+            t.as_ptr(),
+            WS_CHILD | WS_VISIBLE | style,
+            0,
+            0,
+            10,
+            10,
+            parent,
+            id as isize as _,
+            hinstance(),
+            null(),
+        )
     }
 }
 
@@ -48,7 +61,12 @@ pub fn move_to(h: HWND, x: i32, y: i32, w: i32, hh: i32) {
 }
 
 pub fn client_rect(h: HWND) -> RECT {
-    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     unsafe { GetClientRect(h, &mut r) };
     r
 }
@@ -69,7 +87,13 @@ pub fn ui_font(h: HWND, bold: bool) -> HFONT {
         let mut ncm: NONCLIENTMETRICSW = std::mem::zeroed();
         ncm.cbSize = size_of::<NONCLIENTMETRICSW>() as u32;
         let d = dpi(h) as u32;
-        windows_sys::Win32::UI::HiDpi::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &mut ncm as *mut _ as *mut _, 0, d);
+        windows_sys::Win32::UI::HiDpi::SystemParametersInfoForDpi(
+            SPI_GETNONCLIENTMETRICS,
+            ncm.cbSize,
+            &mut ncm as *mut _ as *mut _,
+            0,
+            d,
+        );
         let mut lf: LOGFONTW = ncm.lfMessageFont;
         if bold {
             lf.lfWeight = 700;

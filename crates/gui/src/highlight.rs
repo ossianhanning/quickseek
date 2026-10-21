@@ -66,19 +66,31 @@ mod tests {
 
     #[test]
     fn finds_case_insensitive_and_merges() {
-        assert_eq!(ranges("Report.PDF", &t("report pdf")), vec![(0, 6), (7, 10)]);
+        assert_eq!(
+            ranges("Report.PDF", &t("report pdf")),
+            vec![(0, 6), (7, 10)]
+        );
         assert_eq!(ranges("aaaa", &t("aa")), vec![(0, 4)]);
         assert_eq!(ranges("notes", &t("x")), vec![]);
-        assert_eq!(segments("Report.PDF", &[(0, 6)]), vec![("Report", true), (".PDF", false)]);
+        assert_eq!(
+            segments("Report.PDF", &[(0, 6)]),
+            vec![("Report", true), (".PDF", false)]
+        );
     }
 
     #[test]
     fn maps_back_through_unicode_folding() {
         // "Å" folds to "å" (same length in chars, different bytes per case).
         let r = ranges("ÅSA Ö.txt", &t("åsa ö"));
-        assert_eq!(segments("ÅSA Ö.txt", &r), vec![("ÅSA", true), (" ", false), ("Ö", true), (".txt", false)]);
+        assert_eq!(
+            segments("ÅSA Ö.txt", &r),
+            vec![("ÅSA", true), (" ", false), ("Ö", true), (".txt", false)]
+        );
         // İ lowercases to two chars; the whole original char is highlighted.
         let r = ranges("xİy", &["i".as_bytes().to_vec()]);
-        assert_eq!(segments("xİy", &r), vec![("x", false), ("İ", true), ("y", false)]);
+        assert_eq!(
+            segments("xİy", &r),
+            vec![("x", false), ("İ", true), ("y", false)]
+        );
     }
 }

@@ -13,7 +13,9 @@ use rapidfind_core::history::SnapInfo;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Graphics::GdiPlus::*;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::tree::signed_size;
@@ -58,11 +60,17 @@ pub fn key(path: &str) -> String {
 pub fn day(t: i64, with_time: bool) -> String {
     let s = fmt::time((t + 11_644_473_600) * 10_000_000);
     // fmt::time gives "YYYY-MM-DD HH:MM".
-    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let m: usize = s.get(5..7).and_then(|x| x.parse().ok()).unwrap_or(1);
     let d: u32 = s.get(8..10).and_then(|x| x.parse().ok()).unwrap_or(1);
     let base = format!("{} {d}", months[(m.clamp(1, 12)) - 1]);
-    if with_time { format!("{base} {}", s.get(11..16).unwrap_or("")) } else { base }
+    if with_time {
+        format!("{base} {}", s.get(11..16).unwrap_or(""))
+    } else {
+        base
+    }
 }
 
 /// "today", "yesterday", "7 days ago".
@@ -81,7 +89,10 @@ pub fn ago(t: i64) -> String {
 /// The snapshot closest to `days` ago.
 pub fn snap_days_ago(snaps: &[SnapInfo], days: i64) -> Option<SnapInfo> {
     let target = rapidfind_core::history::now_unix() - days * 86_400;
-    snaps.iter().min_by_key(|s| (s.time - target).abs()).cloned()
+    snaps
+        .iter()
+        .min_by_key(|s| (s.time - target).abs())
+        .cloned()
 }
 
 // ---- data the drawings take ------------------------------------------------------------
@@ -111,7 +122,14 @@ pub struct StripData {
 
 impl StripData {
     fn totals(&self) -> Vec<u64> {
-        (0..self.times.len()).map(|i| self.layers.iter().map(|l| l.values.get(i).copied().unwrap_or(0)).sum()).collect()
+        (0..self.times.len())
+            .map(|i| {
+                self.layers
+                    .iter()
+                    .map(|l| l.values.get(i).copied().unwrap_or(0))
+                    .sum()
+            })
+            .collect()
     }
 
     /// "full in ~19 days (Nov 8)" from the free-space trend of the last two
@@ -120,15 +138,28 @@ impl StripData {
         let now = *self.times.last()?;
         let from = now - 14 * 86_400;
         let series: Vec<(f64, f64)> = if !self.free.is_empty() {
-            self.times.iter().zip(&self.free).filter(|(t, f)| **t >= from && **f != u64::MAX).map(|(t, f)| (*t as f64, *f as f64)).collect()
+            self.times
+                .iter()
+                .zip(&self.free)
+                .filter(|(t, f)| **t >= from && **f != u64::MAX)
+                .map(|(t, f)| (*t as f64, *f as f64))
+                .collect()
         } else {
-            self.times.iter().zip(self.totals()).filter(|(t, _)| **t >= from).map(|(t, v)| (*t as f64, v as f64)).collect()
+            self.times
+                .iter()
+                .zip(self.totals())
+                .filter(|(t, _)| **t >= from)
+                .map(|(t, v)| (*t as f64, v as f64))
+                .collect()
         };
         if series.len() < 3 || series.last()?.0 - series[0].0 < 2.0 * 86_400.0 {
             return None;
         }
         let n = series.len() as f64;
-        let (mx, my) = (series.iter().map(|p| p.0).sum::<f64>() / n, series.iter().map(|p| p.1).sum::<f64>() / n);
+        let (mx, my) = (
+            series.iter().map(|p| p.0).sum::<f64>() / n,
+            series.iter().map(|p| p.1).sum::<f64>() / n,
+        );
         let num: f64 = series.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
         let den: f64 = series.iter().map(|p| (p.0 - mx).powi(2)).sum();
         if den == 0.0 {
@@ -145,9 +176,15 @@ impl StripData {
             if days > 730.0 {
                 return None;
             }
-            return Some(format!("full in ~{} days ({}) at {}/week", days.round() as i64, day(now + (days * 86_400.0) as i64, false), signed_size(-per_week as i64)));
+            return Some(format!(
+                "full in ~{} days ({}) at {}/week",
+                days.round() as i64,
+                day(now + (days * 86_400.0) as i64, false),
+                signed_size(-per_week as i64)
+            ));
         }
-        (per_week.abs() >= (1u64 << 20) as f64).then(|| format!("{}/week", signed_size(per_week as i64)))
+        (per_week.abs() >= (1u64 << 20) as f64)
+            .then(|| format!("{}/week", signed_size(per_week as i64)))
     }
 }
 
@@ -207,7 +244,8 @@ pub struct DayChange {
 /// interval covers, in proportion to the time in each. `u64::MAX` values
 /// (not recorded) break the series.
 pub fn daily(times: &[i64], vals: &[u64]) -> Vec<DayChange> {
-    let mut by_day: std::collections::BTreeMap<i64, (f64, bool)> = std::collections::BTreeMap::new();
+    let mut by_day: std::collections::BTreeMap<i64, (f64, bool)> =
+        std::collections::BTreeMap::new();
     for i in 1..times.len().min(vals.len()) {
         let (t0, t1, v0, v1) = (times[i - 1], times[i], vals[i - 1], vals[i]);
         if v0 == u64::MAX || v1 == u64::MAX || t1 <= t0 {
@@ -228,7 +266,14 @@ pub fn daily(times: &[i64], vals: &[u64]) -> Vec<DayChange> {
             ds = next;
         }
     }
-    by_day.into_iter().map(|(start, (d, estimated))| DayChange { start, delta: d.round() as i64, estimated }).collect()
+    by_day
+        .into_iter()
+        .map(|(start, (d, estimated))| DayChange {
+            start,
+            delta: d.round() as i64,
+            estimated,
+        })
+        .collect()
 }
 
 /// Squarified treemap (Bruls, Huizing, van Wijk): rectangles `(x, y, w, h)`
@@ -248,7 +293,9 @@ pub fn squarify(areas: &[f64], r: (f64, f64, f64, f64)) -> Vec<(f64, f64, f64, f
         let side = w.min(h);
         let worst = |row: &[f64]| {
             let s: f64 = row.iter().sum();
-            let (mx, mn) = row.iter().fold((0f64, f64::MAX), |(mx, mn), &v| (mx.max(v), mn.min(v)));
+            let (mx, mn) = row
+                .iter()
+                .fold((0f64, f64::MAX), |(mx, mn), &v| (mx.max(v), mn.min(v)));
             (side * side * mx / (s * s)).max(s * s / (side * side * mn))
         };
         let mut j = i + 1;
@@ -290,7 +337,12 @@ pub fn squarify(areas: &[f64], r: (f64, f64, f64, f64)) -> Vec<(f64, f64, f64, f
 pub fn gdiplus_start() {
     static TOKEN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     TOKEN.get_or_init(|| {
-        let input = GdiplusStartupInput { GdiplusVersion: 1, DebugEventCallback: 0, SuppressBackgroundThread: 0, SuppressExternalCodecs: 0 };
+        let input = GdiplusStartupInput {
+            GdiplusVersion: 1,
+            DebugEventCallback: 0,
+            SuppressBackgroundThread: 0,
+            SuppressExternalCodecs: 0,
+        };
         let mut token = 0usize;
         unsafe { GdiplusStartup(&mut token, &input, null_mut()) };
         token
@@ -317,7 +369,13 @@ impl Gfx {
         unsafe {
             let mut b = null_mut();
             GdipCreateSolidFill(argb(c, a), &mut b);
-            GdipFillPolygonI(self.0, b as *mut GpBrush, pts.as_ptr(), pts.len() as i32, FillModeAlternate);
+            GdipFillPolygonI(
+                self.0,
+                b as *mut GpBrush,
+                pts.as_ptr(),
+                pts.len() as i32,
+                FillModeAlternate,
+            );
             GdipDeleteBrush(b as *mut GpBrush);
         }
     }
@@ -368,7 +426,13 @@ fn text(hdc: HDC, s: &str, rc: &RECT, flags: u32, color: COLORREF) {
     unsafe {
         SetBkMode(hdc, TRANSPARENT as i32);
         SetTextColor(hdc, color);
-        DrawTextW(hdc, w16.as_ptr(), w16.len() as i32, &mut r, flags | DT_NOPREFIX | DT_SINGLELINE);
+        DrawTextW(
+            hdc,
+            w16.as_ptr(),
+            w16.len() as i32,
+            &mut r,
+            flags | DT_NOPREFIX | DT_SINGLELINE,
+        );
     }
 }
 
@@ -380,7 +444,13 @@ fn text_width(hdc: HDC, s: &str) -> i32 {
 }
 
 /// Layer colors: the Cove categorical order, then gray for "everything else".
-const LAYER_COLORS: [COLORREF; 5] = [0x00D6_782A, 0x0034_68EB, 0x007A_AF1B, 0x0000_A1ED, 0x00A4_7BE8];
+const LAYER_COLORS: [COLORREF; 5] = [
+    0x00D6_782A,
+    0x0034_68EB,
+    0x007A_AF1B,
+    0x0000_A1ED,
+    0x00A4_7BE8,
+];
 const OTHER: COLORREF = 0x00B7_C2C3;
 const INK: COLORREF = 0x0035_3535;
 const MUTED: COLORREF = 0x0081_8789;
@@ -404,10 +474,22 @@ pub fn nearest(times: &[i64], x: i32, x0: i32, x1: i32) -> Option<usize> {
 
 /// The plot area of the strip's client rect (room for labels around it).
 pub fn plot_rect(hwnd: HWND, rc: &RECT) -> RECT {
-    RECT { left: rc.left + px(hwnd, 12), top: rc.top + px(hwnd, 26), right: rc.right - px(hwnd, 12), bottom: rc.bottom - px(hwnd, 18) }
+    RECT {
+        left: rc.left + px(hwnd, 12),
+        top: rc.top + px(hwnd, 26),
+        right: rc.right - px(hwnd, 12),
+        bottom: rc.bottom - px(hwnd, 18),
+    }
 }
 
-pub fn draw_strip(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&StripData>, hover_x: Option<i32>, font: HFONT) {
+pub fn draw_strip(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    d: Option<&StripData>,
+    hover_x: Option<i32>,
+    font: HFONT,
+) {
     unsafe {
         let bg = GetSysColorBrush(COLOR_WINDOW);
         FillRect(hdc, rc, bg);
@@ -416,10 +498,23 @@ pub fn draw_strip(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&StripData>, hover_
     let pr = plot_rect(hwnd, rc);
     let Some(d) = d.filter(|d| d.times.len() >= 2) else {
         let msg = match d {
-            Some(_) => "History starts today: rapidfind keeps a snapshot of folder sizes every day. Come back tomorrow to see what grew.",
+            Some(_) => {
+                "History starts today: rapidfind keeps a snapshot of folder sizes every day. Come back tomorrow to see what grew."
+            }
             None => "Folder size history isn't available.",
         };
-        text(hdc, msg, &RECT { left: pr.left, top: rc.top, right: pr.right, bottom: rc.bottom }, DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS, MUTED);
+        text(
+            hdc,
+            msg,
+            &RECT {
+                left: pr.left,
+                top: rc.top,
+                right: pr.right,
+                bottom: rc.bottom,
+            },
+            DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
+            MUTED,
+        );
         return;
     };
     let totals = d.totals();
@@ -427,64 +522,176 @@ pub fn draw_strip(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&StripData>, hover_
     // GB on a 500 GB folder would be invisible otherwise. Each layer's gain
     // stacks above the zero line, its loss below; a line shows the total.
     let n = d.times.len();
-    let deltas: Vec<Vec<i64>> = d.layers.iter().map(|l| l.values.iter().map(|&v| v as i64 - l.values[0] as i64).collect()).collect();
+    let deltas: Vec<Vec<i64>> = d
+        .layers
+        .iter()
+        .map(|l| {
+            l.values
+                .iter()
+                .map(|&v| v as i64 - l.values[0] as i64)
+                .collect()
+        })
+        .collect();
     let total_delta: Vec<i64> = (0..n).map(|i| deltas.iter().map(|l| l[i]).sum()).collect();
-    let pos_max = (0..n).map(|i| deltas.iter().map(|l| l[i].max(0)).sum::<i64>()).max().unwrap_or(0);
-    let neg_min = (0..n).map(|i| deltas.iter().map(|l| l[i].min(0)).sum::<i64>()).min().unwrap_or(0);
+    let pos_max = (0..n)
+        .map(|i| deltas.iter().map(|l| l[i].max(0)).sum::<i64>())
+        .max()
+        .unwrap_or(0);
+    let neg_min = (0..n)
+        .map(|i| deltas.iter().map(|l| l[i].min(0)).sum::<i64>())
+        .min()
+        .unwrap_or(0);
     let (lo, hi) = (neg_min.min(0), pos_max.max(0));
     let range = ((hi - lo) as f64 * 1.08).max(1.0);
-    let y_of = |v: i64| pr.bottom - ((pr.bottom - pr.top) as f64 * ((v - lo) as f64 + (hi - lo) as f64 * 0.04) / range) as i32;
-    let xs: Vec<i32> = d.times.iter().map(|&t| x_of(&d.times, t, pr.left, pr.right)).collect();
+    let y_of = |v: i64| {
+        pr.bottom
+            - ((pr.bottom - pr.top) as f64 * ((v - lo) as f64 + (hi - lo) as f64 * 0.04) / range)
+                as i32
+    };
+    let xs: Vec<i32> = d
+        .times
+        .iter()
+        .map(|&t| x_of(&d.times, t, pr.left, pr.right))
+        .collect();
     {
         let g = Gfx::new(hdc);
         // Comparison span shaded.
         if let Some(b) = d.base {
-            g.rect(xs[b], pr.top, pr.right - xs[b], pr.bottom - pr.top, ACCENT, 28);
+            g.rect(
+                xs[b],
+                pr.top,
+                pr.right - xs[b],
+                pr.bottom - pr.top,
+                ACCENT,
+                28,
+            );
         }
         let (mut up, mut down) = (vec![0i64; n], vec![0i64; n]);
         for (li, l) in deltas.iter().enumerate() {
-            let c = if li + 1 == deltas.len() { OTHER } else { LAYER_COLORS[li % LAYER_COLORS.len()] };
+            let c = if li + 1 == deltas.len() {
+                OTHER
+            } else {
+                LAYER_COLORS[li % LAYER_COLORS.len()]
+            };
             for positive in [true, false] {
                 let base = if positive { &up } else { &down };
-                let top: Vec<i64> = base.iter().zip(l).map(|(b, v)| if positive { b + v.max(&0) } else { b + v.min(&0) }).collect();
+                let top: Vec<i64> = base
+                    .iter()
+                    .zip(l)
+                    .map(|(b, v)| {
+                        if positive {
+                            b + v.max(&0)
+                        } else {
+                            b + v.min(&0)
+                        }
+                    })
+                    .collect();
                 if top != *base {
-                    let mut pts: Vec<Point> = xs.iter().zip(&top).map(|(&x, &v)| Point { X: x, Y: y_of(v) }).collect();
-                    pts.extend(xs.iter().zip(base).rev().map(|(&x, &v)| Point { X: x, Y: y_of(v) }));
+                    let mut pts: Vec<Point> = xs
+                        .iter()
+                        .zip(&top)
+                        .map(|(&x, &v)| Point { X: x, Y: y_of(v) })
+                        .collect();
+                    pts.extend(
+                        xs.iter()
+                            .zip(base)
+                            .rev()
+                            .map(|(&x, &v)| Point { X: x, Y: y_of(v) }),
+                    );
                     g.poly(&pts, c, 210);
                 }
                 if positive { up = top } else { down = top }
             }
         }
         let y0 = y_of(0);
-        g.lines(&[Point { X: pr.left, Y: y0 }, Point { X: pr.right, Y: y0 }], MUTED, 1.0, false);
-        let line: Vec<Point> = xs.iter().zip(&total_delta).map(|(&x, &v)| Point { X: x, Y: y_of(v) }).collect();
+        g.lines(
+            &[Point { X: pr.left, Y: y0 }, Point { X: pr.right, Y: y0 }],
+            MUTED,
+            1.0,
+            false,
+        );
+        let line: Vec<Point> = xs
+            .iter()
+            .zip(&total_delta)
+            .map(|(&x, &v)| Point { X: x, Y: y_of(v) })
+            .collect();
         g.lines(&line, INK, 1.5, false);
         for &i in &d.save_points {
             g.dot(xs[i], pr.top + px(hwnd, 3), px(hwnd, 3), INK);
         }
         if let Some(b) = d.base {
-            g.lines(&[Point { X: xs[b], Y: pr.top }, Point { X: xs[b], Y: pr.bottom }], ACCENT, 2.0, false);
+            g.lines(
+                &[
+                    Point {
+                        X: xs[b],
+                        Y: pr.top,
+                    },
+                    Point {
+                        X: xs[b],
+                        Y: pr.bottom,
+                    },
+                ],
+                ACCENT,
+                2.0,
+                false,
+            );
         }
         if let Some(hx) = hover_x
             && let Some(i) = nearest(&d.times, hx, pr.left, pr.right)
         {
-            g.lines(&[Point { X: xs[i], Y: pr.top }, Point { X: xs[i], Y: pr.bottom }], INK, 1.0, true);
+            g.lines(
+                &[
+                    Point {
+                        X: xs[i],
+                        Y: pr.top,
+                    },
+                    Point {
+                        X: xs[i],
+                        Y: pr.bottom,
+                    },
+                ],
+                INK,
+                1.0,
+                true,
+            );
             g.dot(xs[i], y_of(total_delta[i]), px(hwnd, 3), INK);
         }
     }
     // Scale: the extremes, beside the plot.
     for (v, y) in [(hi, pr.top), (lo, pr.bottom - px(hwnd, 14))] {
         if v != 0 {
-            text(hdc, &signed_size(v), &RECT { left: pr.left + px(hwnd, 4), top: y, right: pr.right, bottom: y + px(hwnd, 14) }, DT_LEFT | DT_TOP, MUTED);
+            text(
+                hdc,
+                &signed_size(v),
+                &RECT {
+                    left: pr.left + px(hwnd, 4),
+                    top: y,
+                    right: pr.right,
+                    bottom: y + px(hwnd, 14),
+                },
+                DT_LEFT | DT_TOP,
+                MUTED,
+            );
         }
     }
     // Labels: title and forecast on top, dates below, the hovered value.
-    let top = RECT { left: pr.left, top: rc.top + px(hwnd, 4), right: pr.right, bottom: pr.top - px(hwnd, 2) };
+    let top = RECT {
+        left: pr.left,
+        top: rc.top + px(hwnd, 4),
+        right: pr.right,
+        bottom: pr.top - px(hwnd, 2),
+    };
     let mut title = d.title.clone();
     if let Some(f) = d.forecast() {
         title.push_str(&format!("   ·   {f}"));
     }
-    text(hdc, &title, &top, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS, INK);
+    text(
+        hdc,
+        &title,
+        &top,
+        DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
+        INK,
+    );
     let legend: Vec<String> = d.layers.iter().map(|l| l.label.clone()).collect();
     let mut lx = pr.right;
     for (li, name) in legend.iter().enumerate().rev() {
@@ -493,30 +700,76 @@ pub fn draw_strip(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&StripData>, hover_
         if x < pr.left + text_width(hdc, &title) + px(hwnd, 30) {
             break;
         }
-        text(hdc, name, &RECT { left: x, ..top }, DT_LEFT | DT_VCENTER, MUTED);
-        let c = if li + 1 == legend.len() { OTHER } else { LAYER_COLORS[li % LAYER_COLORS.len()] };
+        text(
+            hdc,
+            name,
+            &RECT { left: x, ..top },
+            DT_LEFT | DT_VCENTER,
+            MUTED,
+        );
+        let c = if li + 1 == legend.len() {
+            OTHER
+        } else {
+            LAYER_COLORS[li % LAYER_COLORS.len()]
+        };
         unsafe {
             let br = CreateSolidBrush(c);
             let sq = px(hwnd, 9);
             let cy = (top.top + top.bottom) / 2;
-            FillRect(hdc, &RECT { left: x - sq - px(hwnd, 4), top: cy - sq / 2, right: x - px(hwnd, 4), bottom: cy + sq / 2 }, br);
+            FillRect(
+                hdc,
+                &RECT {
+                    left: x - sq - px(hwnd, 4),
+                    top: cy - sq / 2,
+                    right: x - px(hwnd, 4),
+                    bottom: cy + sq / 2,
+                },
+                br,
+            );
             DeleteObject(br as _);
         }
         lx = x - px(hwnd, 22);
     }
-    let bottom = RECT { left: pr.left, top: pr.bottom + px(hwnd, 2), right: pr.right, bottom: rc.bottom };
-    text(hdc, &day(d.times[0], false), &bottom, DT_LEFT | DT_TOP, MUTED);
+    let bottom = RECT {
+        left: pr.left,
+        top: pr.bottom + px(hwnd, 2),
+        right: pr.right,
+        bottom: rc.bottom,
+    };
+    text(
+        hdc,
+        &day(d.times[0], false),
+        &bottom,
+        DT_LEFT | DT_TOP,
+        MUTED,
+    );
     text(hdc, "now", &bottom, DT_RIGHT | DT_TOP, MUTED);
     if let Some(b) = d.base {
         let label = format!("compared with {}", day(d.times[b], false));
         let w = text_width(hdc, &label);
         let x = (xs[b] - w / 2).clamp(pr.left + px(hwnd, 50), pr.right - w - px(hwnd, 30));
-        text(hdc, &label, &RECT { left: x, ..bottom }, DT_LEFT | DT_TOP, ACCENT);
+        text(
+            hdc,
+            &label,
+            &RECT { left: x, ..bottom },
+            DT_LEFT | DT_TOP,
+            ACCENT,
+        );
     }
     if let Some(hx) = hover_x
         && let Some(i) = nearest(&d.times, hx, pr.left, pr.right)
     {
-        let mut label = format!("{}: {} ({} since {})", if i + 1 == d.times.len() { "now".to_string() } else { day(d.times[i], true) }, fmt::size(totals[i]), signed_size(totals[i] as i64 - totals[0] as i64), day(d.times[0], false));
+        let mut label = format!(
+            "{}: {} ({} since {})",
+            if i + 1 == d.times.len() {
+                "now".to_string()
+            } else {
+                day(d.times[i], true)
+            },
+            fmt::size(totals[i]),
+            signed_size(totals[i] as i64 - totals[0] as i64),
+            day(d.times[0], false)
+        );
         if let Some(f) = d.free.get(i).filter(|&&f| f != u64::MAX) {
             label.push_str(&format!(", {} free", fmt::size(*f)));
         }
@@ -525,17 +778,33 @@ pub fn draw_strip(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&StripData>, hover_
         }
         let w = text_width(hdc, &label);
         let x = (xs[i] + px(hwnd, 6)).min(pr.right - w);
-        let r = RECT { left: x - px(hwnd, 3), top: pr.top + px(hwnd, 2), right: x + w + px(hwnd, 3), bottom: pr.top + px(hwnd, 20) };
+        let r = RECT {
+            left: x - px(hwnd, 3),
+            top: pr.top + px(hwnd, 2),
+            right: x + w + px(hwnd, 3),
+            bottom: pr.top + px(hwnd, 20),
+        };
         unsafe {
             FillRect(hdc, &r, GetSysColorBrush(COLOR_WINDOW));
         }
-        text(hdc, &label, &RECT { left: x, ..r }, DT_LEFT | DT_VCENTER, INK);
+        text(
+            hdc,
+            &label,
+            &RECT { left: x, ..r },
+            DT_LEFT | DT_VCENTER,
+            INK,
+        );
     }
 }
 
 pub const TAB_MAP: u8 = 2;
 pub const TAB_CALENDAR: u8 = 3;
-const TABS: [(&str, i32); 4] = [("Where it went", 30), ("Path", 17), ("Map", 16), ("Calendar", 23)];
+const TABS: [(&str, i32); 4] = [
+    ("Where it went", 30),
+    ("Path", 17),
+    ("Map", 16),
+    ("Calendar", 23),
+];
 
 /// Clickable tab labels of the details pane: (rect, tab), widths in
 /// proportion to their labels.
@@ -549,7 +818,12 @@ pub fn pane_tabs(hwnd: HWND, rc: &RECT) -> Vec<(RECT, u8)> {
         .enumerate()
         .map(|(i, t)| {
             let w = total * t.1 / weights;
-            let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
+            let r = RECT {
+                left: x,
+                top: y,
+                right: x + w,
+                bottom: y + h,
+            };
             x += w;
             (r, i as u8)
         })
@@ -559,7 +833,12 @@ pub fn pane_tabs(hwnd: HWND, rc: &RECT) -> Vec<(RECT, u8)> {
 /// Where a tab draws its content.
 fn content_area(hwnd: HWND, rc: &RECT) -> RECT {
     let m = px(hwnd, 12);
-    RECT { left: rc.left + m, top: pane_tabs(hwnd, rc)[0].0.bottom + px(hwnd, 12), right: rc.right - m, bottom: rc.bottom - m }
+    RECT {
+        left: rc.left + m,
+        top: pane_tabs(hwnd, rc)[0].0.bottom + px(hwnd, 12),
+        right: rc.right - m,
+        bottom: rc.bottom - m,
+    }
 }
 
 fn inside(r: &RECT, x: i32, y: i32) -> bool {
@@ -578,7 +857,12 @@ pub struct MapBox<'a> {
 }
 
 fn to_rect(r: (f64, f64, f64, f64)) -> RECT {
-    RECT { left: r.0.round() as i32, top: r.1.round() as i32, right: (r.0 + r.2).round() as i32, bottom: (r.1 + r.3).round() as i32 }
+    RECT {
+        left: r.0.round() as i32,
+        top: r.1.round() as i32,
+        right: (r.0 + r.2).round() as i32,
+        bottom: (r.1 + r.3).round() as i32,
+    }
 }
 
 /// Lays out `items` (and the children of boxes big enough to show them) in `r`.
@@ -587,18 +871,46 @@ pub fn map_layout<'a>(hwnd: HWND, items: &'a [MapItem], r: &RECT) -> Vec<MapBox<
     let place = |items: &'a [MapItem], r: &RECT| -> Vec<(RECT, &'a MapItem)> {
         let list: Vec<&MapItem> = items.iter().filter(|i| i.area() > 0).collect();
         let areas: Vec<f64> = list.iter().map(|i| i.area() as f64).collect();
-        let rects = squarify(&areas, (r.left as f64, r.top as f64, (r.right - r.left) as f64, (r.bottom - r.top) as f64));
-        list.into_iter().zip(rects).map(|(i, q)| (to_rect(q), i)).collect()
+        let rects = squarify(
+            &areas,
+            (
+                r.left as f64,
+                r.top as f64,
+                (r.right - r.left) as f64,
+                (r.bottom - r.top) as f64,
+            ),
+        );
+        list.into_iter()
+            .zip(rects)
+            .map(|(i, q)| (to_rect(q), i))
+            .collect()
     };
     let header = px(hwnd, 17);
     let pad = px(hwnd, 2);
     for (rect, item) in place(items, r) {
-        let opened = !item.kids.is_empty() && rect.right - rect.left > px(hwnd, 48) && rect.bottom - rect.top > header + px(hwnd, 30);
-        out.push(MapBox { rect, item, level: 0, opened });
+        let opened = !item.kids.is_empty()
+            && rect.right - rect.left > px(hwnd, 48)
+            && rect.bottom - rect.top > header + px(hwnd, 30);
+        out.push(MapBox {
+            rect,
+            item,
+            level: 0,
+            opened,
+        });
         if opened {
-            let inner = RECT { left: rect.left + pad, top: rect.top + header, right: rect.right - pad, bottom: rect.bottom - pad };
+            let inner = RECT {
+                left: rect.left + pad,
+                top: rect.top + header,
+                right: rect.right - pad,
+                bottom: rect.bottom - pad,
+            };
             for (r2, k) in place(&item.kids, &inner) {
-                out.push(MapBox { rect: r2, item: k, level: 1, opened: false });
+                out.push(MapBox {
+                    rect: r2,
+                    item: k,
+                    level: 1,
+                    opened: false,
+                });
             }
         }
     }
@@ -607,13 +919,20 @@ pub fn map_layout<'a>(hwnd: HWND, items: &'a [MapItem], r: &RECT) -> Vec<MapBox<
 
 /// The map's own area inside the content (a line at the bottom for the hover text).
 fn map_rect(hwnd: HWND, area: &RECT) -> RECT {
-    RECT { bottom: area.bottom - px(hwnd, 40), ..*area }
+    RECT {
+        bottom: area.bottom - px(hwnd, 40),
+        ..*area
+    }
 }
 
 /// The deepest box under the pointer.
 pub fn map_hit<'a>(hwnd: HWND, rc: &RECT, d: &'a PaneData, x: i32, y: i32) -> Option<&'a MapItem> {
     let r = map_rect(hwnd, &content_area(hwnd, rc));
-    map_layout(hwnd, &d.map, &r).into_iter().rev().find(|b| inside(&b.rect, x, y)).map(|b| b.item)
+    map_layout(hwnd, &d.map, &r)
+        .into_iter()
+        .rev()
+        .find(|b| inside(&b.rect, x, y))
+        .map(|b| b.item)
 }
 
 fn mix(a: COLORREF, b: COLORREF, t: f64) -> COLORREF {
@@ -629,11 +948,25 @@ fn change_color(change: i64, area: u64) -> (COLORREF, bool) {
     if area == 0 || change == 0 {
         return (NEUTRAL, false);
     }
-    let t = ((change.unsigned_abs() as f64 / area as f64) * 3.0).min(1.0).sqrt() * 0.92;
-    (mix(NEUTRAL, if change > 0 { DANGER } else { ACCENT }, t), t > 0.55)
+    let t = ((change.unsigned_abs() as f64 / area as f64) * 3.0)
+        .min(1.0)
+        .sqrt()
+        * 0.92;
+    (
+        mix(NEUTRAL, if change > 0 { DANGER } else { ACCENT }, t),
+        t > 0.55,
+    )
 }
 
-fn draw_map(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<(i32, i32)>, bold: HFONT, font: HFONT) {
+fn draw_map(
+    hwnd: HWND,
+    hdc: HDC,
+    area: &RECT,
+    d: &PaneData,
+    hover: Option<(i32, i32)>,
+    bold: HFONT,
+    font: HFONT,
+) {
     if d.map.is_empty() {
         text(hdc, "Nothing to map here.", area, DT_LEFT | DT_TOP, MUTED);
         return;
@@ -651,7 +984,12 @@ fn draw_map(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<(i32,
             FrameRect(hdc, &b.rect, gap);
             let (w, h) = (b.rect.right - b.rect.left, b.rect.bottom - b.rect.top);
             let ink = if dark { 0x00FF_FFFF } else { INK };
-            let lr = RECT { left: b.rect.left + px(hwnd, 4), top: b.rect.top + px(hwnd, 1), right: b.rect.right - px(hwnd, 3), bottom: b.rect.top + px(hwnd, 17) };
+            let lr = RECT {
+                left: b.rect.left + px(hwnd, 4),
+                top: b.rect.top + px(hwnd, 1),
+                right: b.rect.right - px(hwnd, 3),
+                bottom: b.rect.top + px(hwnd, 17),
+            };
             let has_kids = b.opened;
             if b.level == 0 && (w > px(hwnd, 36) && h > px(hwnd, 15)) {
                 SelectObject(hdc, bold as _);
@@ -662,13 +1000,39 @@ fn draw_map(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<(i32,
                 text(hdc, &label, &lr, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, ink);
                 if !has_kids && h > px(hwnd, 34) {
                     SelectObject(hdc, font as _);
-                    text(hdc, &fmt::size(b.item.size), &RECT { top: lr.bottom, bottom: lr.bottom + px(hwnd, 16), ..lr }, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, ink);
+                    text(
+                        hdc,
+                        &fmt::size(b.item.size),
+                        &RECT {
+                            top: lr.bottom,
+                            bottom: lr.bottom + px(hwnd, 16),
+                            ..lr
+                        },
+                        DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+                        ink,
+                    );
                 }
                 SelectObject(hdc, font as _);
             } else if b.level == 1 && w > px(hwnd, 40) && h > px(hwnd, 16) {
-                text(hdc, &b.item.name, &lr, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, ink);
+                text(
+                    hdc,
+                    &b.item.name,
+                    &lr,
+                    DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+                    ink,
+                );
                 if h > px(hwnd, 32) && b.item.change() != 0 {
-                    text(hdc, &signed_size(b.item.change()), &RECT { top: lr.bottom, bottom: lr.bottom + px(hwnd, 16), ..lr }, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, ink);
+                    text(
+                        hdc,
+                        &signed_size(b.item.change()),
+                        &RECT {
+                            top: lr.bottom,
+                            bottom: lr.bottom + px(hwnd, 16),
+                            ..lr
+                        },
+                        DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+                        ink,
+                    );
                 }
             }
         }
@@ -684,24 +1048,68 @@ fn draw_map(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<(i32,
         }
     }
     // Below: the hovered box, or how to use the map.
-    let info = RECT { left: area.left, top: r.bottom + px(hwnd, 4), right: area.right, bottom: r.bottom + px(hwnd, 22) };
-    let info2 = RECT { top: info.bottom, bottom: info.bottom + px(hwnd, 18), ..info };
+    let info = RECT {
+        left: area.left,
+        top: r.bottom + px(hwnd, 4),
+        right: area.right,
+        bottom: r.bottom + px(hwnd, 22),
+    };
+    let info2 = RECT {
+        top: info.bottom,
+        bottom: info.bottom + px(hwnd, 18),
+        ..info
+    };
     match hovered.map(|i| boxes[i].item) {
         Some(it) => {
             unsafe { SelectObject(hdc, bold as _) };
-            text(hdc, &it.name, &info, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, INK);
+            text(
+                hdc,
+                &it.name,
+                &info,
+                DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+                INK,
+            );
             unsafe { SelectObject(hdc, font as _) };
             let c = it.change();
             let line = if it.path.is_empty() && it.size == 0 {
                 format!("{} then, gone now", fmt::size(it.before))
             } else {
-                format!("{} now, {} then  ({})", fmt::size(it.size), fmt::size(it.before), signed_size(c))
+                format!(
+                    "{} now, {} then  ({})",
+                    fmt::size(it.size),
+                    fmt::size(it.before),
+                    signed_size(c)
+                )
             };
-            text(hdc, &line, &info2, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, if c > 0 { DANGER } else if c < 0 { ACCENT } else { MUTED });
+            text(
+                hdc,
+                &line,
+                &info2,
+                DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+                if c > 0 {
+                    DANGER
+                } else if c < 0 {
+                    ACCENT
+                } else {
+                    MUTED
+                },
+            );
         }
         None => {
-            text(hdc, "Box size: the bigger of then and now. Red grew, blue shrank.", &info, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, MUTED);
-            text(hdc, "Click a folder to open it, right-click to go up.", &info2, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, MUTED);
+            text(
+                hdc,
+                "Box size: the bigger of then and now. Red grew, blue shrank.",
+                &info,
+                DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+                MUTED,
+            );
+            text(
+                hdc,
+                "Click a folder to open it, right-click to go up.",
+                &info2,
+                DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+                MUTED,
+            );
         }
     }
 }
@@ -745,43 +1153,88 @@ fn cal_layout(hwnd: HWND, area: &RECT) -> CalLayout {
     let wd = local_date(today + 43_200).3;
     // Back to this week's Monday, then whole weeks.
     let monday = rapidfind_core::history::local_midnight(today - wd * 86_400 + 43_200);
-    let first = rapidfind_core::history::local_midnight(monday - (weeks as i64 - 1) * 7 * 86_400 + 43_200);
-    CalLayout { first, weeks, x0: area.left + label_w, y0: area.top + px(hwnd, 18), cell, step }
+    let first =
+        rapidfind_core::history::local_midnight(monday - (weeks as i64 - 1) * 7 * 86_400 + 43_200);
+    CalLayout {
+        first,
+        weeks,
+        x0: area.left + label_w,
+        y0: area.top + px(hwnd, 18),
+        cell,
+        step,
+    }
 }
 
 impl CalLayout {
     /// Local midnight of the cell in column `w`, row `d`.
     fn day(&self, w: i32, d: i32) -> i64 {
-        rapidfind_core::history::local_midnight(self.first + (w as i64 * 7 + d as i64) * 86_400 + 43_200)
+        rapidfind_core::history::local_midnight(
+            self.first + (w as i64 * 7 + d as i64) * 86_400 + 43_200,
+        )
     }
     fn rect(&self, w: i32, d: i32) -> RECT {
         let (x, y) = (self.x0 + w * self.step, self.y0 + d * self.step);
-        RECT { left: x, top: y, right: x + self.cell, bottom: y + self.cell }
+        RECT {
+            left: x,
+            top: y,
+            right: x + self.cell,
+            bottom: y + self.cell,
+        }
     }
     fn hit(&self, x: i32, y: i32) -> Option<i64> {
-        (0..self.weeks).flat_map(|w| (0..7).map(move |d| (w, d))).find(|&(w, d)| inside(&self.rect(w, d), x, y)).map(|(w, d)| self.day(w, d))
+        (0..self.weeks)
+            .flat_map(|w| (0..7).map(move |d| (w, d)))
+            .find(|&(w, d)| inside(&self.rect(w, d), x, y))
+            .map(|(w, d)| self.day(w, d))
     }
 }
 
 /// The day under the pointer (its local midnight), if it isn't in the future.
 pub fn calendar_hit(hwnd: HWND, rc: &RECT, x: i32, y: i32) -> Option<i64> {
     let l = cal_layout(hwnd, &content_area(hwnd, rc));
-    l.hit(x, y).filter(|&d| d <= rapidfind_core::history::now_unix())
+    l.hit(x, y)
+        .filter(|&d| d <= rapidfind_core::history::now_unix())
 }
 
-fn draw_calendar(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<(i32, i32)>, bold: HFONT, font: HFONT) {
+fn draw_calendar(
+    hwnd: HWND,
+    hdc: HDC,
+    area: &RECT,
+    d: &PaneData,
+    hover: Option<(i32, i32)>,
+    bold: HFONT,
+    font: HFONT,
+) {
     let l = cal_layout(hwnd, area);
     let now = rapidfind_core::history::now_unix();
     let by_day: HashMap<i64, DayChange> = d.days.iter().map(|c| (c.start, *c)).collect();
     let visible: Vec<&DayChange> = d.days.iter().filter(|c| c.start >= l.first).collect();
-    let max = visible.iter().map(|c| c.delta.unsigned_abs()).max().unwrap_or(0).max(1);
-    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let max = visible
+        .iter()
+        .map(|c| c.delta.unsigned_abs())
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let hovered = hover.and_then(|(x, y)| l.hit(x, y)).filter(|&t| t <= now);
     unsafe {
         // Weekday labels.
         for (row, name) in [(0, "Mon"), (2, "Wed"), (4, "Fri"), (6, "Sun")] {
             let r = l.rect(0, row);
-            text(hdc, name, &RECT { left: area.left, top: r.top - px(hwnd, 2), right: l.x0 - px(hwnd, 4), bottom: r.bottom + px(hwnd, 2) }, DT_LEFT | DT_VCENTER, MUTED);
+            text(
+                hdc,
+                name,
+                &RECT {
+                    left: area.left,
+                    top: r.top - px(hwnd, 2),
+                    right: l.x0 - px(hwnd, 4),
+                    bottom: r.bottom + px(hwnd, 2),
+                },
+                DT_LEFT | DT_VCENTER,
+                MUTED,
+            );
         }
         let empty = CreatePen(PS_SOLID, 1, GRID);
         let oldp = SelectObject(hdc, empty as _);
@@ -793,7 +1246,18 @@ fn draw_calendar(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<
             if m != last_month && (dd <= 7 || w == 0) {
                 let r = l.rect(w, 0);
                 if w > 0 || dd <= 21 {
-                    text(hdc, months[(m as usize).clamp(1, 12) - 1], &RECT { left: r.left, top: area.top, right: r.left + px(hwnd, 40), bottom: area.top + px(hwnd, 16) }, DT_LEFT | DT_TOP, MUTED);
+                    text(
+                        hdc,
+                        months[(m as usize).clamp(1, 12) - 1],
+                        &RECT {
+                            left: r.left,
+                            top: area.top,
+                            right: r.left + px(hwnd, 40),
+                            bottom: area.top + px(hwnd, 16),
+                        },
+                        DT_LEFT | DT_TOP,
+                        MUTED,
+                    );
                 }
                 last_month = m;
             }
@@ -806,13 +1270,26 @@ fn draw_calendar(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<
                 match by_day.get(&day) {
                     Some(c) => {
                         let t = (c.delta.unsigned_abs() as f64 / max as f64).sqrt();
-                        let col = if c.delta == 0 { NEUTRAL } else { mix(NEUTRAL, if c.delta > 0 { DANGER } else { ACCENT }, 0.15 + 0.85 * t) };
+                        let col = if c.delta == 0 {
+                            NEUTRAL
+                        } else {
+                            mix(
+                                NEUTRAL,
+                                if c.delta > 0 { DANGER } else { ACCENT },
+                                0.15 + 0.85 * t,
+                            )
+                        };
                         let br = CreateSolidBrush(col);
                         FillRect(hdc, &r, br);
                         DeleteObject(br as _);
                         if c.estimated {
                             // Spread over a longer interval: a dotted corner.
-                            let dot = RECT { left: r.right - px(hwnd, 5), top: r.top + px(hwnd, 2), right: r.right - px(hwnd, 2), bottom: r.top + px(hwnd, 5) };
+                            let dot = RECT {
+                                left: r.right - px(hwnd, 5),
+                                top: r.top + px(hwnd, 2),
+                                right: r.right - px(hwnd, 2),
+                                bottom: r.top + px(hwnd, 5),
+                            };
                             FillRect(hdc, &dot, GetSysColorBrush(COLOR_WINDOW));
                         }
                     }
@@ -835,10 +1312,19 @@ fn draw_calendar(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<
     }
     let line = px(hwnd, 19);
     let mut y = l.y0 + 7 * l.step + px(hwnd, 10);
-    let row = |y: i32| RECT { left: area.left, top: y, right: area.right, bottom: y + line };
+    let row = |y: i32| RECT {
+        left: area.left,
+        top: y,
+        right: area.right,
+        bottom: y + line,
+    };
     let date = |t: i64| {
         let (_, _, _, wd) = local_date(t + 43_200);
-        format!("{} {}", ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][wd as usize], day(t + 43_200, false))
+        format!(
+            "{} {}",
+            ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][wd as usize],
+            day(t + 43_200, false)
+        )
     };
     if let Some(h) = hovered {
         unsafe { SelectObject(hdc, bold as _) };
@@ -846,38 +1332,122 @@ fn draw_calendar(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData, hover: Option<
         unsafe { SelectObject(hdc, font as _) };
         y += line;
         let (msg, col) = match by_day.get(&h) {
-            Some(c) => (format!("{}{}", signed_size(c.delta), if c.estimated { "  (spread over a longer gap between snapshots)" } else { "" }), if c.delta > 0 { DANGER } else if c.delta < 0 { ACCENT } else { MUTED }),
+            Some(c) => (
+                format!(
+                    "{}{}",
+                    signed_size(c.delta),
+                    if c.estimated {
+                        "  (spread over a longer gap between snapshots)"
+                    } else {
+                        ""
+                    }
+                ),
+                if c.delta > 0 {
+                    DANGER
+                } else if c.delta < 0 {
+                    ACCENT
+                } else {
+                    MUTED
+                },
+            ),
             None => ("no snapshot covers this day".to_string(), MUTED),
         };
         text(hdc, &msg, &row(y), DT_LEFT | DT_TOP | DT_END_ELLIPSIS, col);
         y += line;
-        text(hdc, "Click to compare with this day", &row(y), DT_LEFT | DT_TOP, MUTED);
+        text(
+            hdc,
+            "Click to compare with this day",
+            &row(y),
+            DT_LEFT | DT_TOP,
+            MUTED,
+        );
         return;
     }
     if visible.is_empty() {
-        text(hdc, "No daily history here yet.", &row(y), DT_LEFT | DT_TOP, MUTED);
+        text(
+            hdc,
+            "No daily history here yet.",
+            &row(y),
+            DT_LEFT | DT_TOP,
+            MUTED,
+        );
         return;
     }
-    if let Some(c) = visible.iter().filter(|c| c.delta > 0).max_by_key(|c| c.delta) {
-        text(hdc, &format!("Biggest growth: {}  {}", date(c.start), signed_size(c.delta)), &row(y), DT_LEFT | DT_TOP | DT_END_ELLIPSIS, DANGER);
+    if let Some(c) = visible
+        .iter()
+        .filter(|c| c.delta > 0)
+        .max_by_key(|c| c.delta)
+    {
+        text(
+            hdc,
+            &format!(
+                "Biggest growth: {}  {}",
+                date(c.start),
+                signed_size(c.delta)
+            ),
+            &row(y),
+            DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+            DANGER,
+        );
         y += line;
     }
-    if let Some(c) = visible.iter().filter(|c| c.delta < 0).min_by_key(|c| c.delta) {
-        text(hdc, &format!("Biggest drop: {}  {}", date(c.start), signed_size(c.delta)), &row(y), DT_LEFT | DT_TOP | DT_END_ELLIPSIS, ACCENT);
+    if let Some(c) = visible
+        .iter()
+        .filter(|c| c.delta < 0)
+        .min_by_key(|c| c.delta)
+    {
+        text(
+            hdc,
+            &format!("Biggest drop: {}  {}", date(c.start), signed_size(c.delta)),
+            &row(y),
+            DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+            ACCENT,
+        );
         y += line;
     }
-    let week: i64 = visible.iter().filter(|c| c.start > now - 7 * 86_400).map(|c| c.delta).sum();
-    text(hdc, &format!("Last 7 days: {}", signed_size(week)), &row(y), DT_LEFT | DT_TOP, INK);
+    let week: i64 = visible
+        .iter()
+        .filter(|c| c.start > now - 7 * 86_400)
+        .map(|c| c.delta)
+        .sum();
+    text(
+        hdc,
+        &format!("Last 7 days: {}", signed_size(week)),
+        &row(y),
+        DT_LEFT | DT_TOP,
+        INK,
+    );
     y += line;
     if visible.iter().any(|c| c.estimated) {
-        text(hdc, "White corner: a share of a longer gap between snapshots.", &row(y), DT_LEFT | DT_TOP | DT_END_ELLIPSIS, MUTED);
+        text(
+            hdc,
+            "White corner: a share of a longer gap between snapshots.",
+            &row(y),
+            DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+            MUTED,
+        );
         y += line;
     }
-    text(hdc, "Click a day to compare with it", &row(y), DT_LEFT | DT_TOP, MUTED);
+    text(
+        hdc,
+        "Click a day to compare with it",
+        &row(y),
+        DT_LEFT | DT_TOP,
+        MUTED,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn draw_pane(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&PaneData>, tab: u8, hover: Option<(i32, i32)>, font: HFONT, bold: HFONT) {
+pub fn draw_pane(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    d: Option<&PaneData>,
+    tab: u8,
+    hover: Option<(i32, i32)>,
+    font: HFONT,
+    bold: HFONT,
+) {
     unsafe {
         FillRect(hdc, rc, GetSysColorBrush(COLOR_WINDOW));
         let pen = CreatePen(PS_SOLID, 1, GRID);
@@ -889,18 +1459,60 @@ pub fn draw_pane(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&PaneData>, tab: u8,
         SelectObject(hdc, font as _);
     }
     let m = px(hwnd, 12);
-    let inner = RECT { left: rc.left + m, top: rc.top + m, right: rc.right - m, bottom: rc.bottom - m };
+    let inner = RECT {
+        left: rc.left + m,
+        top: rc.top + m,
+        right: rc.right - m,
+        bottom: rc.bottom - m,
+    };
     let Some(d) = d else {
-        text(hdc, "Select a folder to see where its space went.", &inner, DT_LEFT | DT_TOP | DT_WORDBREAK, MUTED);
+        text(
+            hdc,
+            "Select a folder to see where its space went.",
+            &inner,
+            DT_LEFT | DT_TOP | DT_WORDBREAK,
+            MUTED,
+        );
         return;
     };
     let line = px(hwnd, 20);
     unsafe { SelectObject(hdc, bold as _) };
-    text(hdc, &d.title, &RECT { bottom: inner.top + line, ..inner }, DT_LEFT | DT_TOP | DT_PATH_ELLIPSIS, INK);
+    text(
+        hdc,
+        &d.title,
+        &RECT {
+            bottom: inner.top + line,
+            ..inner
+        },
+        DT_LEFT | DT_TOP | DT_PATH_ELLIPSIS,
+        INK,
+    );
     unsafe { SelectObject(hdc, font as _) };
     let change = d.now as i64 - d.before as i64;
-    let sub = format!("{} since {}  ({} → {})", signed_size(change), d.since, fmt::size(d.before), fmt::size(d.now));
-    text(hdc, &sub, &RECT { top: inner.top + line, bottom: inner.top + 2 * line, ..inner }, DT_LEFT | DT_TOP | DT_END_ELLIPSIS, if change > 0 { DANGER } else if change < 0 { ACCENT } else { MUTED });
+    let sub = format!(
+        "{} since {}  ({} → {})",
+        signed_size(change),
+        d.since,
+        fmt::size(d.before),
+        fmt::size(d.now)
+    );
+    text(
+        hdc,
+        &sub,
+        &RECT {
+            top: inner.top + line,
+            bottom: inner.top + 2 * line,
+            ..inner
+        },
+        DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
+        if change > 0 {
+            DANGER
+        } else if change < 0 {
+            ACCENT
+        } else {
+            MUTED
+        },
+    );
     for (r, t) in pane_tabs(hwnd, rc) {
         let label = TABS[t as usize].0;
         unsafe {
@@ -909,7 +1521,13 @@ pub fn draw_pane(hwnd: HWND, hdc: HDC, rc: &RECT, d: Option<&PaneData>, tab: u8,
             }
             SelectObject(hdc, if t == tab { bold } else { font } as _);
         }
-        text(hdc, label, &r, DT_CENTER | DT_VCENTER, if t == tab { INK } else { MUTED });
+        text(
+            hdc,
+            label,
+            &r,
+            DT_CENTER | DT_VCENTER,
+            if t == tab { INK } else { MUTED },
+        );
     }
     unsafe { SelectObject(hdc, font as _) };
     let area = content_area(hwnd, rc);
@@ -930,14 +1548,37 @@ fn draw_waterfall(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
         None => (d.before as i64, d.now as i64),
     };
     // Rows: start, parts (free space goes the other way), end.
-    let mut rows: Vec<(String, i64, i64, u8)> = vec![(if free_mode { "free then".into() } else { "then".into() }, 0, start, 0)];
+    let mut rows: Vec<(String, i64, i64, u8)> = vec![(
+        if free_mode {
+            "free then".into()
+        } else {
+            "then".into()
+        },
+        0,
+        start,
+        0,
+    )];
     let mut level = start;
     for (name, delta) in &d.parts {
         let step = if free_mode { -delta } else { *delta };
-        rows.push((name.clone(), level, level + step, if *delta > 0 { 1 } else { 2 }));
+        rows.push((
+            name.clone(),
+            level,
+            level + step,
+            if *delta > 0 { 1 } else { 2 },
+        ));
         level += step;
     }
-    rows.push((if free_mode { "free now".into() } else { "now".into() }, 0, end, 0));
+    rows.push((
+        if free_mode {
+            "free now".into()
+        } else {
+            "now".into()
+        },
+        0,
+        end,
+        0,
+    ));
     let lo = rows.iter().map(|r| r.1.min(r.2)).min().unwrap_or(0).min(0);
     let hi = rows.iter().map(|r| r.1.max(r.2)).max().unwrap_or(1).max(1);
     let label_w = px(hwnd, 110);
@@ -954,12 +1595,45 @@ fn draw_waterfall(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
             1 => DANGER,
             _ => ACCENT,
         };
-        g.rect(l, y + px(hwnd, 4), (r - l).max(2), row_h - px(hwnd, 8), c, 230);
-        let lr = RECT { left: area.left, top: y, right: x0 - px(hwnd, 6), bottom: y + row_h };
+        g.rect(
+            l,
+            y + px(hwnd, 4),
+            (r - l).max(2),
+            row_h - px(hwnd, 8),
+            c,
+            230,
+        );
+        let lr = RECT {
+            left: area.left,
+            top: y,
+            right: x0 - px(hwnd, 6),
+            bottom: y + row_h,
+        };
         text(hdc, name, &lr, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS, INK);
         // A part is shown as the folder's own change (in free-space mode it took that much free space).
-        let v = if *kind == 0 { fmt::size(*b as u64) } else { signed_size(if free_mode { a - b } else { b - a }) };
-        text(hdc, &v, &RECT { left: x1 + px(hwnd, 4), top: y, right: area.right, bottom: y + row_h }, DT_RIGHT | DT_VCENTER, if *kind == 1 { DANGER } else if *kind == 2 { ACCENT } else { INK });
+        let v = if *kind == 0 {
+            fmt::size(*b as u64)
+        } else {
+            signed_size(if free_mode { a - b } else { b - a })
+        };
+        text(
+            hdc,
+            &v,
+            &RECT {
+                left: x1 + px(hwnd, 4),
+                top: y,
+                right: area.right,
+                bottom: y + row_h,
+            },
+            DT_RIGHT | DT_VCENTER,
+            if *kind == 1 {
+                DANGER
+            } else if *kind == 2 {
+                ACCENT
+            } else {
+                INK
+            },
+        );
     }
 }
 
@@ -976,9 +1650,35 @@ fn draw_chain(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
         let y = area.top + i as i32 * row_h;
         let w = ((area.right - area.left) as f64 * (*delta.max(&0) as f64 / top as f64)) as i32;
         let shade = (230 - (i as i32 * 18).min(110)) as u8;
-        g.rect(area.left, y + px(hwnd, 2), w.max(px(hwnd, 3)), row_h - px(hwnd, 4), DANGER, shade);
-        let label = format!("{name}  {}  ({} now)", signed_size(*delta), fmt::size(*size));
-        text(hdc, &label, &RECT { left: area.left + px(hwnd, 6), top: y, right: area.right, bottom: y + row_h }, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS, if w > text_width(hdc, &label) + px(hwnd, 12) { 0x00FF_FFFF } else { INK });
+        g.rect(
+            area.left,
+            y + px(hwnd, 2),
+            w.max(px(hwnd, 3)),
+            row_h - px(hwnd, 4),
+            DANGER,
+            shade,
+        );
+        let label = format!(
+            "{name}  {}  ({} now)",
+            signed_size(*delta),
+            fmt::size(*size)
+        );
+        text(
+            hdc,
+            &label,
+            &RECT {
+                left: area.left + px(hwnd, 6),
+                top: y,
+                right: area.right,
+                bottom: y + row_h,
+            },
+            DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
+            if w > text_width(hdc, &label) + px(hwnd, 12) {
+                0x00FF_FFFF
+            } else {
+                INK
+            },
+        );
     }
 }
 
@@ -1003,7 +1703,9 @@ fn paint(h: HWND, draw: impl Fn(HDC, &RECT)) {
 }
 
 unsafe extern "system" fn strip_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let Some(app) = crate::app::app() else { return unsafe { DefWindowProcW(h, msg, wp, lp) } };
+    let Some(app) = crate::app::app() else {
+        return unsafe { DefWindowProcW(h, msg, wp, lp) };
+    };
     let x = (lp & 0xFFFF) as i16 as i32;
     match msg {
         WM_PAINT => {
@@ -1018,7 +1720,12 @@ unsafe extern "system" fn strip_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let first = app.growth.borrow().hover_x.is_none();
             app.growth.borrow_mut().hover_x = Some(x);
             if first {
-                let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                let mut t = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: h,
+                    dwHoverTime: 0,
+                };
                 unsafe { TrackMouseEvent(&mut t) };
             }
             unsafe { InvalidateRect(h, null(), 0) };
@@ -1042,13 +1749,27 @@ unsafe extern "system" fn strip_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 }
 
 unsafe extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let Some(app) = crate::app::app() else { return unsafe { DefWindowProcW(h, msg, wp, lp) } };
-    let pt = POINT { x: (lp & 0xFFFF) as i16 as i32, y: ((lp >> 16) & 0xFFFF) as i16 as i32 };
+    let Some(app) = crate::app::app() else {
+        return unsafe { DefWindowProcW(h, msg, wp, lp) };
+    };
+    let pt = POINT {
+        x: (lp & 0xFFFF) as i16 as i32,
+        y: ((lp >> 16) & 0xFFFF) as i16 as i32,
+    };
     match msg {
         WM_PAINT => {
             paint(h, |hdc, rc| {
                 let g = app.growth.borrow();
-                draw_pane(h, hdc, rc, g.pane.as_ref(), g.tab, g.pane_hover, app.ui_font(), app.ui_bold());
+                draw_pane(
+                    h,
+                    hdc,
+                    rc,
+                    g.pane.as_ref(),
+                    g.tab,
+                    g.pane_hover,
+                    app.ui_font(),
+                    app.ui_bold(),
+                );
             });
             0
         }
@@ -1059,7 +1780,12 @@ unsafe extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             let first = g.pane_hover.is_none();
             g.pane_hover = Some(pt);
             if first {
-                let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                let mut t = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: h,
+                    dwHoverTime: 0,
+                };
                 unsafe { TrackMouseEvent(&mut t) };
             }
             if g.tab >= TAB_MAP {
@@ -1074,7 +1800,10 @@ unsafe extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
             let rc = w::client_rect(h);
-            if let Some((_, t)) = pane_tabs(h, &rc).into_iter().find(|(r, _)| inside(r, pt.x, pt.y)) {
+            if let Some((_, t)) = pane_tabs(h, &rc)
+                .into_iter()
+                .find(|(r, _)| inside(r, pt.x, pt.y))
+            {
                 if msg == WM_LBUTTONDOWN {
                     app.set_growth_tab(t);
                 }
@@ -1085,7 +1814,14 @@ unsafe extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 if msg == WM_RBUTTONDOWN {
                     app.map_up();
                 } else {
-                    let path = { app.growth.borrow().pane.as_ref().and_then(|d| map_hit(h, &rc, d, pt.x, pt.y)).map(|i| i.path.clone()) };
+                    let path = {
+                        app.growth
+                            .borrow()
+                            .pane
+                            .as_ref()
+                            .and_then(|d| map_hit(h, &rc, d, pt.x, pt.y))
+                            .map(|i| i.path.clone())
+                    };
                     if let Some(p) = path.filter(|p| !p.is_empty()) {
                         app.map_open(&p);
                     }
@@ -1108,9 +1844,18 @@ unsafe extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             let rc = w::client_rect(h);
             let g = app.growth.borrow();
             let hand = pane_tabs(h, &rc).iter().any(|(r, _)| inside(r, p.x, p.y))
-                || (tab == TAB_MAP && g.pane.as_ref().and_then(|d| map_hit(h, &rc, d, p.x, p.y)).is_some_and(|i| !i.path.is_empty()))
+                || (tab == TAB_MAP
+                    && g.pane
+                        .as_ref()
+                        .and_then(|d| map_hit(h, &rc, d, p.x, p.y))
+                        .is_some_and(|i| !i.path.is_empty()))
                 || (tab == TAB_CALENDAR && calendar_hit(h, &rc, p.x, p.y).is_some());
-            unsafe { SetCursor(LoadCursorW(null_mut(), if hand { IDC_HAND } else { IDC_ARROW })) };
+            unsafe {
+                SetCursor(LoadCursorW(
+                    null_mut(),
+                    if hand { IDC_HAND } else { IDC_ARROW },
+                ))
+            };
             1
         }
         _ => unsafe { DefWindowProcW(h, msg, wp, lp) },
@@ -1121,7 +1866,13 @@ unsafe extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
 pub fn create(parent: HWND) -> (HWND, HWND) {
     gdiplus_start();
     unsafe {
-        for (class, proc) in [(STRIP_CLASS, strip_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT), (PANE_CLASS, pane_proc)] {
+        for (class, proc) in [
+            (
+                STRIP_CLASS,
+                strip_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+            ),
+            (PANE_CLASS, pane_proc),
+        ] {
             let c = wide(class);
             let wc = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -1156,13 +1907,37 @@ mod tests {
         let now = rapidfind_core::history::now_unix();
         let times: Vec<i64> = (0..8).map(|i| now - (7 - i) * 2 * 86_400).collect();
         // Free space drops 1 GB a day from 20 GB: about 6 days left at the end.
-        let free: Vec<u64> = (0..8).map(|i| (20u64 << 30).saturating_sub((i as u64 * 2) << 30)).collect();
-        let d = StripData { times: times.clone(), free, layers: vec![Layer { label: "x".into(), values: vec![1; 8] }], capacity: 100 << 30, ..Default::default() };
+        let free: Vec<u64> = (0..8)
+            .map(|i| (20u64 << 30).saturating_sub((i as u64 * 2) << 30))
+            .collect();
+        let d = StripData {
+            times: times.clone(),
+            free,
+            layers: vec![Layer {
+                label: "x".into(),
+                values: vec![1; 8],
+            }],
+            capacity: 100 << 30,
+            ..Default::default()
+        };
         let f = d.forecast().unwrap();
-        assert!(f.starts_with("full in ~6 days") || f.starts_with("full in ~5 days"), "{f}");
-        let steady = StripData { free: vec![5 << 30; 8], ..d.clone() };
+        assert!(
+            f.starts_with("full in ~6 days") || f.starts_with("full in ~5 days"),
+            "{f}"
+        );
+        let steady = StripData {
+            free: vec![5 << 30; 8],
+            ..d.clone()
+        };
         assert_eq!(steady.forecast().unwrap(), "free space steady or growing");
-        let growth = StripData { free: vec![], layers: vec![Layer { label: "x".into(), values: (0..8).map(|i| i as u64 * (1 << 30)).collect() }], ..d };
+        let growth = StripData {
+            free: vec![],
+            layers: vec![Layer {
+                label: "x".into(),
+                values: (0..8).map(|i| i as u64 * (1 << 30)).collect(),
+            }],
+            ..d
+        };
         assert!(growth.forecast().unwrap().contains("/week"));
         assert_eq!(nearest(&times, 0, 0, 100), Some(0));
         assert_eq!(nearest(&times, 100, 0, 100), Some(7));
@@ -1177,7 +1952,13 @@ mod tests {
         for (q, a) in r.iter().zip(areas) {
             // Each box gets its share of the area, inside the rect.
             assert!((q.2 * q.3 - a / total * 240_000.0).abs() < 1e-6, "{q:?}");
-            assert!(q.0 >= 10.0 - 1e-9 && q.1 >= 20.0 - 1e-9 && q.0 + q.2 <= 610.0 + 1e-9 && q.1 + q.3 <= 420.0 + 1e-9, "{q:?}");
+            assert!(
+                q.0 >= 10.0 - 1e-9
+                    && q.1 >= 20.0 - 1e-9
+                    && q.0 + q.2 <= 610.0 + 1e-9
+                    && q.1 + q.3 <= 420.0 + 1e-9,
+                "{q:?}"
+            );
         }
         // No two overlap.
         for i in 0..r.len() {
@@ -1195,14 +1976,18 @@ mod tests {
 
     #[test]
     fn daily_changes() {
-        let mid = rapidfind_core::history::local_midnight(rapidfind_core::history::now_unix()) - 10 * 86_400;
+        let mid = rapidfind_core::history::local_midnight(rapidfind_core::history::now_unix())
+            - 10 * 86_400;
         let next = |t: i64| rapidfind_core::history::local_midnight(t + 36 * 3600);
         let (d1, d2, d3) = (next(mid), next(next(mid)), next(next(next(mid))));
         // Noon to noon: half of the change lands on each day.
         let t = [mid + 43_200, d1 + 43_200, d3 + 43_200];
         let v = [1000, 3000, 3000 + 4000];
         let days = daily(&t, &v);
-        assert_eq!(days.iter().map(|d| d.start).collect::<Vec<_>>(), [mid, d1, d2, d3]);
+        assert_eq!(
+            days.iter().map(|d| d.start).collect::<Vec<_>>(),
+            [mid, d1, d2, d3]
+        );
         assert_eq!(days.iter().map(|d| d.delta).sum::<i64>(), 6000);
         assert_eq!((days[0].delta, days[1].delta), (1000, 1000 + 1000));
         assert!(!days[0].estimated && days[2].estimated);
@@ -1210,7 +1995,11 @@ mod tests {
         let gap = daily(&t, &[1000, u64::MAX, 5000]);
         assert!(gap.is_empty());
         assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!((days_from_civil(2026, 10, 20) + 3).rem_euclid(7), 1, "a Tuesday");
+        assert_eq!(
+            (days_from_civil(2026, 10, 20) + 3).rem_euclid(7),
+            1,
+            "a Tuesday"
+        );
     }
 
     #[test]
@@ -1218,6 +2007,9 @@ mod tests {
         assert_eq!(day(0, false), day(0, false));
         let now = rapidfind_core::history::now_unix();
         assert_eq!(ago(now), "today");
-        assert_eq!(ago(rapidfind_core::history::local_midnight(now) - 3600), "yesterday");
+        assert_eq!(
+            ago(rapidfind_core::history::local_midnight(now) - 3600),
+            "yesterday"
+        );
     }
 }

@@ -10,16 +10,34 @@ use rapidfind_core::search::SearchOptions;
 
 fn find(eng: &Engine, q: &str) -> Vec<String> {
     let q = Query::parse(q).unwrap();
-    let h = eng.search(&q, &SearchOptions { limit: 0, ..Default::default() });
-    eng.with_indexes(|ixs| h.items.iter().map(|h| ixs[h.vol as usize].path(h.idx)).collect())
+    let h = eng.search(
+        &q,
+        &SearchOptions {
+            limit: 0,
+            ..Default::default()
+        },
+    );
+    eng.with_indexes(|ixs| {
+        h.items
+            .iter()
+            .map(|h| ixs[h.vol as usize].path(h.idx))
+            .collect()
+    })
 }
 
-fn wait_for(eng: &Engine, q: &str, want: impl Fn(&[String]) -> bool) -> anyhow::Result<Vec<String>> {
+fn wait_for(
+    eng: &Engine,
+    q: &str,
+    want: impl Fn(&[String]) -> bool,
+) -> anyhow::Result<Vec<String>> {
     let t = Instant::now();
     loop {
         let r = find(eng, q);
         if want(&r) {
-            println!("    ok after {} ms: {q:?} -> {r:?}", t.elapsed().as_millis());
+            println!(
+                "    ok after {} ms: {q:?} -> {r:?}",
+                t.elapsed().as_millis()
+            );
             return Ok(r);
         }
         if t.elapsed() > Duration::from_secs(5) {
@@ -40,7 +58,11 @@ pub fn run(letter: char) -> anyhow::Result<()> {
     let h = win::open_volume(letter, 0)?;
     let en = usn::scan_enum(&h)?;
     let enum_ix = rapidfind_core::index::Index::from_scan(letter, &en);
-    println!("    enum: {} live entries in {} ms", enum_ix.len_live(), t.elapsed().as_millis());
+    println!(
+        "    enum: {} live entries in {} ms",
+        enum_ix.len_live(),
+        t.elapsed().as_millis()
+    );
     let diff = ix.len_live() as i64 - enum_ix.len_live() as i64;
     println!("    difference (raw - enum, mostly extra hard links): {diff}");
 
@@ -78,7 +100,9 @@ pub fn run(letter: char) -> anyhow::Result<()> {
         }
         i += step;
     }
-    println!("    checked {checked}: {missing} missing, {size_mismatch} size mismatches, {dir_mismatch} dir/file mismatches");
+    println!(
+        "    checked {checked}: {missing} missing, {size_mismatch} size mismatches, {dir_mismatch} dir/file mismatches"
+    );
     for e in examples {
         println!("      {e}");
     }
@@ -93,18 +117,31 @@ pub fn run(letter: char) -> anyhow::Result<()> {
     });
     ensure!(eng.volume_count() > 0, "engine failed to open {letter}:");
     let tag = format!("rftest{}", std::process::id());
-    let base = std::path::PathBuf::from(format!("{letter}:\\")).join("Users").join("Public");
-    let base = if base.exists() { base } else { std::env::temp_dir() };
+    let base = std::path::PathBuf::from(format!("{letter}:\\"))
+        .join("Users")
+        .join("Public");
+    let base = if base.exists() {
+        base
+    } else {
+        std::env::temp_dir()
+    };
     let dir = base.join(format!("{tag}_dir"));
     std::fs::create_dir(&dir)?;
     std::fs::write(dir.join(format!("{tag}_a.txt")), vec![b'x'; 12345])?;
     wait_for(&eng, &format!("{tag}_a.txt"), |r| r.len() == 1)?;
     wait_for(&eng, &format!("{tag}_a.txt size:12345"), |r| r.len() == 1)?;
-    std::fs::rename(dir.join(format!("{tag}_a.txt")), dir.join(format!("{tag}_b.txt")))?;
-    wait_for(&eng, &tag, |r| r.iter().any(|p| p.ends_with("_b.txt")) && !r.iter().any(|p| p.ends_with("_a.txt")))?;
+    std::fs::rename(
+        dir.join(format!("{tag}_a.txt")),
+        dir.join(format!("{tag}_b.txt")),
+    )?;
+    wait_for(&eng, &tag, |r| {
+        r.iter().any(|p| p.ends_with("_b.txt")) && !r.iter().any(|p| p.ends_with("_a.txt"))
+    })?;
     let dir2 = base.join(format!("{tag}_moved"));
     std::fs::rename(&dir, &dir2)?;
-    wait_for(&eng, &format!("{tag}_b.txt"), |r| r.len() == 1 && r[0].contains("_moved\\"))?;
+    wait_for(&eng, &format!("{tag}_b.txt"), |r| {
+        r.len() == 1 && r[0].contains("_moved\\")
+    })?;
     std::fs::remove_dir_all(&dir2)?;
     wait_for(&eng, &tag, |r| r.is_empty())?;
 

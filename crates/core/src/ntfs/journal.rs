@@ -77,7 +77,14 @@ impl std::fmt::Display for JournalError {
 pub fn query(h: &Handle) -> io::Result<UsnJournalDataV0> {
     let mut d = UsnJournalDataV0::default();
     unsafe {
-        win::ioctl(h, FSCTL_QUERY_USN_JOURNAL, std::ptr::null(), 0, &mut d as *mut _ as *mut _, size_of::<UsnJournalDataV0>())?;
+        win::ioctl(
+            h,
+            FSCTL_QUERY_USN_JOURNAL,
+            std::ptr::null(),
+            0,
+            &mut d as *mut _ as *mut _,
+            size_of::<UsnJournalDataV0>(),
+        )?;
     }
     Ok(d)
 }
@@ -89,9 +96,19 @@ pub fn query_or_create(h: &Handle) -> io::Result<UsnJournalDataV0> {
         Ok(d) => Ok(d),
         Err(e) if e.raw_os_error() == Some(win::ERROR_JOURNAL_NOT_ACTIVE) => {
             log::warn!("volume has no USN journal; creating one");
-            let c = CreateUsnJournalData { maximum_size: 32 << 20, allocation_delta: 8 << 20 };
+            let c = CreateUsnJournalData {
+                maximum_size: 32 << 20,
+                allocation_delta: 8 << 20,
+            };
             unsafe {
-                win::ioctl(h, FSCTL_CREATE_USN_JOURNAL, &c as *const _ as *const _, size_of::<CreateUsnJournalData>(), std::ptr::null_mut(), 0)?;
+                win::ioctl(
+                    h,
+                    FSCTL_CREATE_USN_JOURNAL,
+                    &c as *const _ as *const _,
+                    size_of::<CreateUsnJournalData>(),
+                    std::ptr::null_mut(),
+                    0,
+                )?;
             }
             query(h)
         }
@@ -109,7 +126,11 @@ pub struct Journal {
 impl Journal {
     /// Opens the journal on `letter` positioned at `start_usn` (from a saved
     /// index), or at its current end when `None`.
-    pub fn open(letter: char, journal_id: Option<u64>, start_usn: Option<i64>) -> Result<Self, JournalError> {
+    pub fn open(
+        letter: char,
+        journal_id: Option<u64>,
+        start_usn: Option<i64>,
+    ) -> Result<Self, JournalError> {
         let h = win::open_volume(letter, 0)?;
         let d = query_or_create(&h)?;
         if let Some(id) = journal_id
@@ -122,7 +143,12 @@ impl Journal {
             Some(u) => u,
             None => d.next_usn,
         };
-        Ok(Journal { h, journal_id: d.journal_id, next_usn, buf: vec![0u64; 1 << 16] })
+        Ok(Journal {
+            h,
+            journal_id: d.journal_id,
+            next_usn,
+            buf: vec![0u64; 1 << 16],
+        })
     }
 
     /// Reads the next batch of records. With `wait`, blocks until at least one

@@ -28,16 +28,35 @@ pub const SAVE_THRESHOLD: u64 = 20_000;
 #[derive(Debug, Clone)]
 pub enum LoadReport {
     /// Loaded from disk and replayed `replayed` journal records.
-    Loaded { replayed: usize, ms: u128 },
-    Scanned { method: &'static str, stats: Option<mft::MftStats>, caught_up: usize, ms: u128 },
-    Walked { entries: usize, ms: u128 },
+    Loaded {
+        replayed: usize,
+        ms: u128,
+    },
+    Scanned {
+        method: &'static str,
+        stats: Option<mft::MftStats>,
+        caught_up: usize,
+        ms: u128,
+    },
+    Walked {
+        entries: usize,
+        ms: u128,
+    },
 }
 
 impl std::fmt::Display for LoadReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoadReport::Loaded { replayed, ms } => write!(f, "loaded index in {ms} ms, replayed {replayed} journal records"),
-            LoadReport::Scanned { method, stats, caught_up, ms } => {
+            LoadReport::Loaded { replayed, ms } => write!(
+                f,
+                "loaded index in {ms} ms, replayed {replayed} journal records"
+            ),
+            LoadReport::Scanned {
+                method,
+                stats,
+                caught_up,
+                ms,
+            } => {
                 write!(f, "scanned via {method} in {ms} ms")?;
                 if let Some(s) = stats {
                     write!(
@@ -126,7 +145,15 @@ fn drive_of(path: &Path) -> String {
 }
 
 impl Volume {
-    fn new(key: &str, letter: char, kind: VolumeKind, ix: Index, applier: Applier, unsaved: u64, state: &str) -> Arc<Volume> {
+    fn new(
+        key: &str,
+        letter: char,
+        kind: VolumeKind,
+        ix: Index,
+        applier: Applier,
+        unsaved: u64,
+        state: &str,
+    ) -> Arc<Volume> {
         Arc::new(Volume {
             key: key.to_string(),
             letter,
@@ -152,7 +179,9 @@ impl Volume {
         if let Some(e) = &*self.save_error.lock()
             && e.disk_full
             && e.at.elapsed() < DISK_FULL_RETRY
-            && path.parent().is_some_and(|d| crate::tree::disk_space(&d.to_string_lossy()).1 < e.needed)
+            && path
+                .parent()
+                .is_some_and(|d| crate::tree::disk_space(&d.to_string_lossy()).1 < e.needed)
         {
             return Ok(false);
         }
@@ -160,7 +189,8 @@ impl Volume {
         persist::prepare_save(&mut ix);
         let ix = RwLockWriteGuard::downgrade(ix);
         // The file takes about as much as last time; ~50 bytes per entry for a first save.
-        let needed = std::fs::metadata(path).map_or(ix.entries.len() as u64 * 50, |m| m.len()) + (16 << 20);
+        let needed =
+            std::fs::metadata(path).map_or(ix.entries.len() as u64 * 50, |m| m.len()) + (16 << 20);
         let r = persist::write(&ix, path);
         drop(ix);
         let mut err = self.save_error.lock();
@@ -172,8 +202,17 @@ impl Volume {
             }
             Err(e) => {
                 let disk_full = is_disk_full(e);
-                let what = if disk_full { format!("{} is full", drive_of(path)) } else { e.to_string() };
-                *err = Some(SaveError { what, disk_full, at: Instant::now(), needed });
+                let what = if disk_full {
+                    format!("{} is full", drive_of(path))
+                } else {
+                    e.to_string()
+                };
+                *err = Some(SaveError {
+                    what,
+                    disk_full,
+                    at: Instant::now(),
+                    needed,
+                });
             }
         }
         r.map(|()| true)
@@ -181,13 +220,21 @@ impl Volume {
 
     /// Why the index can't be saved, if it can't.
     pub fn save_problem(&self) -> Option<String> {
-        self.save_error.lock().as_ref().map(|e| format!("{}: {}", crate::ipc::SAVE_FAILED, e.what))
+        self.save_error
+            .lock()
+            .as_ref()
+            .map(|e| format!("{}: {}", crate::ipc::SAVE_FAILED, e.what))
     }
 
     /// Counts `n` more unsaved changes; saturates so a never-saved volume
     /// (`u64::MAX`) stays that way. Returns the new count.
     fn add_unsaved(&self, n: u64) -> u64 {
-        let old = self.unsaved.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| Some(u.saturating_add(n))).unwrap();
+        let old = self
+            .unsaved
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+                Some(u.saturating_add(n))
+            })
+            .unwrap();
         old.saturating_add(n)
     }
 
@@ -250,8 +297,13 @@ fn refresh(letter: char, extended: bool, ix_lock: &RwLock<Index>, list: &[(u32, 
     if list.is_empty() || !ix_lock.read().has_sizes {
         return;
     }
-    let Ok(hint) = win::open_root_dir(letter) else { return };
-    let infos: Vec<_> = list.iter().filter_map(|&(rec, id)| file_info_by_id(&hint, id, extended).map(|i| (rec, i))).collect();
+    let Ok(hint) = win::open_root_dir(letter) else {
+        return;
+    };
+    let infos: Vec<_> = list
+        .iter()
+        .filter_map(|&(rec, id)| file_info_by_id(&hint, id, extended).map(|i| (rec, i)))
+        .collect();
     let mut ix = ix_lock.write();
     for (rec, (size, m, c)) in infos {
         ix.set_file_info(rec, size, m, c);
@@ -259,7 +311,11 @@ fn refresh(letter: char, extended: bool, ix_lock: &RwLock<Index>, list: &[(u32, 
 }
 
 /// Replays the journal from the index's cursor up to now.
-fn catch_up(ix: &mut Index, applier: &mut Applier, j: &mut Journal) -> Result<(usize, Vec<(u32, u128)>), JournalError> {
+fn catch_up(
+    ix: &mut Index,
+    applier: &mut Applier,
+    j: &mut Journal,
+) -> Result<(usize, Vec<(u32, u128)>), JournalError> {
     let recs = j.drain()?;
     let refresh = applier.apply(ix, &recs);
     ix.journal_id = j.journal_id;
@@ -268,14 +324,25 @@ fn catch_up(ix: &mut Index, applier: &mut Applier, j: &mut Journal) -> Result<(u
 }
 
 fn serial_of(letter: char) -> u32 {
-    win::list_volumes().into_iter().find(|v| v.letter == letter).map_or(0, |v| v.serial)
+    win::list_volumes()
+        .into_iter()
+        .find(|v| v.letter == letter)
+        .map_or(0, |v| v.serial)
 }
 
-pub fn scan_volume(letter: char, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
+pub fn scan_volume(
+    letter: char,
+    progress: &(dyn Fn(u64, u64) + Sync),
+) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
     scan_journaled(letter, VolumeKind::Ntfs, IndexOptions::default(), progress)
 }
 
-fn scan_journaled(letter: char, kind: VolumeKind, opts: IndexOptions, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
+fn scan_journaled(
+    letter: char,
+    kind: VolumeKind,
+    opts: IndexOptions,
+    progress: &(dyn Fn(u64, u64) + Sync),
+) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
     let root_name = format!("{letter}:");
     let fold = crate::fold::FoldMode::Lower;
     let t0 = Instant::now();
@@ -296,33 +363,65 @@ fn scan_journaled(letter: char, kind: VolumeKind, opts: IndexOptions, progress: 
         _ => {
             drop(h);
             match mft::scan(letter, progress) {
-                Ok((s, st)) => (Index::from_scan_with(letter, &root_name, &s, fold, opts), "raw MFT", Some(st)),
+                Ok((s, st)) => (
+                    Index::from_scan_with(letter, &root_name, &s, fold, opts),
+                    "raw MFT",
+                    Some(st),
+                ),
                 Err(e) => {
-                    log::warn!("{letter}: raw MFT scan failed ({e}); falling back to FSCTL_ENUM_USN_DATA");
+                    log::warn!(
+                        "{letter}: raw MFT scan failed ({e}); falling back to FSCTL_ENUM_USN_DATA"
+                    );
                     let h = win::open_volume(letter, 0)?;
-                    (Index::from_scan_with(letter, &root_name, &usn::scan_enum(&h)?, fold, opts), "FSCTL_ENUM_USN_DATA", None)
+                    (
+                        Index::from_scan_with(letter, &root_name, &usn::scan_enum(&h)?, fold, opts),
+                        "FSCTL_ENUM_USN_DATA",
+                        None,
+                    )
                 }
             }
         }
     };
     ix.volume_serial = serial;
 
-    let mut j = Journal::open(letter, Some(jd.journal_id), Some(jd.next_usn)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut j = Journal::open(letter, Some(jd.journal_id), Some(jd.next_usn))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut applier = Applier::default();
     let (n, list) = catch_up(&mut ix, &mut applier, &mut j).map_err(|e| anyhow::anyhow!("{e}"))?;
     let lock = RwLock::new(ix);
     refresh(letter, kind == VolumeKind::Refs, &lock, &list);
     let ix = lock.into_inner();
-    let report = LoadReport::Scanned { method, stats, caught_up: n, ms: t0.elapsed().as_millis() };
+    let report = LoadReport::Scanned {
+        method,
+        stats,
+        caught_up: n,
+        ms: t0.elapsed().as_millis(),
+    };
     Ok((ix, report, j, applier))
 }
 
 /// Loads the saved index for `letter` and replays the journal, or scans.
-pub fn open_volume(letter: char, force_scan: bool, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
-    open_journaled(letter, VolumeKind::Ntfs, force_scan, IndexOptions::default(), progress)
+pub fn open_volume(
+    letter: char,
+    force_scan: bool,
+    progress: &(dyn Fn(u64, u64) + Sync),
+) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
+    open_journaled(
+        letter,
+        VolumeKind::Ntfs,
+        force_scan,
+        IndexOptions::default(),
+        progress,
+    )
 }
 
-fn open_journaled(letter: char, kind: VolumeKind, force_scan: bool, opts: IndexOptions, progress: &(dyn Fn(u64, u64) + Sync)) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
+fn open_journaled(
+    letter: char,
+    kind: VolumeKind,
+    force_scan: bool,
+    opts: IndexOptions,
+    progress: &(dyn Fn(u64, u64) + Sync),
+) -> anyhow::Result<(Index, LoadReport, Journal, Applier)> {
     let t0 = Instant::now();
     if !force_scan {
         let serial = serial_of(letter);
@@ -332,7 +431,11 @@ fn open_journaled(letter: char, kind: VolumeKind, force_scan: bool, opts: IndexO
                 log::info!("{letter}: date created now indexed; rescanning");
                 drop(ix);
             }
-            Ok(mut ix) if ix.letter == letter && ix.volume_serial == serial && (kind == VolumeKind::Refs) == ix.id_map.is_some() => {
+            Ok(mut ix)
+                if ix.letter == letter
+                    && ix.volume_serial == serial
+                    && (kind == VolumeKind::Refs) == ix.id_map.is_some() =>
+            {
                 match Journal::open(letter, Some(ix.journal_id), Some(ix.next_usn)) {
                     Ok(mut j) => {
                         let mut applier = Applier::default();
@@ -340,7 +443,15 @@ fn open_journaled(letter: char, kind: VolumeKind, force_scan: bool, opts: IndexO
                             let lock = RwLock::new(ix);
                             refresh(letter, kind == VolumeKind::Refs, &lock, &list);
                             let ix = lock.into_inner();
-                            return Ok((ix, LoadReport::Loaded { replayed: n, ms: t0.elapsed().as_millis() }, j, applier));
+                            return Ok((
+                                ix,
+                                LoadReport::Loaded {
+                                    replayed: n,
+                                    ms: t0.elapsed().as_millis(),
+                                },
+                                j,
+                                applier,
+                            ));
                         }
                         log::warn!("{letter}: journal replay failed; rescanning");
                     }
@@ -388,7 +499,12 @@ fn desired(cfg: &Config, only: &[char]) -> Vec<(String, char, VolumeKind, Option
         for f in &cfg.folders {
             let key = folder::root_name(&f.path);
             if !key.is_empty() {
-                out.push((key.clone(), key.chars().next().unwrap_or('?').to_ascii_uppercase(), VolumeKind::Folder, Some(f.clone())));
+                out.push((
+                    key.clone(),
+                    key.chars().next().unwrap_or('?').to_ascii_uppercase(),
+                    VolumeKind::Folder,
+                    Some(f.clone()),
+                ));
             }
         }
     }
@@ -397,8 +513,16 @@ fn desired(cfg: &Config, only: &[char]) -> Vec<(String, char, VolumeKind, Option
 
 impl Engine {
     pub fn new(opts: EngineOptions) -> Engine {
-        let config = opts.config_path.as_deref().map(Config::load).unwrap_or_default();
-        let runs = opts.runs_path.as_deref().map(RunHistory::load).unwrap_or_default();
+        let config = opts
+            .config_path
+            .as_deref()
+            .map(Config::load)
+            .unwrap_or_default();
+        let runs = opts
+            .runs_path
+            .as_deref()
+            .map(RunHistory::load)
+            .unwrap_or_default();
         Engine {
             volumes: RwLock::new(Vec::new()),
             loading: Mutex::new(Vec::new()),
@@ -427,13 +551,26 @@ impl Engine {
 
     /// Takes a snapshot of every volume's folder sizes now (named: a save point).
     pub fn take_snapshot(&self, name: &str) -> Result<crate::history::SnapInfo, String> {
-        let h = self.history().ok_or("folder-size history isn't kept here")?;
+        let h = self
+            .history()
+            .ok_or("folder-size history isn't kept here")?;
         let t0 = Instant::now();
         let mut t = crate::tree::Tree::build(self, "", SearchFlags::default())?;
-        let s = t.snapshot(self, name, crate::history::MIN_FOLDER, crate::history::MAX_FOLDERS)?;
-        let info = h.save(&s).map_err(|e| format!("saving the snapshot: {e}"))?;
+        let s = t.snapshot(
+            self,
+            name,
+            crate::history::MIN_FOLDER,
+            crate::history::MAX_FOLDERS,
+        )?;
+        let info = h
+            .save(&s)
+            .map_err(|e| format!("saving the snapshot: {e}"))?;
         let folders: usize = s.volumes.iter().map(|v| v.folders.len()).sum();
-        log::info!("snapshot {} ({folders} folders) in {} ms", info.id, t0.elapsed().as_millis());
+        log::info!(
+            "snapshot {} ({folders} folders) in {} ms",
+            info.id,
+            t0.elapsed().as_millis()
+        );
         Ok(info)
     }
 
@@ -463,15 +600,24 @@ impl Engine {
 
     /// Sizes of `paths` in every snapshot, oldest first.
     pub fn series(&self, paths: &[String]) -> Result<crate::ipc::SeriesReply, String> {
-        let h = self.history().ok_or("folder-size history isn't kept here")?;
+        let h = self
+            .history()
+            .ok_or("folder-size history isn't kept here")?;
         let snaps = h.list();
-        let maps: Vec<Option<Arc<crate::history::PathMap>>> = snaps.iter().map(|s| h.paths(&s.id).ok()).collect();
+        let maps: Vec<Option<Arc<crate::history::PathMap>>> =
+            snaps.iter().map(|s| h.paths(&s.id).ok()).collect();
         let rows = paths
             .iter()
             .map(|p| crate::ipc::SeriesRow {
                 path: p.clone(),
-                sizes: maps.iter().map(|m| m.as_ref().and_then(|m| m.get(p)).unwrap_or(u64::MAX)).collect(),
-                free: maps.iter().map(|m| m.as_ref().and_then(|m| m.disk(p)).map_or(u64::MAX, |d| d.1)).collect(),
+                sizes: maps
+                    .iter()
+                    .map(|m| m.as_ref().and_then(|m| m.get(p)).unwrap_or(u64::MAX))
+                    .collect(),
+                free: maps
+                    .iter()
+                    .map(|m| m.as_ref().and_then(|m| m.disk(p)).map_or(u64::MAX, |d| d.1))
+                    .collect(),
             })
             .collect();
         Ok(crate::ipc::SeriesReply { snaps, rows })
@@ -493,11 +639,17 @@ impl Engine {
     }
 
     /// Opens the given volumes (all included ones when empty), synchronously.
-    pub fn open(letters: &[char], force_scan: bool, on_report: impl Fn(char, &anyhow::Result<LoadReport>) + Send + Sync + 'static) -> Engine {
+    pub fn open(
+        letters: &[char],
+        force_scan: bool,
+        on_report: impl Fn(char, &anyhow::Result<LoadReport>) + Send + Sync + 'static,
+    ) -> Engine {
         let opts = EngineOptions {
             force_scan,
             only: letters.to_vec(),
-            report: Some(Box::new(move |k, r| on_report(k.chars().next().unwrap_or('?'), r))),
+            report: Some(Box::new(move |k, r| {
+                on_report(k.chars().next().unwrap_or('?'), r)
+            })),
             config_path: Some(persist::db_dir().join("config.json")),
             runs_path: Some(persist::db_dir().join("runs.json")),
         };
@@ -513,7 +665,15 @@ impl Engine {
             let mut vols = e.volumes.write();
             for ix in ixs {
                 let (key, letter) = (ix.letter.to_string(), ix.letter);
-                vols.push(Volume::new(&key, letter, VolumeKind::Ntfs, ix, Applier::default(), 0, "ready"));
+                vols.push(Volume::new(
+                    &key,
+                    letter,
+                    VolumeKind::Ntfs,
+                    ix,
+                    Applier::default(),
+                    0,
+                    "ready",
+                ));
             }
         }
         e
@@ -532,7 +692,10 @@ impl Engine {
     /// Re-syncs if drives or the config changed since the last call (cheap
     /// enough to poll every few seconds).
     pub fn sync_if_changed(&self) {
-        let sig = (win::logical_drives(), self.config_version.load(Ordering::Relaxed));
+        let sig = (
+            win::logical_drives(),
+            self.config_version.load(Ordering::Relaxed),
+        );
         if *self.signature.lock() == Some(sig) {
             return;
         }
@@ -552,7 +715,9 @@ impl Engine {
                 if old.kind == VolumeKind::Folder {
                     continue;
                 }
-                let Some(w) = want.iter().find(|w| w.0 == old.key) else { continue };
+                let Some(w) = want.iter().find(|w| w.0 == old.key) else {
+                    continue;
+                };
                 match self.load(&w.0, w.1, w.2, w.3.clone(), &cfg, true) {
                     Ok((v, rep)) => {
                         self.report(&w.0, &Ok(rep));
@@ -600,13 +765,22 @@ impl Engine {
         }
     }
 
-    fn load(&self, key: &str, letter: char, kind: VolumeKind, fcfg: Option<FolderConfig>, cfg: &Config, force_scan: bool) -> anyhow::Result<(Arc<Volume>, LoadReport)> {
+    fn load(
+        &self,
+        key: &str,
+        letter: char,
+        kind: VolumeKind,
+        fcfg: Option<FolderConfig>,
+        cfg: &Config,
+        force_scan: bool,
+    ) -> anyhow::Result<(Arc<Volume>, LoadReport)> {
         let fold = cfg.fold_mode();
         let rules = cfg.rules(letter);
         let opts = cfg.index_options_for(key);
         match kind {
             VolumeKind::Ntfs | VolumeKind::Refs => {
-                let (mut ix, rep, j, applier) = open_journaled(letter, kind, force_scan, opts, &|_, _| {})?;
+                let (mut ix, rep, j, applier) =
+                    open_journaled(letter, kind, force_scan, opts, &|_, _| {})?;
                 ix.set_options(opts);
                 ix.set_fold_mode(fold);
                 ix.apply_rules(rules);
@@ -620,7 +794,9 @@ impl Engine {
                     rank_in_background(v.clone());
                 }
                 let (vv, stop) = (v.clone(), self.stop.clone());
-                std::thread::Builder::new().name(format!("usn-{letter}")).spawn(move || watch_journal(vv, j, stop))?;
+                std::thread::Builder::new()
+                    .name(format!("usn-{letter}"))
+                    .spawn(move || watch_journal(vv, j, stop))?;
                 Ok((v, rep))
             }
             VolumeKind::Folder => {
@@ -630,17 +806,34 @@ impl Engine {
                 let t0 = Instant::now();
                 let network = win::is_network_path(key);
                 let cache = !network || cfg.share_cache;
-                let cached = if cache { persist::load(&persist::folder_db_path(key)).ok() } else { None };
+                let cached = if cache {
+                    persist::load(&persist::folder_db_path(key)).ok()
+                } else {
+                    None
+                };
                 // A cache without date created can't serve an index that wants it.
-                let stale = cached.as_ref().is_some_and(|c| opts.created && c.created.is_empty());
+                let stale = cached
+                    .as_ref()
+                    .is_some_and(|c| opts.created && c.created.is_empty());
                 let had_cache = cached.is_some();
                 let mut ix = cached.unwrap_or_else(|| folder::empty(key, fold));
                 ix.set_options(opts);
                 ix.set_fold_mode(fold);
                 ix.apply_rules(rules);
-                let rep = LoadReport::Walked { entries: ix.len_live(), ms: t0.elapsed().as_millis() };
+                let rep = LoadReport::Walked {
+                    entries: ix.len_live(),
+                    ms: t0.elapsed().as_millis(),
+                };
                 let missing = ix.ranks_missing();
-                let v = Volume::new(key, letter, kind, ix, Applier::default(), 0, if had_cache { "cached" } else { "scanning" });
+                let v = Volume::new(
+                    key,
+                    letter,
+                    kind,
+                    ix,
+                    Applier::default(),
+                    0,
+                    if had_cache { "cached" } else { "scanning" },
+                );
                 v.cache.store(cache, Ordering::Relaxed);
                 if missing {
                     rank_in_background(v.clone());
@@ -648,7 +841,9 @@ impl Engine {
                 // Shares can trust their cache at startup (until the rescan interval).
                 let walk_now = !had_cache || stale || !network || cfg.share_rewalk_on_start;
                 let (vv, stop, tok) = (v.clone(), self.stop.clone(), self.net_token.clone());
-                std::thread::Builder::new().name(format!("dir-{letter}")).spawn(move || watch_folder(vv, fcfg, stop, tok, walk_now))?;
+                std::thread::Builder::new()
+                    .name(format!("dir-{letter}"))
+                    .spawn(move || watch_folder(vv, fcfg, stop, tok, walk_now))?;
                 Ok((v, rep))
             }
         }
@@ -676,11 +871,23 @@ impl Engine {
                 if let Some(p) = v.save_problem() {
                     state = format!("{state}; {p}");
                 }
-                VolumeStatus { key: v.key.clone(), kind: v.kind, entries: v.visible.load(Ordering::Relaxed), ready: true, state }
+                VolumeStatus {
+                    key: v.key.clone(),
+                    kind: v.kind,
+                    entries: v.visible.load(Ordering::Relaxed),
+                    ready: true,
+                    state,
+                }
             })
             .collect();
         for k in self.loading.lock().iter() {
-            v.push(VolumeStatus { key: k.clone(), kind: VolumeKind::Ntfs, entries: 0, ready: false, state: "loading".into() });
+            v.push(VolumeStatus {
+                key: k.clone(),
+                kind: VolumeKind::Ntfs,
+                entries: 0,
+                ready: false,
+                state: "loading".into(),
+            });
         }
         v
     }
@@ -701,7 +908,11 @@ impl Engine {
     pub fn with_volume_indexes<R>(&self, f: impl FnOnce(&[(&str, VolumeKind, &Index)]) -> R) -> R {
         let vols = self.volumes.read();
         let guards: Vec<_> = vols.iter().map(|v| v.index.read()).collect();
-        let refs: Vec<(&str, VolumeKind, &Index)> = vols.iter().zip(&guards).map(|(v, g)| (v.key.as_str(), v.kind, &**g)).collect();
+        let refs: Vec<(&str, VolumeKind, &Index)> = vols
+            .iter()
+            .zip(&guards)
+            .map(|(v, g)| (v.key.as_str(), v.kind, &**g))
+            .collect();
         f(&refs)
     }
 
@@ -710,13 +921,19 @@ impl Engine {
     }
 
     /// Parses and runs a query into a pageable result set.
-    pub fn query(&self, text: &str, flags: SearchFlags, opts: &SearchOptions) -> Result<ResultSet, String> {
+    pub fn query(
+        &self,
+        text: &str,
+        flags: SearchFlags,
+        opts: &SearchOptions,
+    ) -> Result<ResultSet, String> {
         let (fold, created) = {
             let c = self.config.read();
             (c.fold_mode(), c.index_date_created)
         };
         let q = Query::parse_with(text, flags, fold, &crate::date::DateEnv::system())?;
-        let have_created = created || self.with_indexes(|ixs| ixs.iter().any(|i| !i.created.is_empty()));
+        let have_created =
+            created || self.with_indexes(|ixs| ixs.iter().any(|i| !i.created.is_empty()));
         if (q.uses_created || opts.sort == crate::search::SortKey::Created) && !have_created {
             return Err("Date created isn't indexed. Turn on Options → Index → \"Index date created\" (rescans once).".into());
         }
@@ -726,7 +943,12 @@ impl Engine {
 
     /// Changes whenever any index (or the set of volumes) changes.
     pub fn generation(&self) -> u64 {
-        let g: u64 = self.volumes.read().iter().map(|v| v.index.read().generation).sum();
+        let g: u64 = self
+            .volumes
+            .read()
+            .iter()
+            .map(|v| v.index.read().generation)
+            .sum();
         g.wrapping_add(self.set_version.load(Ordering::Relaxed) << 40)
     }
 
@@ -745,7 +967,11 @@ impl Engine {
             let o = self.config.read();
             (o.index_date_created, o.share_index_date_created)
         };
-        let any_ntfs = self.volumes.read().iter().any(|v| v.kind != VolumeKind::Folder);
+        let any_ntfs = self
+            .volumes
+            .read()
+            .iter()
+            .any(|v| v.kind != VolumeKind::Folder);
         if c.index_date_created && !old_local && any_ntfs {
             self.rescan_requested.store(true, Ordering::Relaxed);
         }
@@ -828,10 +1054,18 @@ impl Engine {
         for v in self.volumes.read().iter() {
             let n = v.unsaved.load(Ordering::Relaxed);
             if n > 0 && n >= min_changes && v.cache.load(Ordering::Relaxed) {
-                let path = if v.kind == VolumeKind::Folder { persist::folder_db_path(&v.key) } else { persist::db_path(v.letter) };
-                if v.save(&path).with_context(|| format!("{}: saving {}", v.key, path.display()))? {
+                let path = if v.kind == VolumeKind::Folder {
+                    persist::folder_db_path(&v.key)
+                } else {
+                    persist::db_path(v.letter)
+                };
+                if v.save(&path)
+                    .with_context(|| format!("{}: saving {}", v.key, path.display()))?
+                {
                     // Changes made while it was writing count toward the next save.
-                    let _ = v.unsaved.compare_exchange(n, 0, Ordering::Relaxed, Ordering::Relaxed);
+                    let _ = v
+                        .unsaved
+                        .compare_exchange(n, 0, Ordering::Relaxed, Ordering::Relaxed);
                 }
             }
         }
@@ -851,21 +1085,32 @@ impl Drop for Engine {
 /// Computes sort ranks under a read lock and installs them if the index
 /// didn't change shape meanwhile (retries a few times otherwise).
 fn rank_in_background(v: Arc<Volume>) {
-    let _ = std::thread::Builder::new().name(format!("ranks-{}", v.letter)).spawn(move || {
-        for _ in 0..5 {
-            let t0 = Instant::now();
-            let (snapshot, len, epoch, mode) = {
-                let ix = v.index.read();
-                (ix.ranks_snapshot(), ix.entries.len(), ix.epoch, ix.fold_mode)
-            };
-            let mut ix = v.index.write();
-            if ix.entries.len() == len && ix.epoch == epoch && ix.fold_mode == mode {
-                ix.ranks = snapshot;
-                log::info!("{}: sort ranks ready in {} ms", v.key, t0.elapsed().as_millis());
-                return;
+    let _ = std::thread::Builder::new()
+        .name(format!("ranks-{}", v.letter))
+        .spawn(move || {
+            for _ in 0..5 {
+                let t0 = Instant::now();
+                let (snapshot, len, epoch, mode) = {
+                    let ix = v.index.read();
+                    (
+                        ix.ranks_snapshot(),
+                        ix.entries.len(),
+                        ix.epoch,
+                        ix.fold_mode,
+                    )
+                };
+                let mut ix = v.index.write();
+                if ix.entries.len() == len && ix.epoch == epoch && ix.fold_mode == mode {
+                    ix.ranks = snapshot;
+                    log::info!(
+                        "{}: sort ranks ready in {} ms",
+                        v.key,
+                        t0.elapsed().as_millis()
+                    );
+                    return;
+                }
             }
-        }
-    });
+        });
 }
 
 /// Housekeeping after a batch of changes: re-apply exclude rules after
@@ -879,7 +1124,12 @@ fn maintain(v: &Volume, last_ranks: &mut Instant) {
     if last_ranks.elapsed() > Duration::from_secs(10) && v.index.read().ranks_need_refresh() {
         let (snapshot, len, epoch, mode) = {
             let ix = v.index.read();
-            (ix.ranks_snapshot(), ix.entries.len(), ix.epoch, ix.fold_mode)
+            (
+                ix.ranks_snapshot(),
+                ix.entries.len(),
+                ix.epoch,
+                ix.fold_mode,
+            )
         };
         let mut ix = v.index.write();
         // Only this watcher thread adds entries, but config changes could
@@ -972,7 +1222,13 @@ fn watch_journal(v: Arc<Volume>, mut j: Journal, stop: Arc<AtomicBool>) {
 fn rescan_folder(v: &Volume, token: Option<Arc<crate::ntfs::win::Token>>) {
     let (fold, rules, serial, generation, epoch) = {
         let ix = v.index.read();
-        (ix.fold_mode, ix.rules.clone(), ix.volume_serial, ix.generation, ix.epoch)
+        (
+            ix.fold_mode,
+            ix.rules.clone(),
+            ix.volume_serial,
+            ix.generation,
+            ix.epoch,
+        )
     };
     let t0 = Instant::now();
     let opts = v.index.read().opts;
@@ -981,7 +1237,12 @@ fn rescan_folder(v: &Volume, token: Option<Arc<crate::ntfs::win::Token>>) {
     ix.apply_rules(rules);
     ix.generation = generation + 1;
     ix.epoch = epoch + 1;
-    log::info!("{}: walked {} entries in {} ms", v.key, ix.len_live(), t0.elapsed().as_millis());
+    log::info!(
+        "{}: walked {} entries in {} ms",
+        v.key,
+        ix.len_live(),
+        t0.elapsed().as_millis()
+    );
     if v.cache.load(Ordering::Relaxed)
         && let Err(e) = persist::save(&mut ix, &persist::folder_db_path(&v.key))
     {
@@ -1001,7 +1262,13 @@ fn nap(v: &Volume, stop: &AtomicBool, d: Duration) {
 
 /// Folder index lifecycle: initial walk (in the background), change
 /// watching, periodic rescans, and riding out unreachable network shares.
-fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token: TokenSlot, walk_now: bool) {
+fn watch_folder(
+    v: Arc<Volume>,
+    cfg: FolderConfig,
+    stop: Arc<AtomicBool>,
+    token: TokenSlot,
+    walk_now: bool,
+) {
     let root = PathBuf::from(format!("{}\\", v.key));
     let network = win::is_network_path(&v.key);
     let mut needs_walk = walk_now;
@@ -1035,10 +1302,17 @@ fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token:
                 Err(_) => needs_walk = true, // unreachable: the walk path handles offline
             }
         }
-        if needs_walk || (cfg.rescan_minutes > 0 && last_scan.elapsed() > Duration::from_secs(cfg.rescan_minutes as u64 * 60)) {
+        if needs_walk
+            || (cfg.rescan_minutes > 0
+                && last_scan.elapsed() > Duration::from_secs(cfg.rescan_minutes as u64 * 60))
+        {
             if !root.is_dir() {
                 let running_as_service = std::env::var_os("RAPIDFIND_SERVICE").is_some();
-                v.set_state(if network && tok.is_none() && running_as_service { "waiting for credentials" } else { "offline" });
+                v.set_state(if network && tok.is_none() && running_as_service {
+                    "waiting for credentials"
+                } else {
+                    "offline"
+                });
                 watcher = None;
                 needs_walk = true;
                 nap(&v, &stop, Duration::from_secs(30));
@@ -1072,7 +1346,8 @@ fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token:
                 {
                     let mut ix = v.index.write();
                     for (a, rel) in &changes {
-                        ok &= folder::apply_change(&mut ix, &root, *a, rel, &mut pending_old, now_ft);
+                        ok &=
+                            folder::apply_change(&mut ix, &root, *a, rel, &mut pending_old, now_ft);
                     }
                 }
                 v.add_unsaved(changes.len() as u64);
@@ -1110,13 +1385,26 @@ mod tests {
         assert!(v.save(&d.join("C.db")).is_err());
         assert!(!d.join("C.tmp").exists(), "the partial file is removed");
         let st = &e.status()[0];
-        assert!(st.state.starts_with("ready; index can't be saved: "), "{}", st.state);
+        assert!(
+            st.state.starts_with("ready; index can't be saved: "),
+            "{}",
+            st.state
+        );
         assert_eq!(st.entries, 7);
         // Disk full: no new attempt while there's less room than the save needs.
-        *v.save_error.lock() = Some(SaveError { what: "C: is full".into(), disk_full: true, at: Instant::now(), needed: u64::MAX });
+        *v.save_error.lock() = Some(SaveError {
+            what: "C: is full".into(),
+            disk_full: true,
+            at: Instant::now(),
+            needed: u64::MAX,
+        });
         assert!(!v.save(&d.join("ok.db")).unwrap());
         assert!(!d.join("ok.db").exists());
-        assert!(e.status()[0].state.ends_with("index can't be saved: C: is full"));
+        assert!(
+            e.status()[0]
+                .state
+                .ends_with("index can't be saved: C: is full")
+        );
         v.save_error.lock().as_mut().unwrap().needed = 0;
         assert!(v.save(&d.join("ok.db")).unwrap());
         assert_eq!(e.status()[0].state, "ready");
@@ -1127,8 +1415,14 @@ mod tests {
         assert_eq!(e.status()[0].entries, 7);
         assert!(t.elapsed() < Duration::from_secs(1));
         drop(held);
-        assert!(is_disk_full(&std::io::Error::from_raw_os_error(112)) && !is_disk_full(&std::io::Error::from_raw_os_error(5)));
-        assert_eq!(drive_of(Path::new(r"C:\ProgramData\rapidfind\index\C.db")), "C:");
+        assert!(
+            is_disk_full(&std::io::Error::from_raw_os_error(112))
+                && !is_disk_full(&std::io::Error::from_raw_os_error(5))
+        );
+        assert_eq!(
+            drive_of(Path::new(r"C:\ProgramData\rapidfind\index\C.db")),
+            "C:"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -1138,47 +1432,97 @@ mod tests {
         ix.volume_serial = 9;
         let e = Engine::from_indexes(vec![ix]);
         assert_eq!(e.volume_count(), 1);
-        let rs = e.query("note", SearchFlags::default(), &SearchOptions::default()).unwrap();
+        let rs = e
+            .query("note", SearchFlags::default(), &SearchOptions::default())
+            .unwrap();
         assert_eq!(rs.total, 2);
-        assert_eq!(e.lookup_path(r"C:\Users\Me\notes.txt").map(|x| x.0), Some(0));
+        assert_eq!(
+            e.lookup_path(r"C:\Users\Me\notes.txt").map(|x| x.0),
+            Some(0)
+        );
         assert_eq!(e.lookup_path(r"C:\Users\Me\nope.txt"), None);
         assert_eq!(e.record_run(r"C:\Users\Me\notes.txt"), Some(1));
         assert_eq!(e.record_run(r"C:\Users\Me\notes.txt"), Some(2));
-        let rs = e.query("runcount:2", SearchFlags::default(), &SearchOptions::default()).unwrap();
+        let rs = e
+            .query(
+                "runcount:2",
+                SearchFlags::default(),
+                &SearchOptions::default(),
+            )
+            .unwrap();
         assert_eq!(rs.total, 1);
         let g = e.generation();
-        let c = Config { exclude_files: vec!["*.txt".into()], ..Default::default() };
+        let c = Config {
+            exclude_files: vec!["*.txt".into()],
+            ..Default::default()
+        };
         e.set_config(c).unwrap();
         assert_ne!(e.generation(), g);
-        assert_eq!(e.query("note", SearchFlags::default(), &SearchOptions::default()).unwrap().total, 1);
-        let c = Config { match_diacritics: false, ..Default::default() };
+        assert_eq!(
+            e.query("note", SearchFlags::default(), &SearchOptions::default())
+                .unwrap()
+                .total,
+            1
+        );
+        let c = Config {
+            match_diacritics: false,
+            ..Default::default()
+        };
         e.set_config(c).unwrap();
-        assert_eq!(e.query("note", SearchFlags::default(), &SearchOptions::default()).unwrap().total, 2);
+        assert_eq!(
+            e.query("note", SearchFlags::default(), &SearchOptions::default())
+                .unwrap()
+                .total,
+            2
+        );
     }
 
     #[test]
     fn date_created_option() {
         let mut ix = sample();
-        ix.set_options(IndexOptions { created: false, ..Default::default() });
+        ix.set_options(IndexOptions {
+            created: false,
+            ..Default::default()
+        });
         assert!(ix.created.is_empty());
         let e = Engine::from_indexes(vec![ix]);
-        let err = e.query("dc:2026", SearchFlags::default(), &SearchOptions::default()).err().unwrap();
+        let err = e
+            .query("dc:2026", SearchFlags::default(), &SearchOptions::default())
+            .err()
+            .unwrap();
         assert!(err.contains("isn't indexed"), "{err}");
-        let sorted = SearchOptions { sort: crate::search::SortKey::Created, ..Default::default() };
+        let sorted = SearchOptions {
+            sort: crate::search::SortKey::Created,
+            ..Default::default()
+        };
         assert!(e.query("", SearchFlags::default(), &sorted).is_err());
         // Fast sorts off: same order, computed without ranks.
-        let c = Config { fast_sort_size: false, fast_sort_modified: false, ..Default::default() };
+        let c = Config {
+            fast_sort_size: false,
+            fast_sort_modified: false,
+            ..Default::default()
+        };
         e.set_config(c).unwrap();
-        let by_size = SearchOptions { sort: crate::search::SortKey::Size, descending: true, limit: 2 };
+        let by_size = SearchOptions {
+            sort: crate::search::SortKey::Size,
+            descending: true,
+            limit: 2,
+        };
         let rs = e.query("file:", SearchFlags::default(), &by_size).unwrap();
-        let names: Vec<String> = e.with_indexes(|ixs| rs.first_page().iter().map(|h| ixs[0].name(h.idx).to_string()).collect());
+        let names: Vec<String> = e.with_indexes(|ixs| {
+            rs.first_page()
+                .iter()
+                .map(|h| ixs[0].name(h.idx).to_string())
+                .collect()
+        });
         assert_eq!(names, ["Report.PDF", "notepad.exe"]);
         assert!(e.with_indexes(|ixs| ixs[0].ranks.by[1].is_empty()));
     }
 
     #[test]
     fn folder_volumes_load_and_follow_changes() {
-        let d = std::env::temp_dir().join(format!("rapidfind-engine-folder-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("rapidfind-engine-folder-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("one.txt"), b"1").unwrap();
@@ -1186,24 +1530,56 @@ mod tests {
         let key = folder::root_name(&d.to_string_lossy());
         let cfg = Config {
             auto_include_fixed: false,
-            folders: vec![FolderConfig { path: key.clone(), watch: true, rescan_minutes: 0 }],
+            folders: vec![FolderConfig {
+                path: key.clone(),
+                watch: true,
+                rescan_minutes: 0,
+            }],
             ..Default::default()
         };
         cfg.save(&cfg_path).unwrap();
-        let e = Engine::new(EngineOptions { config_path: Some(cfg_path), ..Default::default() });
+        let e = Engine::new(EngineOptions {
+            config_path: Some(cfg_path),
+            ..Default::default()
+        });
         e.sync_volumes();
-        assert_eq!(e.status().iter().filter(|s| s.kind == VolumeKind::Folder).count(), 1);
+        assert_eq!(
+            e.status()
+                .iter()
+                .filter(|s| s.kind == VolumeKind::Folder)
+                .count(),
+            1
+        );
         let t = Instant::now();
-        while e.query("one.txt", SearchFlags::default(), &SearchOptions::default()).unwrap().total == 0 {
-            assert!(t.elapsed() < Duration::from_secs(5), "initial background walk didn't finish");
+        while e
+            .query("one.txt", SearchFlags::default(), &SearchOptions::default())
+            .unwrap()
+            .total
+            == 0
+        {
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "initial background walk didn't finish"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(e.status()[0].state, "ready");
-        assert!(persist::folder_db_path(&key).exists(), "walked folder index is cached");
+        assert!(
+            persist::folder_db_path(&key).exists(),
+            "walked folder index is cached"
+        );
         std::fs::write(d.join("two.txt"), b"22").unwrap();
         let t = Instant::now();
-        while e.query("two.txt", SearchFlags::default(), &SearchOptions::default()).unwrap().total == 0 {
-            assert!(t.elapsed() < Duration::from_secs(5), "folder watcher didn't pick up the new file");
+        while e
+            .query("two.txt", SearchFlags::default(), &SearchOptions::default())
+            .unwrap()
+            .total
+            == 0
+        {
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "folder watcher didn't pick up the new file"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         // Removing the folder from the config drops the volume.
@@ -1220,15 +1596,26 @@ mod tests {
 
     #[test]
     fn unreachable_folder_stays_listed_as_offline() {
-        let d = std::env::temp_dir().join(format!("rapidfind-engine-offline-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("rapidfind-engine-offline-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let cfg_path = d.join("config.json");
         let missing = d.join("not-there").to_string_lossy().into_owned();
-        Config { auto_include_fixed: false, folders: vec![FolderConfig { path: missing.clone(), ..Default::default() }], ..Default::default() }
-            .save(&cfg_path)
-            .unwrap();
-        let e = Engine::new(EngineOptions { config_path: Some(cfg_path), ..Default::default() });
+        Config {
+            auto_include_fixed: false,
+            folders: vec![FolderConfig {
+                path: missing.clone(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .save(&cfg_path)
+        .unwrap();
+        let e = Engine::new(EngineOptions {
+            config_path: Some(cfg_path),
+            ..Default::default()
+        });
         e.sync_volumes();
         let t = Instant::now();
         while e.status().first().map(|s| s.state.clone()) != Some("offline".into()) {
@@ -1253,14 +1640,27 @@ mod unc_tests {
     #[test]
     #[ignore]
     fn unc_share_walk_and_watch() {
-        let Ok(unc) = std::env::var("RAPIDFIND_TEST_UNC") else { return };
+        let Ok(unc) = std::env::var("RAPIDFIND_TEST_UNC") else {
+            return;
+        };
         let tmp = std::env::temp_dir().join(format!("rapidfind-unc-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let cfg_path = tmp.join("config.json");
-        Config { auto_include_fixed: false, folders: vec![FolderConfig { path: unc.clone(), watch: true, rescan_minutes: 0 }], ..Default::default() }
-            .save(&cfg_path)
-            .unwrap();
-        let e = Engine::new(EngineOptions { config_path: Some(cfg_path), ..Default::default() });
+        Config {
+            auto_include_fixed: false,
+            folders: vec![FolderConfig {
+                path: unc.clone(),
+                watch: true,
+                rescan_minutes: 0,
+            }],
+            ..Default::default()
+        }
+        .save(&cfg_path)
+        .unwrap();
+        let e = Engine::new(EngineOptions {
+            config_path: Some(cfg_path),
+            ..Default::default()
+        });
         let t = Instant::now();
         e.sync_volumes();
         while e.status().first().map(|s| s.state.clone()) != Some("ready".into()) {
@@ -1273,11 +1673,16 @@ mod unc_tests {
         std::fs::write(&path, b"x").unwrap();
         let t = Instant::now();
         loop {
-            let rs = e.query(&probe, SearchFlags::default(), &SearchOptions::default()).unwrap();
+            let rs = e
+                .query(&probe, SearchFlags::default(), &SearchOptions::default())
+                .unwrap();
             if rs.total == 1 {
                 break;
             }
-            assert!(t.elapsed() < Duration::from_secs(10), "change over SMB not seen");
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "change over SMB not seen"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         println!("SMB change visible after {} ms", t.elapsed().as_millis());
@@ -1300,55 +1705,119 @@ mod unc_tests {
     #[test]
     #[ignore]
     fn unc_share_cache_options() {
-        let Ok(unc) = std::env::var("RAPIDFIND_TEST_UNC") else { return };
+        let Ok(unc) = std::env::var("RAPIDFIND_TEST_UNC") else {
+            return;
+        };
         let key = folder::root_name(&unc);
         let db = persist::folder_db_path(&key);
         let tmp = std::env::temp_dir().join(format!("rapidfind-unc-opts-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let cfg_path = tmp.join("config.json");
-        let base = Config { auto_include_fixed: false, folders: vec![FolderConfig { path: unc.clone(), watch: true, rescan_minutes: 0 }], ..Default::default() };
+        let base = Config {
+            auto_include_fixed: false,
+            folders: vec![FolderConfig {
+                path: unc.clone(),
+                watch: true,
+                rescan_minutes: 0,
+            }],
+            ..Default::default()
+        };
         let probe = format!("rapidfind-opts-probe-{}.txt", std::process::id());
         std::fs::write(format!("{key}\\{probe}"), b"x").unwrap();
 
         // 1. Cache off: walked, searchable, nothing written.
         std::fs::remove_file(&db).ok();
-        Config { share_cache: false, ..base.clone() }.save(&cfg_path).unwrap();
-        let e = Engine::new(EngineOptions { config_path: Some(cfg_path.clone()), ..Default::default() });
+        Config {
+            share_cache: false,
+            ..base.clone()
+        }
+        .save(&cfg_path)
+        .unwrap();
+        let e = Engine::new(EngineOptions {
+            config_path: Some(cfg_path.clone()),
+            ..Default::default()
+        });
         e.sync_volumes();
         wait_ready(&e, 60);
-        assert_eq!(e.query(&probe, SearchFlags::default(), &SearchOptions::default()).unwrap().total, 1);
+        assert_eq!(
+            e.query(&probe, SearchFlags::default(), &SearchOptions::default())
+                .unwrap()
+                .total,
+            1
+        );
         e.save_all(1).unwrap();
         assert!(!db.exists(), "share cache off but {db:?} was written");
         // Date created comes with the walk for shares (local default is off).
-        assert_eq!(e.query(&format!("{probe} dc:today"), SearchFlags::default(), &SearchOptions::default()).unwrap().total, 1);
+        assert_eq!(
+            e.query(
+                &format!("{probe} dc:today"),
+                SearchFlags::default(),
+                &SearchOptions::default()
+            )
+            .unwrap()
+            .total,
+            1
+        );
         // Turning the cache on writes it after the next walk/save.
-        e.set_config(Config { share_cache: true, ..base.clone() }).unwrap();
+        e.set_config(Config {
+            share_cache: true,
+            ..base.clone()
+        })
+        .unwrap();
         e.volumes()[0].rewalk.store(true, Ordering::Relaxed);
         let t = Instant::now();
         while !db.exists() {
-            assert!(t.elapsed() < Duration::from_secs(60), "cache not written after turning it on");
+            assert!(
+                t.elapsed() < Duration::from_secs(60),
+                "cache not written after turning it on"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         drop(e);
         std::thread::sleep(Duration::from_millis(1500));
 
         // 2. Trust the cache at startup: ready without walking, and changes still arrive.
-        Config { share_rewalk_on_start: false, ..base.clone() }.save(&cfg_path).unwrap();
-        let e = Engine::new(EngineOptions { config_path: Some(cfg_path.clone()), ..Default::default() });
+        Config {
+            share_rewalk_on_start: false,
+            ..base.clone()
+        }
+        .save(&cfg_path)
+        .unwrap();
+        let e = Engine::new(EngineOptions {
+            config_path: Some(cfg_path.clone()),
+            ..Default::default()
+        });
         let t = Instant::now();
         e.sync_volumes();
         wait_ready(&e, 10);
         println!("trusted cache ready in {} ms", t.elapsed().as_millis());
-        assert_eq!(e.query(&probe, SearchFlags::default(), &SearchOptions::default()).unwrap().total, 1);
+        assert_eq!(
+            e.query(&probe, SearchFlags::default(), &SearchOptions::default())
+                .unwrap()
+                .total,
+            1
+        );
         let probe2 = format!("rapidfind-opts-probe2-{}.txt", std::process::id());
         std::fs::write(format!("{key}\\{probe2}"), b"y").unwrap();
         let t = Instant::now();
-        while e.query(&probe2, SearchFlags::default(), &SearchOptions::default()).unwrap().total == 0 {
-            assert!(t.elapsed() < Duration::from_secs(10), "change not seen with a trusted cache");
+        while e
+            .query(&probe2, SearchFlags::default(), &SearchOptions::default())
+            .unwrap()
+            .total
+            == 0
+        {
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "change not seen with a trusted cache"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         // Turning caching off deletes the cache file.
-        e.set_config(Config { share_cache: false, ..base.clone() }).unwrap();
+        e.set_config(Config {
+            share_cache: false,
+            ..base.clone()
+        })
+        .unwrap();
         assert!(!db.exists());
         drop(e);
         std::thread::sleep(Duration::from_millis(1500));

@@ -14,17 +14,21 @@ use std::sync::Arc;
 
 use rapidfind_core::content::{self, ContentQuery, Encoding};
 use rapidfind_core::ipc::Row;
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER, CLSIDFromString, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize, STGM_READ, STGM_SHARE_DENY_NONE};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER, CLSIDFromString, COINIT_APARTMENTTHREADED,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, STGM_READ, STGM_SHARE_DENY_NONE,
+};
+use windows::Win32::UI::Controls::RichEdit::*;
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
 use windows::Win32::UI::Shell::{
-    ASSOCF_INIT_DEFAULTTOSTAR, ASSOCSTR_SHELLEXTENSION, AssocQueryStringW, IInitializeWithItem, IPreviewHandler, IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName,
+    ASSOCF_INIT_DEFAULTTOSTAR, ASSOCSTR_SHELLEXTENSION, AssocQueryStringW, IInitializeWithItem,
+    IPreviewHandler, IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName,
     SHCreateStreamOnFileEx, SIIGBF_RESIZETOFIT,
 };
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR, w};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::UI::Controls::EM_LINESCROLL;
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::Controls::RichEdit::*;
+use windows_sys::Win32::UI::Controls::EM_LINESCROLL;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::w::{self as w_, send, wide};
@@ -41,7 +45,12 @@ const MAX_HIGHLIGHTS: usize = 2000;
 const OFFLINE_ATTRS: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
 
 enum Loaded {
-    Text { text: Vec<u16>, hits: Vec<Range<usize>>, cut: bool, enc: Encoding },
+    Text {
+        text: Vec<u16>,
+        hits: Vec<Range<usize>>,
+        cut: bool,
+        enc: Encoding,
+    },
     Bitmap(HBITMAP),
     /// Not text or a picture: try a preview handler, then a thumbnail.
     Other,
@@ -88,7 +97,14 @@ impl Preview {
             };
             RegisterClassExW(&wc);
         }
-        let host = w_::child(parent, CLASS, "Preview", WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, ID_PREVIEW);
+        let host = w_::child(
+            parent,
+            CLASS,
+            "Preview",
+            WS_CLIPCHILDREN,
+            WS_EX_CLIENTEDGE,
+            ID_PREVIEW,
+        );
         unsafe { ShowWindow(host, SW_HIDE) };
         let style = WS_VSCROLL | (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32;
         let text = w_::child(host, "RICHEDIT50W", "", style, 0, ID_PREVIEW_TEXT);
@@ -117,7 +133,12 @@ impl Preview {
         let rc = w_::client_rect(self.host.get());
         w_::move_to(self.text.get(), 0, 0, rc.right, rc.bottom);
         if let Some(h) = &*self.handler.borrow() {
-            let r = windows::Win32::Foundation::RECT { left: 0, top: 0, right: rc.right, bottom: rc.bottom };
+            let r = windows::Win32::Foundation::RECT {
+                left: 0,
+                top: 0,
+                right: rc.right,
+                bottom: rc.bottom,
+            };
             let _ = unsafe { h.SetRect(&r) };
         }
         unsafe { InvalidateRect(self.host.get(), null(), 1) };
@@ -190,7 +211,12 @@ impl Preview {
                 self.bitmap.set(b);
                 self.set_message("");
             }
-            Loaded::Text { text, hits, cut, enc } => self.show_text(text, &hits, cut, enc),
+            Loaded::Text {
+                text,
+                hits,
+                cut,
+                enc,
+            } => self.show_text(text, &hits, cut, enc),
             Loaded::Other => {
                 let path = self.path.borrow().clone();
                 match self.open_handler(&path) {
@@ -202,7 +228,10 @@ impl Preview {
                         // No handler: the shell's thumbnail (an icon at worst).
                         let (host, seq) = (self.host.get() as isize, done.seq);
                         std::thread::spawn(move || {
-                            let loaded = thumbnail(&path).map_or_else(|| Loaded::Message("No preview available.".into()), Loaded::Bitmap);
+                            let loaded = thumbnail(&path).map_or_else(
+                                || Loaded::Message("No preview available.".into()),
+                                Loaded::Bitmap,
+                            );
                             post(host, seq, loaded);
                         });
                     }
@@ -223,16 +252,32 @@ impl Preview {
         cf.Base.cbSize = size_of::<CHARFORMAT2W>() as u32;
         cf.Base.dwMask = CFM_BACKCOLOR | CFM_BOLD;
         cf.Base.dwEffects = CFE_AUTOBACKCOLOR;
-        send(edit, EM_SETCHARFORMAT, SCF_ALL as usize, &cf as *const _ as isize);
+        send(
+            edit,
+            EM_SETCHARFORMAT,
+            SCF_ALL as usize,
+            &cf as *const _ as isize,
+        );
         cf.Base.dwEffects = CFE_BOLD;
         cf.crBackColor = windows::Win32::Foundation::COLORREF(0x0080E6FF); // amber (BGR)
         for r in hits.iter().take(MAX_HIGHLIGHTS) {
-            let cr = CHARRANGE { cpMin: r.start as i32, cpMax: r.end as i32 };
+            let cr = CHARRANGE {
+                cpMin: r.start as i32,
+                cpMax: r.end as i32,
+            };
             send(edit, EM_EXSETSEL, 0, &cr as *const _ as isize);
-            send(edit, EM_SETCHARFORMAT, SCF_SELECTION as usize, &cf as *const _ as isize);
+            send(
+                edit,
+                EM_SETCHARFORMAT,
+                SCF_SELECTION as usize,
+                &cf as *const _ as isize,
+            );
         }
         let at = hits.first().map_or(0, |r| r.start as i32);
-        let cr = CHARRANGE { cpMin: at, cpMax: at };
+        let cr = CHARRANGE {
+            cpMin: at,
+            cpMax: at,
+        };
         send(edit, EM_EXSETSEL, 0, &cr as *const _ as isize);
         // Put the first match a few lines from the top.
         send(edit, WM_VSCROLL, SB_TOP as usize, 0);
@@ -243,17 +288,35 @@ impl Preview {
     }
 
     fn open_handler(&self, path: &str) -> windows::core::Result<IPreviewHandler> {
-        let ext = std::path::Path::new(path).extension().map(|e| format!(".{}", e.to_string_lossy())).ok_or(windows::core::Error::empty())?;
+        let ext = std::path::Path::new(path)
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .ok_or(windows::core::Error::empty())?;
         let mut buf = [0u16; 64];
         let mut n = buf.len() as u32;
         unsafe {
-            AssocQueryStringW(ASSOCF_INIT_DEFAULTTOSTAR, ASSOCSTR_SHELLEXTENSION, &HSTRING::from(ext), w!("{8895b1c6-b41f-4c1c-a562-0d564250836f}"), Some(PWSTR(buf.as_mut_ptr())), &mut n).ok()?;
+            AssocQueryStringW(
+                ASSOCF_INIT_DEFAULTTOSTAR,
+                ASSOCSTR_SHELLEXTENSION,
+                &HSTRING::from(ext),
+                w!("{8895b1c6-b41f-4c1c-a562-0d564250836f}"),
+                Some(PWSTR(buf.as_mut_ptr())),
+                &mut n,
+            )
+            .ok()?;
             let clsid = CLSIDFromString(PCWSTR(buf.as_ptr()))?;
             // Out of process (prevhost.exe) when registered that way, like Explorer.
-            let h: IPreviewHandler = CoCreateInstance(&clsid, None, CLSCTX_LOCAL_SERVER).or_else(|_| CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER))?;
+            let h: IPreviewHandler = CoCreateInstance(&clsid, None, CLSCTX_LOCAL_SERVER)
+                .or_else(|_| CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER))?;
             let hpath = HSTRING::from(path);
             if let Ok(i) = h.cast::<IInitializeWithStream>() {
-                let s = SHCreateStreamOnFileEx(&hpath, (STGM_READ | STGM_SHARE_DENY_NONE).0, 0, false, None)?;
+                let s = SHCreateStreamOnFileEx(
+                    &hpath,
+                    (STGM_READ | STGM_SHARE_DENY_NONE).0,
+                    0,
+                    false,
+                    None,
+                )?;
                 i.Initialize(&s, STGM_READ.0)?;
             } else if let Ok(i) = h.cast::<IInitializeWithFile>() {
                 i.Initialize(&hpath, STGM_READ.0)?;
@@ -264,7 +327,12 @@ impl Preview {
                 return Err(windows::core::Error::empty());
             }
             let rc = w_::client_rect(self.host.get());
-            let r = windows::Win32::Foundation::RECT { left: 0, top: 0, right: rc.right, bottom: rc.bottom };
+            let r = windows::Win32::Foundation::RECT {
+                left: 0,
+                top: 0,
+                right: rc.right,
+                bottom: rc.bottom,
+            };
             h.SetWindow(windows::Win32::Foundation::HWND(self.host.get() as _), &r)?;
             h.DoPreview()?;
             Ok(h)
@@ -291,7 +359,12 @@ impl Preview {
                 let mem = CreateCompatibleDC(hdc);
                 let old = SelectObject(mem, b as _);
                 if self.alpha.get() {
-                    let bf = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+                    let bf = BLENDFUNCTION {
+                        BlendOp: AC_SRC_OVER as u8,
+                        BlendFlags: 0,
+                        SourceConstantAlpha: 255,
+                        AlphaFormat: AC_SRC_ALPHA as u8,
+                    };
                     AlphaBlend(hdc, x, y, dw, dh, mem, 0, 0, bw, bh, bf);
                 } else {
                     SetStretchBltMode(hdc, HALFTONE);
@@ -306,11 +379,18 @@ impl Preview {
                     r.left += w_::px(hwnd, 12);
                     r.right -= w_::px(hwnd, 12);
                     r.top += w_::px(hwnd, 24);
-                    let old = SelectObject(hdc, SendMessageW(GetParent(hwnd), WM_GETFONT, 0, 0) as _);
+                    let old =
+                        SelectObject(hdc, SendMessageW(GetParent(hwnd), WM_GETFONT, 0, 0) as _);
                     SetBkMode(hdc, TRANSPARENT as i32);
                     SetTextColor(hdc, GetSysColor(COLOR_GRAYTEXT));
                     let t: Vec<u16> = m.encode_utf16().collect();
-                    DrawTextW(hdc, t.as_ptr(), t.len() as i32, &mut r, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
+                    DrawTextW(
+                        hdc,
+                        t.as_ptr(),
+                        t.len() as i32,
+                        &mut r,
+                        DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
+                    );
                     SelectObject(hdc, old);
                 }
             }
@@ -341,7 +421,10 @@ fn post(host: isize, seq: u64, loaded: Loaded) {
 }
 
 fn is_picture_or_video(name: &str) -> bool {
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
     let has = |list: &str| list.split(';').any(|e| e == ext);
     !ext.is_empty() && (has(rapidfind_core::query::PICTURE) || has(rapidfind_core::query::VIDEO))
 }
@@ -349,7 +432,10 @@ fn is_picture_or_video(name: &str) -> bool {
 /// Runs on a background thread.
 fn load(path: &str, name: &str, is_dir: bool, cq: Option<&ContentQuery>) -> Loaded {
     if is_dir || is_picture_or_video(name) {
-        return thumbnail(path).map_or_else(|| Loaded::Message("No preview available.".into()), Loaded::Bitmap);
+        return thumbnail(path).map_or_else(
+            || Loaded::Message("No preview available.".into()),
+            Loaded::Bitmap,
+        );
     }
     if content::uses_ifilter(name) {
         return Loaded::Other; // documents look best in their own previewer
@@ -362,8 +448,15 @@ fn load(path: &str, name: &str, is_dir: bool, cq: Option<&ContentQuery>) -> Load
                 return Loaded::Message(format!("Can't read this file: {e}"));
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Message("This file isn't there any more (it was moved or deleted, or its drive is offline).".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Loaded::Message("Can't open this file: access is denied, or another program has it locked.".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Message(
+            "This file isn't there any more (it was moved or deleted, or its drive is offline)."
+                .into(),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Loaded::Message(
+                "Can't open this file: access is denied, or another program has it locked.".into(),
+            );
+        }
         Err(e) => return Loaded::Message(format!("Can't open this file: {e}")),
     }
     let cut = head.len() > MAX_TEXT;
@@ -374,21 +467,31 @@ fn load(path: &str, name: &str, is_dir: bool, cq: Option<&ContentQuery>) -> Load
     }
     let (enc, text) = content::decode_all(&head);
     let (text, hits) = text_and_hits(&text, cq);
-    Loaded::Text { text, hits, cut, enc }
+    Loaded::Text {
+        text,
+        hits,
+        cut,
+        enc,
+    }
 }
 
 /// The text as the rich edit stores it (`\r\n` → one character) in UTF-16,
 /// and the content matches as ranges of it.
 fn text_and_hits(text: &str, cq: Option<&ContentQuery>) -> (Vec<u16>, Vec<Range<usize>>) {
     let text = text.replace("\r\n", "\n");
-    let bytes = cq.map(|q| q.find_ranges(text.as_bytes(), MAX_HIGHLIGHTS)).unwrap_or_default();
+    let bytes = cq
+        .map(|q| q.find_ranges(text.as_bytes(), MAX_HIGHLIGHTS))
+        .unwrap_or_default();
     // UTF-8 byte offsets → UTF-16 offsets.
     let mut map = Vec::with_capacity(bytes.len() * 2);
     let mut want: Vec<usize> = bytes.iter().flat_map(|r| [r.start, r.end]).collect();
     want.sort_unstable();
     let (mut u16_at, mut wi) = (0usize, 0usize);
     let mut offsets = std::collections::HashMap::new();
-    for (b, c) in text.char_indices().chain(std::iter::once((text.len(), '\0'))) {
+    for (b, c) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), '\0')))
+    {
         while wi < want.len() && want[wi] <= b {
             offsets.insert(want[wi], u16_at);
             wi += 1;
@@ -406,8 +509,12 @@ fn thumbnail(path: &str) -> Option<HBITMAP> {
     unsafe {
         let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         let r = (|| -> windows::core::Result<HBITMAP> {
-            let f: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(path), None)?;
-            let b = f.GetImage(windows::Win32::Foundation::SIZE { cx: 1024, cy: 1024 }, SIIGBF_RESIZETOFIT)?;
+            let f: IShellItemImageFactory =
+                SHCreateItemFromParsingName(&HSTRING::from(path), None)?;
+            let b = f.GetImage(
+                windows::Win32::Foundation::SIZE { cx: 1024, cy: 1024 },
+                SIIGBF_RESIZETOFIT,
+            )?;
             Ok(b.0 as HBITMAP)
         })();
         if init {
@@ -425,7 +532,10 @@ fn has_alpha(b: HBITMAP) -> bool {
         if bm.bmBitsPixel != 32 || bm.bmBits.is_null() {
             return false;
         }
-        let px = std::slice::from_raw_parts(bm.bmBits as *const u8, (bm.bmWidthBytes * bm.bmHeight) as usize);
+        let px = std::slice::from_raw_parts(
+            bm.bmBits as *const u8,
+            (bm.bmWidthBytes * bm.bmHeight) as usize,
+        );
         px.chunks_exact(4).any(|p| p[3] != 0)
     }
 }
@@ -447,13 +557,27 @@ fn stream_in(edit: HWND, text: &[u16]) {
         0
     }
     let bytes: Vec<u8> = text.iter().flat_map(|u| u.to_le_bytes()).collect();
-    let mut src = Src { data: &bytes, at: 0 };
-    let mut es = EDITSTREAM { dwCookie: &mut src as *mut _ as usize, dwError: 0, pfnCallback: Some(cb) };
-    send(edit, EM_STREAMIN, (SF_TEXT | SF_UNICODE) as usize, &mut es as *mut _ as isize);
+    let mut src = Src {
+        data: &bytes,
+        at: 0,
+    };
+    let mut es = EDITSTREAM {
+        dwCookie: &mut src as *mut _ as usize,
+        dwError: 0,
+        pfnCallback: Some(cb),
+    };
+    send(
+        edit,
+        EM_STREAMIN,
+        (SF_TEXT | SF_UNICODE) as usize,
+        &mut es as *mut _ as isize,
+    );
 }
 
 unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-    let Some(app) = crate::app::app() else { return unsafe { DefWindowProcW(hwnd, msg, w, l) } };
+    let Some(app) = crate::app::app() else {
+        return unsafe { DefWindowProcW(hwnd, msg, w, l) };
+    };
     let p = &app.preview;
     match msg {
         WM_APP_PREVIEW => {
@@ -481,13 +605,21 @@ mod tests {
 
     #[test]
     fn hit_offsets_are_utf16_after_crlf() {
-        let cq = content::split_query("content:needle", SearchFlags::default()).unwrap().1.unwrap();
+        let cq = content::split_query("content:needle", SearchFlags::default())
+            .unwrap()
+            .1
+            .unwrap();
         let (text, hits) = text_and_hits("å😀\r\nx NEEDLE needle", Some(&cq));
         let s = String::from_utf16(&text).unwrap();
         assert_eq!(s, "å😀\nx NEEDLE needle");
         // å = 1 unit, 😀 = 2, \n = 1, "x " = 2 → first hit at 6.
         assert_eq!(hits, vec![6..12, 13..19]);
         assert!(text_and_hits("abc", None).1.is_empty());
-        assert!(is_picture_or_video("a.JPG") && is_picture_or_video("b.mkv") && !is_picture_or_video("c.txt") && !is_picture_or_video("jpg"));
+        assert!(
+            is_picture_or_video("a.JPG")
+                && is_picture_or_video("b.mkv")
+                && !is_picture_or_video("c.txt")
+                && !is_picture_or_video("jpg")
+        );
     }
 }
