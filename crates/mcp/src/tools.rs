@@ -704,10 +704,10 @@ impl Growth {
                 "then_human": fmt::size(r.before),
                 "now_human": fmt::size(r.size),
             });
-            if r.changed {
-                o["note"] = json!("new or modified since then");
-            } else if r.is_dir && r.before == 0 {
+            if r.before == 0 {
                 o["note"] = json!("new, or under 10 MB then");
+            } else if r.changed {
+                o["note"] = json!("modified since then");
             }
             if r.capacity > 0 {
                 o["free_then"] = json!(fmt::size(r.free_before));
@@ -720,13 +720,53 @@ impl Growth {
             }
             out.push(o);
         }
-        let rest = (level.size as i64 - level.before as i64) - listed;
-        if changed.len() as u64 > self.limit && rest != 0 {
+        // The rest of the change: what's changed but not listed, then what
+        // no row accounts for (removed items, or items the snapshot has no
+        // size for), so the rows add up to the folder's change.
+        let more = changed.len().saturating_sub(self.limit as usize);
+        let unlisted: i64 = changed
+            .iter()
+            .skip(self.limit as usize)
+            .map(|r| r.change())
+            .sum();
+        if more > 0 && unlisted != 0 {
             out.push(json!({
-                "name": format!("({} more changed)", changed.len() as u64 - self.limit),
-                "change": rest,
-                "change_human": signed(rest),
+                "name": format!("({more} more changed)"),
+                "change": unlisted,
+                "change_human": signed(unlisted),
             }));
+        }
+        // Files changed since an older snapshot that only kept folders: their
+        // size then is unknown, so they aren't compared (no change value).
+        let mut unknown: Vec<&TreeRow> = level.rows.iter().filter(|r| !r.has_before).collect();
+        unknown.sort_by_key(|r| std::cmp::Reverse(r.size));
+        for r in unknown.iter().take(5) {
+            out.push(json!({
+                "name": r.name,
+                "path": r.full_path(),
+                "type": if r.is_dir { "folder" } else { "file" },
+                "not_compared": true,
+                "size_now": r.size,
+                "now_human": fmt::size(r.size),
+                "note": "not in that snapshot (it only kept folders): how much this changed is unknown",
+            }));
+        }
+        let gap = (level.size as i64 - level.before as i64) - listed - unlisted;
+        if gap != 0 && level.has_before {
+            out.push(if unknown.is_empty() {
+                json!({
+                    "name": "(removed, or under 10 MB then)",
+                    "change": gap,
+                    "change_human": signed(gap),
+                })
+            } else {
+                json!({
+                    "name": "(not attributed)",
+                    "unattributed": gap,
+                    "unattributed_human": signed(gap),
+                    "note": "the part of the total change no listed row accounts for: the not_compared items above, plus anything removed or under 10 MB then",
+                })
+            });
         }
         Ok(Value::Array(out))
     }
@@ -1632,6 +1672,102 @@ mod tests {
         assert_eq!(parse_date("1970-01-02"), Some(86_400));
         assert_eq!(parse_date("2026-10-20"), Some(1_792_454_400));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A big file directly in the compared folder (like C:\pagefile.sys) that
+    /// changed since the snapshot: a snapshot that kept it gives its real
+    /// change; an older folder-only one can't, so it's listed as not compared
+    /// (not as all-new growth), and the rows still add up.
+    #[test]
+    fn growth_of_files_a_snapshot_did_or_did_not_keep() {
+        use rapidfind_core::engine::Engine;
+        use rapidfind_core::tree::Tree;
+        for kept in [true, false] {
+            let root = std::env::temp_dir().join(format!(
+                "rapidfind-mcp-growth-files-{kept}-{}",
+                std::process::id()
+            ));
+            let (dir, hist) = (root.join("data"), root.join("history"));
+            let _ = std::fs::remove_dir_all(&root);
+            for d in ["a", "b", "c"] {
+                std::fs::create_dir_all(dir.join(d)).unwrap();
+                std::fs::write(dir.join(d).join("x.bin"), vec![1u8; 100]).unwrap();
+            }
+            std::fs::write(dir.join("page.sys"), vec![1u8; 3000]).unwrap();
+            let engine = || {
+                let e = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(
+                    &dir.to_string_lossy(),
+                    rapidfind_core::fold::FoldMode::Lower,
+                )]));
+                e.enable_history(hist.clone());
+                e
+            };
+            let eng = engine();
+            let mut t = Tree::build(&eng, "", SearchFlags::default()).unwrap();
+            let mut s = t.snapshot(&eng, "", 0, 100).unwrap();
+            s.time -= 86_400;
+            if !kept {
+                // As saved before snapshots kept files.
+                s.has_files = false;
+                s.volumes.iter_mut().for_each(|v| v.files.clear());
+            }
+            eng.history().unwrap().save(&s).unwrap();
+            std::fs::write(dir.join("page.sys"), vec![1u8; 3500]).unwrap();
+            for d in ["a", "b", "c"] {
+                std::fs::write(dir.join(d).join("y.bin"), vec![1u8; 10]).unwrap();
+            }
+            let mut be = rapidfind_core::ipc::Local::new(engine());
+            let p = dir.to_string_lossy().to_string();
+            let v = call(
+                &mut be,
+                "folder_growth",
+                &json!({ "path": p, "days": 1, "depth": 1 }),
+            )
+            .unwrap();
+            assert_eq!(v["change"], json!(530), "{v}");
+            let kids = v["children"].as_array().unwrap();
+            let page = kids.iter().find(|k| k["name"] == "page.sys").unwrap();
+            if kept {
+                assert_eq!(
+                    (page["change"].as_i64(), page["size_then"].as_u64()),
+                    (Some(500), Some(3000)),
+                    "{v}"
+                );
+            } else {
+                assert!(
+                    page.get("change").is_none() && page["not_compared"] == true,
+                    "{v}"
+                );
+                let rest = kids
+                    .iter()
+                    .find(|k| k["name"] == "(not attributed)")
+                    .unwrap();
+                assert_eq!(rest["unattributed"], json!(500), "{v}");
+            }
+            // Everything with a change adds up to the folder's change.
+            let sum: i64 = kids
+                .iter()
+                .map(|k| {
+                    k["change"]
+                        .as_i64()
+                        .or(k["unattributed"].as_i64())
+                        .unwrap_or(0)
+                })
+                .sum();
+            assert_eq!(sum, 530, "{v}");
+            // No chart shows the file's whole size (3.4 KB) as growth.
+            let charts: Vec<&Value> = match &v["present"] {
+                Value::Array(a) => a.iter().collect(),
+                Value::Null => vec![],
+                c => vec![c],
+            };
+            for c in charts.iter().filter(|c| c["type"] == "diverging_bar") {
+                for b in c["data"].as_array().unwrap() {
+                    assert!(b["value"].as_f64().unwrap().abs() < 1.0, "{v}");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     #[test]

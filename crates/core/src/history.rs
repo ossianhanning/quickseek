@@ -3,9 +3,12 @@
 //!
 //! A snapshot keeps, per volume, the folders of at least [`MIN_FOLDER`]
 //! bytes (an ancestor-closed set, since folder sizes include their
-//! contents) with their size, online-only bytes and file count. Folders
-//! below the threshold count as empty then, so a change is off by at most
-//! that much. Files on disk: `<unix seconds>-<a|s>.snap` in the history
+//! contents) with their size, online-only bytes and file count, and (since
+//! format 3) the files of at least that size in them, such as the page file
+//! directly on `C:\`. Folders and files below the threshold count as empty
+//! then, so a change is off by at most that much. Format 2 snapshots (folders
+//! only) still load; a comparison with one can't tell how a file that changed
+//! since then has grown. Files on disk: `<unix seconds>-<a|s>.snap` in the history
 //! folder: an uncompressed header (so listing is cheap) and a zstd body of
 //! varint columns, typically well under a megabyte.
 //!
@@ -25,7 +28,19 @@ use parking_lot::Mutex;
 pub const MIN_FOLDER: u64 = 10 << 20;
 /// At most this many folders per volume (the biggest).
 pub const MAX_FOLDERS: usize = 60_000;
-const MAGIC: &[u8; 8] = b"RFSNAP\x00\x02";
+/// At most this many files per volume (the biggest).
+pub const MAX_FILES: usize = 20_000;
+const MAGIC: &[u8; 8] = b"RFSNAP\x00\x03";
+/// Before files were stored.
+const MAGIC_V2: &[u8; 8] = b"RFSNAP\x00\x02";
+
+fn strip_magic(data: &[u8]) -> Option<(&[u8], bool)> {
+    match data.get(..8) {
+        Some(m) if m == MAGIC => Some((&data[8..], true)),
+        Some(m) if m == MAGIC_V2 => Some((&data[8..], false)),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SnapFolder {
@@ -37,12 +52,22 @@ pub struct SnapFolder {
     pub files: u64,
 }
 
+/// A file of at least [`MIN_FOLDER`] bytes.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SnapFile {
+    /// Index of its folder in [`SnapVolume::folders`].
+    pub parent: u32,
+    pub name: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SnapVolume {
     pub key: String,
     pub capacity: u64,
     pub free: u64,
     pub folders: Vec<SnapFolder>,
+    pub files: Vec<SnapFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -52,6 +77,8 @@ pub struct Snapshot {
     /// Save points have a name; daily snapshots don't.
     pub name: String,
     pub volumes: Vec<SnapVolume>,
+    /// Big files were recorded (format 3): a file missing from it was smaller then.
+    pub has_files: bool,
 }
 
 /// What listing shows about a snapshot.
@@ -126,7 +153,8 @@ impl Rd<'_> {
 
 impl Snapshot {
     pub fn encode(&self) -> Vec<u8> {
-        let mut head = MAGIC.to_vec();
+        // Without files it's written as format 2, which it then is.
+        let mut head = if self.has_files { MAGIC } else { MAGIC_V2 }.to_vec();
         put(&mut head, self.time as u64);
         put_str(&mut head, &self.name);
         put(
@@ -163,13 +191,21 @@ impl Snapshot {
             for f in &v.folders {
                 put(&mut body, f.files);
             }
+            if self.has_files {
+                put(&mut body, v.files.len() as u64);
+                for f in &v.files {
+                    put(&mut body, f.parent as u64);
+                    put_str(&mut body, &f.name);
+                    put(&mut body, f.size);
+                }
+            }
         }
         head.extend(zstd::encode_all(&body[..], 9).unwrap_or_default());
         head
     }
 
     pub fn decode(data: &[u8]) -> io::Result<Snapshot> {
-        let rest = data.strip_prefix(&MAGIC[..]).ok_or_else(bad)?;
+        let (rest, has_files) = strip_magic(data).ok_or_else(bad)?;
         let mut r = Rd(rest);
         let time = r.u()? as i64;
         let name = r.s()?;
@@ -210,25 +246,49 @@ impl Snapshot {
             for f in &mut folders {
                 f.files = r.u()?;
             }
+            let mut files = Vec::new();
+            if has_files {
+                let k = r.u()? as usize;
+                if k > 10_000_000 {
+                    return Err(bad());
+                }
+                for _ in 0..k {
+                    let parent = r.u()?;
+                    if parent as usize >= n {
+                        return Err(bad());
+                    }
+                    files.push(SnapFile {
+                        parent: parent as u32,
+                        name: r.s()?,
+                        size: r.u()?,
+                    });
+                }
+            }
             volumes.push(SnapVolume {
                 key,
                 capacity,
                 free,
                 folders,
+                files,
             });
         }
         Ok(Snapshot {
             time,
             name,
             volumes,
+            has_files,
         })
     }
 
-    /// Every stored folder's size by path (see [`PathMap`]). Volume roots
-    /// are found by their root name (`C:`).
+    /// Every stored folder's and file's size by path (see [`PathMap`]).
+    /// Volume roots are found by their root name (`C:`).
     pub fn paths(&self) -> PathMap {
-        let mut pairs: Vec<(u64, u64)> =
-            Vec::with_capacity(self.volumes.iter().map(|v| v.folders.len()).sum());
+        let mut pairs: Vec<(u64, u64)> = Vec::with_capacity(
+            self.volumes
+                .iter()
+                .map(|v| v.folders.len() + v.files.len())
+                .sum(),
+        );
         let mut roots = HashMap::new();
         for v in &self.volumes {
             let mut full: Vec<String> = Vec::with_capacity(v.folders.len());
@@ -239,6 +299,11 @@ impl Snapshot {
                 };
                 pairs.push((path_hash(&p), f.size));
                 full.push(p);
+            }
+            for f in &v.files {
+                if let Some(dir) = full.get(f.parent as usize) {
+                    pairs.push((path_hash(&format!("{dir}\\{}", f.name)), f.size));
+                }
             }
             if let Some(root) = full.first() {
                 roots.insert(path_key(root), (v.capacity, v.free));
@@ -252,6 +317,7 @@ impl Snapshot {
             sizes,
             roots,
             time: self.time,
+            has_files: self.has_files,
         }
     }
 }
@@ -265,6 +331,8 @@ pub struct PathMap {
     /// Volume root → (capacity, free).
     roots: HashMap<String, (u64, u64)>,
     pub time: i64,
+    /// Big files are in it too (see [`Snapshot::has_files`]).
+    pub has_files: bool,
 }
 
 /// 64-bit FNV-1a of [`path_key`]: collisions among ~100k folders are
@@ -281,7 +349,7 @@ pub fn path_key(p: &str) -> String {
 }
 
 impl PathMap {
-    /// The folder's size then, if the snapshot has it.
+    /// The folder's (or big file's) size then, if the snapshot has it.
     pub fn get(&self, path: &str) -> Option<u64> {
         self.hashes
             .binary_search(&path_hash(path))
@@ -380,7 +448,7 @@ impl History {
             };
             let mut head = [0u8; 512];
             let n = f.read(&mut head).unwrap_or(0);
-            let Some(rest) = head[..n].strip_prefix(&MAGIC[..]) else {
+            let Some((rest, _)) = strip_magic(&head[..n]) else {
                 continue;
             };
             let mut r = Rd(rest);
@@ -512,7 +580,13 @@ mod tests {
                     f(0, "Windows", 40 << 30),
                     f(2, "Ångström", 20 << 20),
                 ],
+                files: vec![SnapFile {
+                    parent: 0,
+                    name: "pagefile.sys".into(),
+                    size: 36 << 30,
+                }],
             }],
+            has_files: true,
         }
     }
 
@@ -527,9 +601,45 @@ mod tests {
         assert_eq!(m.get(r"c:\USERS\me\"), Some(500 << 30));
         assert_eq!(m.get(r"C:\Users\Me\ångström"), Some(20 << 20));
         assert_eq!(m.get("C:\\"), Some(900 << 30));
-        assert_eq!(m.memory_bytes() / 16, 5 + 4);
+        assert_eq!(
+            m.get(r"C:\pagefile.sys"),
+            Some(36 << 30),
+            "big files are kept"
+        );
+        assert!(m.has_files);
+        assert_eq!(m.memory_bytes() / 16, 6 + 4);
         assert_eq!(m.disk(r"C:\"), Some((1000 << 30, 30 << 30)));
         assert!(m.get(r"C:\Temp").is_none());
+    }
+
+    /// Snapshots from before files were kept (format 2) still load.
+    #[test]
+    fn reads_folder_only_snapshots() {
+        let mut old = sample();
+        old.has_files = false;
+        old.volumes[0].files.clear();
+        let b = old.encode();
+        assert!(b.starts_with(MAGIC_V2));
+        assert_eq!(Snapshot::decode(&b).unwrap(), old);
+        let m = old.paths();
+        assert!(!m.has_files && m.get(r"C:\pagefile.sys").is_none());
+        assert_eq!(m.get(r"C:\Users"), Some(600 << 30));
+        let dir = std::env::temp_dir().join(format!("rapidfind-history-v2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = History::new(dir.clone());
+        let now = now_unix();
+        h.save(&Snapshot {
+            time: now - 60,
+            ..old
+        })
+        .unwrap();
+        h.save(&Snapshot {
+            time: now,
+            ..sample()
+        })
+        .unwrap();
+        assert_eq!(h.list().len(), 2, "both formats are listed");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -556,7 +666,7 @@ mod tests {
             "before cleanup"
         );
         let id = &list.last().unwrap().id;
-        assert_eq!(h.paths(id).unwrap().len(), 5);
+        assert_eq!(h.paths(id).unwrap().len(), 6, "5 folders and a file");
         assert_eq!(h.cached(), 1);
         assert!(h.has_one_since(now - 10));
         assert!(h.load("../x").is_err());

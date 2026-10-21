@@ -196,7 +196,9 @@ fn folder_growth(r: &Value) -> Option<Value> {
             .iter()
             .take(TOP + 1)
             .map(|c| {
-                let label = if c.get("path").is_some() { c["name"].as_str().unwrap_or("") } else { "Other" };
+                // Summary rows ("(12 more changed)") keep their name, without the brackets.
+                let name = c["name"].as_str().unwrap_or("");
+                let label = if c.get("path").is_some() { name } else { name.trim_matches(['(', ')']) };
                 json!({ "label": label, "value": round1(c["change"].as_i64().unwrap_or(0) as f64, per) })
             })
             .collect();

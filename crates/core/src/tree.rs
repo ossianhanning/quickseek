@@ -91,8 +91,11 @@ pub struct TreeRow {
     pub capacity: u64,
     pub free: u64,
     /// Comparing with a snapshot ([`Tree::base`]): `size` then. Folders not
-    /// in the snapshot (new, or under its size threshold) count as 0; files
-    /// as unchanged unless modified since, then 0 and `changed`.
+    /// in the snapshot (new, or under its size threshold) count as 0. Files:
+    /// their size then if the snapshot has it, else unchanged unless modified
+    /// since; a file modified since counts as 0 then (`changed`) if the
+    /// snapshot keeps big files, else isn't compared (`has_before` false:
+    /// the snapshot has no size for it).
     pub before: u64,
     pub has_before: bool,
     /// A file modified after the comparison snapshot.
@@ -461,18 +464,24 @@ impl VolTree {
     }
 
     /// Folders of at least `min` bytes, parents before children, at most
-    /// `cap` of them (the biggest: a size cut-off keeps the set ancestor-closed).
+    /// `cap` of them (the biggest: a size cut-off keeps the set ancestor-closed),
+    /// and the files of at least `min` bytes in them (the biggest
+    /// [`crate::history::MAX_FILES`]).
     fn snapshot_folders(
         &self,
         ix: &Index,
         min: u64,
         cap: usize,
-    ) -> Vec<crate::history::SnapFolder> {
-        use crate::history::SnapFolder;
+    ) -> (
+        Vec<crate::history::SnapFolder>,
+        Vec<crate::history::SnapFile>,
+    ) {
+        use crate::history::{SnapFile, SnapFolder};
         let root = ix.root;
         if (root as usize) >= ix.entries.len() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
+        let mut files = Vec::new();
         // Raise the cut-off if more than `cap` folders would qualify.
         let mut sizes: Vec<u64> = self
             .local
@@ -500,6 +509,14 @@ impl VolTree {
         while let Some((d, at)) = stack.pop() {
             for &k in self.children(d) {
                 if !ix.entries[k as usize].is_dir() {
+                    let (l, _, _) = contribution(ix, k);
+                    if l >= min.max(1) && ix.entries[k as usize].is_visible() {
+                        files.push(SnapFile {
+                            parent: at,
+                            name: ix.name(k).to_string(),
+                            size: l,
+                        });
+                    }
                     continue;
                 }
                 let (l, f, c) = self.totals(k);
@@ -515,7 +532,11 @@ impl VolTree {
                 }
             }
         }
-        out
+        if files.len() > crate::history::MAX_FILES {
+            files.sort_by_key(|f: &SnapFile| std::cmp::Reverse(f.size));
+            files.truncate(crate::history::MAX_FILES);
+        }
+        (out, files)
     }
 
     /// Finds `rel` (components below the root) by walking child lists.
@@ -613,7 +634,7 @@ impl Tree {
             vols.iter()
                 .zip(ixs)
                 .map(|(t, (_, kind, ix))| {
-                    let folders = t.snapshot_folders(ix, min, cap);
+                    let (folders, files) = t.snapshot_folders(ix, min, cap);
                     let (capacity, free) = if *kind != VolumeKind::Folder {
                         folders.first().map_or((0, 0), |r| disk_space(&r.name))
                     } else {
@@ -624,6 +645,7 @@ impl Tree {
                         capacity,
                         free,
                         folders,
+                        files,
                     }
                 })
                 .collect()
@@ -632,6 +654,7 @@ impl Tree {
             time: crate::history::now_unix(),
             name: name.to_string(),
             volumes,
+            has_files: true,
         })
     }
 
@@ -741,7 +764,12 @@ impl Tree {
         let base_ft = (base.time + 11_644_473_600) * 10_000_000;
         for r in rows {
             r.has_before = true;
-            if r.is_dir {
+            if !r.is_dir
+                && let Some(then) = base.get(&r.full_path())
+            {
+                r.before = then;
+                r.changed = r.modified > base_ft;
+            } else if r.is_dir {
                 r.before = base.get(&r.full_path()).unwrap_or(0);
                 if r.dir.is_empty()
                     && let Some((_, free)) = base.disk(&r.name)
@@ -750,6 +778,8 @@ impl Tree {
                 }
             } else if r.modified > base_ft {
                 r.changed = true;
+                // An older snapshot without files: no idea how big it was.
+                r.has_before = base.has_files;
             } else {
                 r.before = r.size;
             }
