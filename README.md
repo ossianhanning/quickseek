@@ -230,6 +230,27 @@ in `%APPDATA%\rapidfind\gui.json`.
   the files itself, as the user running it, so it only finds text in files
   that user may read. Index-wide name search still covers everything.
 
+### Updating
+
+- Running the new `rapidfind-setup.exe` replaces the programs in the install
+  folder (moving running ones aside), updates the service's copy and restarts
+  it, then ends `rapidfind-mcp` processes still running the old code. AI apps
+  start the new one on their next call.
+- `rapidfind service install` / `update` from anywhere else (a development
+  build in `target\release`) also copies `rapidfind.exe`, `rapidfind-gui.exe`
+  and `rapidfind-mcp.exe` from next to it into the install folder, so the
+  service and its clients stay the same build.
+- Clients and the service agree on a protocol version when they connect; the
+  service also serves the previous one, so a GUI or MCP server one release
+  behind keeps working. When they share none, the MCP server answers with a
+  clear error and, if its file was replaced since it started, exits so the
+  app restarts it. `rapidfind status` shows both builds; `service.log` logs
+  the service's build at startup and clients of other builds as they connect.
+- If the index can't be saved (the disk holding `%ProgramData%` is full), the
+  volume's status says so (GUI status bar, `rapidfind status`, the MCP
+  server's `disk_overview` and errors). Searches keep working, and saves wait
+  until there's room again.
+
 ## MCP server (`rapidfind-mcp`)
 
 `rapidfind-mcp.exe` is a [Model Context Protocol](https://modelcontextprotocol.io)
@@ -353,7 +374,7 @@ Also:
 
 - `crates/core`: the library
   - `ntfs/`: `mft.rs` (raw scan), `record.rs` (FILE record parsing), `usn.rs` (records, enum fallback, ReFS), `journal.rs`, `win.rs` (volumes, tokens, UNC)
-  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `history.rs` (snapshots, retention), `ipc.rs` (protocol, sessions, server, client, backends)
+  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `history.rs` (snapshots, retention), `ipc.rs` (protocol and versions, sessions, server, client, backends), `upgrade.rs` (replacing running programs, retiring old MCP servers)
 - `crates/cli`: the `rapidfind` binary: CLI, terminal UI and `service.rs` (the Windows service)
 - `crates/gui`: `rapidfind-gui`: `app.rs` (main window), `preview.rs` (preview pane), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode), `growth.rs` (timeline and details pane); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
 - `crates/mcp`: `rapidfind-mcp`, the MCP server (`tools.rs`) and client registration (`register.rs`)

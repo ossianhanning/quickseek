@@ -5,41 +5,199 @@
 //! `claude mcp add rapidfind -- C:\path\to\rapidfind-mcp.exe`.
 //! It needs the rapidfind service running (or `RAPIDFIND_PIPE`), and runs
 //! as the user who starts it: deletes happen with that user's rights.
+//!
+//! Updates: AI apps keep a server running for as long as they run, so after
+//! rapidfind is updated an old server can be left talking to a newer service.
+//! The service still speaks the previous protocol version, so that usually
+//! just works; when the two share no version, the call fails with a clear
+//! error and, if this program's file has been replaced since it started, the
+//! server exits so the app starts the new one on the next call. A service that
+//! is restarting or not running is not an update: those calls fail (or are
+//! retried once) and the server keeps running.
 
 use rapidfind_mcp::tools;
 
-use std::io::{BufRead, Write};
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime};
 
-use rapidfind_core::ipc::{self, Backend};
+use rapidfind_core::ipc::{self, Backend, Request, Response};
 use serde_json::{Value, json};
 
 const PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 use rapidfind_mcp::guide;
 
+/// Exit code after an update was found (EX_TEMPFAIL: start me again).
+const EXIT_UPDATED: i32 = 75;
+/// How long one service call may take before the tool call fails.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+// What went wrong talking to the service during a tool call (worst wins).
+const FINE: u8 = 0;
+const BROKEN: u8 = 1;
+const TIMED_OUT: u8 = 2;
+const MISMATCH: u8 = 3;
+
+/// The service over its pipe. Calls run on a worker thread so that a service
+/// that doesn't answer fails the call after a timeout instead of hanging the
+/// AI app; problems are recorded in `fault` for [`Server::call_tool`].
+struct Link {
+    tx: mpsc::Sender<Request>,
+    rx: mpsc::Receiver<io::Result<Response>>,
+    timeout: Duration,
+    fault: Arc<AtomicU8>,
+    /// A call timed out: its answer may still come, so the pipe is unusable.
+    dead: bool,
+}
+
+impl Link {
+    fn connect(pipe: &str, timeout: Duration, fault: Arc<AtomicU8>) -> io::Result<Link> {
+        let mut c = ipc::Client::connect_to(pipe)?;
+        eprintln!("rapidfind-mcp: connected to the service ({}, protocol v{})", c.service_build().unwrap_or("an older build"), c.protocol());
+        let (tx, requests) = mpsc::channel::<Request>();
+        let (answers, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for req in requests {
+                if answers.send(c.call(&req)).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Link { tx, rx, timeout, fault, dead: false })
+    }
+
+    fn fail(&self, kind: u8, e: io::Error) -> io::Result<Response> {
+        self.fault.fetch_max(kind, Ordering::Relaxed);
+        Err(e)
+    }
+}
+
+impl Backend for Link {
+    fn call(&mut self, req: &Request) -> io::Result<Response> {
+        if self.dead || self.tx.send(req.clone()).is_err() {
+            return self.fail(BROKEN, io::Error::new(io::ErrorKind::BrokenPipe, "the connection to the service was lost"));
+        }
+        match self.rx.recv_timeout(self.timeout) {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) if ipc::is_version_mismatch(&e) => self.fail(MISMATCH, e),
+            // A request this service's version doesn't have: not a connection problem.
+            Ok(Err(e)) if e.kind() == io::ErrorKind::Unsupported => Err(e),
+            Ok(Err(e)) => self.fail(BROKEN, e),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.dead = true;
+                self.fail(TIMED_OUT, io::Error::new(io::ErrorKind::TimedOut, "the service didn't answer in time"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => self.fail(BROKEN, io::Error::new(io::ErrorKind::BrokenPipe, "the connection to the service was lost")),
+        }
+    }
+    fn label(&self) -> &'static str {
+        "service"
+    }
+}
+
+/// The program file this server started from, to notice it being replaced.
+struct ExeStamp {
+    path: PathBuf,
+    stamp: Option<(u64, SystemTime)>,
+}
+
+impl ExeStamp {
+    fn of(path: PathBuf) -> ExeStamp {
+        let stamp = Self::read(&path);
+        ExeStamp { path, stamp }
+    }
+    fn read(path: &std::path::Path) -> Option<(u64, SystemTime)> {
+        std::fs::metadata(path).ok().and_then(|m| Some((m.len(), m.modified().ok()?)))
+    }
+    /// A different file is there now (an update moved the running one aside).
+    fn replaced(&self) -> bool {
+        self.stamp.is_some() && Self::read(&self.path).is_some_and(|now| Some(now) != self.stamp)
+    }
+}
+
 struct Server {
     be: Option<Box<dyn Backend>>,
+    pipe: String,
+    timeout: Duration,
+    fault: Arc<AtomicU8>,
+    exe: Option<ExeStamp>,
+    /// Exit with this code once the current answer is written.
+    exit: Option<i32>,
 }
 
 impl Server {
+    fn new() -> Server {
+        let pipe = std::env::var("RAPIDFIND_PIPE").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| ipc::PIPE_NAME.to_string());
+        Server { be: None, pipe, timeout: CALL_TIMEOUT, fault: Arc::default(), exe: std::env::current_exe().ok().map(ExeStamp::of), exit: None }
+    }
+
     fn backend(&mut self) -> Result<&mut Box<dyn Backend>, String> {
         if self.be.is_none() {
-            let c = ipc::Client::connect().map_err(|e| format!("can't reach the rapidfind service ({e}). Install/start it with `rapidfind service install` from an elevated terminal."))?;
-            self.be = Some(Box::new(ipc::Remote(c)));
+            match Link::connect(&self.pipe, self.timeout, self.fault.clone()) {
+                Ok(l) => self.be = Some(Box::new(l)),
+                Err(e) if ipc::is_version_mismatch(&e) => return Err(self.mismatch(&e.to_string())),
+                Err(e) => return Err(format!("can't reach the rapidfind service ({e}). Install/start it with `rapidfind service install` from an elevated terminal.")),
+            }
         }
         Ok(self.be.as_mut().unwrap())
     }
 
     fn call_tool(&mut self, name: &str, args: &Value) -> Result<Value, String> {
-        let r = tools::call(&mut **self.backend()?, name, args);
-        // A broken pipe (service restarted): reconnect once and retry.
-        match r {
-            Err(e) if e.starts_with("service connection") => {
-                self.be = None;
-                tools::call(&mut **self.backend()?, name, args)
+        let mut retried = false;
+        loop {
+            self.fault.store(FINE, Ordering::Relaxed);
+            let r = tools::call(&mut **self.backend()?, name, args);
+            match self.fault.swap(FINE, Ordering::Relaxed) {
+                FINE => return r,
+                MISMATCH => {
+                    self.be = None;
+                    return Err(self.mismatch("the rapidfind service is a different version"));
+                }
+                TIMED_OUT => {
+                    self.be = None;
+                    return Err(self.timed_out());
+                }
+                _ => {
+                    // A broken pipe (service restarted): reconnect, and retry once if that failed the call.
+                    self.be = None;
+                    if r.is_ok() || retried {
+                        return r;
+                    }
+                    retried = true;
+                }
             }
-            r => r,
         }
+    }
+
+    /// The error for a service of another version. If this program's file
+    /// has been replaced (rapidfind was updated), also arranges to exit, so
+    /// the AI app starts the new one.
+    fn mismatch(&mut self, detail: &str) -> String {
+        if self.exe.as_ref().is_some_and(ExeStamp::replaced) {
+            eprintln!("rapidfind-mcp: {detail}; this server ({}) was updated on disk: exiting so the new one is started", ipc::BUILD);
+            self.exit = Some(EXIT_UPDATED);
+            format!("rapidfind was updated and this MCP server is still the old version ({detail}). It is restarting to load the new one: retry the call.")
+        } else {
+            let exe = self.exe.as_ref().map_or_else(String::new, |x| format!(" ({})", x.path.display()));
+            format!("{detail}. Update or reinstall rapidfind (rapidfind-setup.exe) so the service and this MCP server{exe} are the same version, then retry.")
+        }
+    }
+
+    /// The error for a call the service didn't answer in time, with what its
+    /// status says (asked on a new connection, briefly).
+    fn timed_out(&mut self) -> String {
+        let mut msg = format!("the rapidfind service didn't answer within {} s", self.timeout.as_secs_f32());
+        let status = Link::connect(&self.pipe, Duration::from_secs(3), Arc::default()).ok().and_then(|mut l| l.status());
+        match status.map(|s| tools::index_warnings(&s)) {
+            Some(w) if !w.is_empty() => msg = format!("{msg}: {}", w.join("; ")),
+            Some(_) => msg.push_str(" (it may be busy loading or rescanning a drive); try again shortly"),
+            None => msg.push_str(" and isn't answering status requests either; restarting it (`rapidfind service stop`, then `start`, elevated) may help"),
+        }
+        msg
     }
 
     /// Answers one JSON-RPC message (`None` for notifications).
@@ -50,6 +208,11 @@ impl Server {
         let id = id?; // notifications (initialized, cancelled, ...) need no answer
         let result: Result<Value, (i64, String)> = match method {
             "initialize" => {
+                // Connect now: it logs both versions (and any mismatch) to the app's MCP log.
+                if let Err(e) = self.backend() {
+                    eprintln!("rapidfind-mcp: {e}");
+                }
+                self.exit = None; // a server that was just started is the newest there is
                 let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOLS[0]);
                 let version = if PROTOCOLS.contains(&asked) { asked } else { PROTOCOLS[0] };
                 Ok(json!({
@@ -89,7 +252,8 @@ impl Server {
 }
 
 fn main() {
-    let mut server = Server { be: None };
+    let mut server = Server::new();
+    eprintln!("rapidfind-mcp {} (protocol v{}-v{}) from {}", ipc::BUILD, ipc::MIN_PROTOCOL, ipc::PROTOCOL, server.exe.as_ref().map_or_else(String::new, |x| x.path.display().to_string()));
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -111,6 +275,9 @@ fn main() {
             && writeln!(out, "{r}").and_then(|_| out.flush()).is_err()
         {
             break;
+        }
+        if let Some(code) = server.exit {
+            std::process::exit(code);
         }
     }
 }
@@ -149,7 +316,82 @@ mod tests {
     }
 
     fn server() -> Server {
-        Server { be: Some(Box::new(ipc::Local::new(Arc::new(Engine::from_indexes(vec![sample()]))))) }
+        Server { be: Some(Box::new(ipc::Local::new(Arc::new(Engine::from_indexes(vec![sample()]))))), ..remote("unused") }
+    }
+
+    /// A server for the service on `pipe`, started from an unknown file.
+    fn remote(pipe: &str) -> Server {
+        Server { be: None, pipe: pipe.into(), timeout: Duration::from_millis(500), fault: Arc::default(), exe: None, exit: None }
+    }
+
+    fn pipe(tag: &str) -> String {
+        format!(r"\\.\pipe\rapidfind-mcp-test-{tag}-{}", std::process::id())
+    }
+
+    fn tool_error(s: &mut Server) -> String {
+        let r = s.handle(&json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": "disk_overview", "arguments": {} } })).unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        r["result"]["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    /// The first error once the test service's pipe is up.
+    fn first_error(s: &mut Server) -> String {
+        for _ in 0..100 {
+            let e = tool_error(s);
+            if !e.contains("can't reach") {
+                return e;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        tool_error(s)
+    }
+
+    /// A service of another version: exit (to be restarted) only if this
+    /// program was replaced on disk; a missing service is never a reason.
+    #[test]
+    fn version_mismatch_exits_only_after_an_update() {
+        let name = pipe("v9");
+        ipc::serve_frames(&name, |_| Response::Error("malformed message: protocol version".into()).encode_for(9));
+        let exe = std::env::temp_dir().join(format!("rapidfind-mcp-test-{}.exe", std::process::id()));
+        std::fs::write(&exe, b"old").unwrap();
+        let mut s = Server { exe: Some(ExeStamp::of(exe.clone())), ..remote(&name) };
+        let e = first_error(&mut s);
+        assert!(e.contains("are different versions") && e.contains("reinstall rapidfind"), "{e}");
+        assert_eq!(s.exit, None, "same program file: restarting wouldn't help");
+        std::fs::write(&exe, b"new build").unwrap();
+        let e = tool_error(&mut s);
+        assert!(e.contains("was updated") && e.contains("retry the call"), "{e}");
+        assert_eq!(s.exit, Some(EXIT_UPDATED));
+        std::fs::remove_file(&exe).ok();
+
+        let mut s = Server { exe: Some(ExeStamp::of(std::env::current_exe().unwrap())), ..remote(&pipe("nobody")) };
+        assert!(tool_error(&mut s).contains("can't reach the rapidfind service"));
+        assert_eq!(s.exit, None);
+    }
+
+    /// A service that hangs fails the call after the timeout, saying what it can.
+    #[test]
+    fn stuck_service_times_out() {
+        let name = pipe("slow");
+        let engine = Arc::new(std::sync::OnceLock::new());
+        let _ = engine.set(Arc::new(Engine::from_indexes(vec![sample()])));
+        let inner = ipc::engine_handler(engine);
+        let factory: ipc::HandlerFactory = Arc::new(move |t| {
+            let mut h = inner(t);
+            Box::new(move |req: &Request| {
+                if !matches!(req, Request::Status) {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                h(req)
+            })
+        });
+        let n2 = name.clone();
+        std::thread::spawn(move || ipc::serve_on(&n2, factory));
+        let mut s = remote(&name);
+        let e = first_error(&mut s);
+        assert!(e.contains("didn't answer within 0.5 s") && e.contains("busy"), "{e}");
+        assert_eq!(s.exit, None);
+        assert!(s.be.is_none(), "reconnects next time");
     }
 
     fn call(s: &mut Server, name: &str, args: Value) -> Value {

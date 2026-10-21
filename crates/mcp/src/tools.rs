@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use rapidfind_core::content::{self, ContentOptions, ContentQuery};
 use rapidfind_core::fmt;
-use rapidfind_core::ipc::{Backend, Row};
+use rapidfind_core::ipc::{self, Backend, Row, StatusInfo};
 use rapidfind_core::query::SearchFlags;
 use rapidfind_core::search::SortKey;
 use rapidfind_core::tree::{NodeRef, TreeLevel, TreeRow, TreeSort};
@@ -622,6 +622,13 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     res
 }
 
+/// Problems the service reports for its volumes, e.g. an index it can't
+/// save because the disk is full (searches still work; changes since the
+/// last save are lost if the service restarts before it can save).
+pub fn index_warnings(st: &StatusInfo) -> Vec<String> {
+    st.volumes.iter().filter(|v| v.state.contains(ipc::SAVE_FAILED)).map(|v| format!("{}: {}", v.key, v.state)).collect()
+}
+
 fn disk_overview(be: &mut dyn Backend) -> Result<Value, String> {
     let status = be.status().ok_or("the rapidfind service isn't answering")?;
     let roots = be.tree("", SearchFlags::default(), TreeSort::Name, false);
@@ -652,7 +659,12 @@ fn disk_overview(be: &mut dyn Backend) -> Result<Value, String> {
             o
         })
         .collect();
-    Ok(json!({ "ready": status.ready, "volumes": vols }))
+    let mut out = json!({ "ready": status.ready, "volumes": vols });
+    let warnings = index_warnings(&status);
+    if !warnings.is_empty() {
+        out["warnings"] = json!(warnings);
+    }
+    Ok(out)
 }
 
 // ---- cleanup -------------------------------------------------------------------

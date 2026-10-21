@@ -2,12 +2,13 @@
 //! scan → catch up), live watcher threads, volumes appearing/disappearing,
 //! configuration, run history and multi-volume search.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::{Mutex, RwLock};
+use anyhow::Context;
+use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 
 use crate::config::{Config, FolderConfig};
 use crate::folder::{self, WatchEvent, Watcher};
@@ -90,6 +91,38 @@ pub struct Volume {
     pub cache: AtomicBool,
     /// Folder indexes: walk again soon (e.g. date created was turned on).
     pub rewalk: AtomicBool,
+    /// Why the last save failed (cleared by the next one that works).
+    save_error: Mutex<Option<SaveError>>,
+    /// Entries last counted, for a status asked while the index is busy.
+    visible: AtomicU64,
+}
+
+/// A failed save of a volume's index.
+struct SaveError {
+    /// For the status: "C: is full", or the error.
+    what: String,
+    /// The disk was full: don't try again until there's room (or a while passed).
+    disk_full: bool,
+    at: Instant,
+    /// Bytes the save needs, roughly.
+    needed: u64,
+}
+
+/// With a full disk, try saving again after this long even if the free
+/// space looks too small (it's an estimate).
+const DISK_FULL_RETRY: Duration = Duration::from_secs(600);
+
+fn is_disk_full(e: &std::io::Error) -> bool {
+    // ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL
+    e.kind() == std::io::ErrorKind::StorageFull || matches!(e.raw_os_error(), Some(39 | 112))
+}
+
+/// The drive (`C:`) or share a path is on, for messages.
+fn drive_of(path: &Path) -> String {
+    match path.components().next() {
+        Some(std::path::Component::Prefix(p)) => p.as_os_str().to_string_lossy().into_owned(),
+        _ => path.display().to_string(),
+    }
 }
 
 impl Volume {
@@ -105,7 +138,50 @@ impl Volume {
             state: Mutex::new(state.to_string()),
             cache: AtomicBool::new(true),
             rewalk: AtomicBool::new(false),
+            save_error: Mutex::new(None),
+            visible: AtomicU64::new(0),
         })
+    }
+
+    /// Saves the index to `path` without holding up searches: compacts under
+    /// the write lock, then writes under a read lock (journal updates wait).
+    /// After a save failed for a full disk, it waits for room before trying
+    /// again (`Ok(false)`: skipped), so a full disk doesn't mean building the
+    /// whole file every few seconds. Failures show in the volume's status.
+    pub fn save(&self, path: &Path) -> std::io::Result<bool> {
+        if let Some(e) = &*self.save_error.lock()
+            && e.disk_full
+            && e.at.elapsed() < DISK_FULL_RETRY
+            && path.parent().is_some_and(|d| crate::tree::disk_space(&d.to_string_lossy()).1 < e.needed)
+        {
+            return Ok(false);
+        }
+        let mut ix = self.index.write();
+        persist::prepare_save(&mut ix);
+        let ix = RwLockWriteGuard::downgrade(ix);
+        // The file takes about as much as last time; ~50 bytes per entry for a first save.
+        let needed = std::fs::metadata(path).map_or(ix.entries.len() as u64 * 50, |m| m.len()) + (16 << 20);
+        let r = persist::write(&ix, path);
+        drop(ix);
+        let mut err = self.save_error.lock();
+        match &r {
+            Ok(()) => {
+                if err.take().is_some() {
+                    log::info!("{}: index saved again", self.key);
+                }
+            }
+            Err(e) => {
+                let disk_full = is_disk_full(e);
+                let what = if disk_full { format!("{} is full", drive_of(path)) } else { e.to_string() };
+                *err = Some(SaveError { what, disk_full, at: Instant::now(), needed });
+            }
+        }
+        r.map(|()| true)
+    }
+
+    /// Why the index can't be saved, if it can't.
+    pub fn save_problem(&self) -> Option<String> {
+        self.save_error.lock().as_ref().map(|e| format!("{}: {}", crate::ipc::SAVE_FAILED, e.what))
     }
 
     /// Counts `n` more unsaved changes; saturates so a never-saved volume
@@ -591,12 +667,16 @@ impl Engine {
             .volumes
             .read()
             .iter()
-            .map(|v| VolumeStatus {
-                key: v.key.clone(),
-                kind: v.kind,
-                entries: v.index.read().len_visible() as u64,
-                ready: true,
-                state: v.state.lock().clone(),
+            .map(|v| {
+                // A status must answer even while a journal burst or a rescan holds the index.
+                if let Some(ix) = v.index.try_read_for(Duration::from_millis(50)) {
+                    v.visible.store(ix.len_visible() as u64, Ordering::Relaxed);
+                }
+                let mut state = v.state.lock().clone();
+                if let Some(p) = v.save_problem() {
+                    state = format!("{state}; {p}");
+                }
+                VolumeStatus { key: v.key.clone(), kind: v.kind, entries: v.visible.load(Ordering::Relaxed), ready: true, state }
             })
             .collect();
         for k in self.loading.lock().iter() {
@@ -749,9 +829,10 @@ impl Engine {
             let n = v.unsaved.load(Ordering::Relaxed);
             if n > 0 && n >= min_changes && v.cache.load(Ordering::Relaxed) {
                 let path = if v.kind == VolumeKind::Folder { persist::folder_db_path(&v.key) } else { persist::db_path(v.letter) };
-                let mut ix = v.index.write();
-                persist::save(&mut ix, &path)?;
-                v.unsaved.store(0, Ordering::Relaxed);
+                if v.save(&path).with_context(|| format!("{}: saving {}", v.key, path.display()))? {
+                    // Changes made while it was writing count toward the next save.
+                    let _ = v.unsaved.compare_exchange(n, 0, Ordering::Relaxed, Ordering::Relaxed);
+                }
             }
         }
         Ok(())
@@ -877,11 +958,11 @@ fn watch_journal(v: Arc<Volume>, mut j: Journal, stop: Arc<AtomicBool>) {
         maintain(&v, &mut last_ranks);
         let unsaved = v.add_unsaved(batch.len() as u64);
         if unsaved >= SAVE_THRESHOLD && last_save.elapsed() > Duration::from_secs(300) {
-            let mut ix = v.index.write();
-            if let Err(e) = persist::save(&mut ix, &persist::db_path(v.letter)) {
-                log::error!("{}: save failed: {e}", v.key);
+            match v.save(&persist::db_path(v.letter)) {
+                Ok(true) => v.unsaved.store(0, Ordering::Relaxed),
+                Ok(false) => {}
+                Err(e) => log::error!("{}: save failed: {e}", v.key),
             }
-            v.unsaved.store(0, Ordering::Relaxed);
             last_save = Instant::now();
         }
     }
@@ -1016,6 +1097,40 @@ fn watch_folder(v: Arc<Volume>, cfg: FolderConfig, stop: Arc<AtomicBool>, token:
 mod tests {
     use super::*;
     use crate::index::tests::sample;
+
+    /// A save that fails shows in the status (and leaves no temporary file);
+    /// after a disk-full failure, saves wait for room; the next good save clears it.
+    #[test]
+    fn failed_saves_show_in_status() {
+        let d = std::env::temp_dir().join(format!("rapidfind-engine-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("C.db")).unwrap(); // a folder where the file goes: rename fails
+        let e = Engine::from_indexes(vec![sample()]);
+        let v = e.volumes()[0].clone();
+        assert!(v.save(&d.join("C.db")).is_err());
+        assert!(!d.join("C.tmp").exists(), "the partial file is removed");
+        let st = &e.status()[0];
+        assert!(st.state.starts_with("ready; index can't be saved: "), "{}", st.state);
+        assert_eq!(st.entries, 7);
+        // Disk full: no new attempt while there's less room than the save needs.
+        *v.save_error.lock() = Some(SaveError { what: "C: is full".into(), disk_full: true, at: Instant::now(), needed: u64::MAX });
+        assert!(!v.save(&d.join("ok.db")).unwrap());
+        assert!(!d.join("ok.db").exists());
+        assert!(e.status()[0].state.ends_with("index can't be saved: C: is full"));
+        v.save_error.lock().as_mut().unwrap().needed = 0;
+        assert!(v.save(&d.join("ok.db")).unwrap());
+        assert_eq!(e.status()[0].state, "ready");
+        assert!(persist::load(&d.join("ok.db")).is_ok());
+        // A status doesn't wait for a busy index.
+        let held = v.index.write();
+        let t = Instant::now();
+        assert_eq!(e.status()[0].entries, 7);
+        assert!(t.elapsed() < Duration::from_secs(1));
+        drop(held);
+        assert!(is_disk_full(&std::io::Error::from_raw_os_error(112)) && !is_disk_full(&std::io::Error::from_raw_os_error(5)));
+        assert_eq!(drive_of(Path::new(r"C:\ProgramData\rapidfind\index\C.db")), "C:");
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     #[test]
     fn from_indexes_queries_config_and_runs() {

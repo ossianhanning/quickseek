@@ -763,6 +763,7 @@ name = "rapidfind-setup"
 version = "0.1.0"
 dependencies = [
  "embed-resource",
+ "rapidfind-core",
  "rapidfind-mcp",
  "windows",
  "windows-sys",

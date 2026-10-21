@@ -7,6 +7,15 @@
 //!   %ProgramData%\rapidfind\rapidfind.exe   copy of the installing binary
 //!   %ProgramData%\rapidfind\index\C.db ...  saved indexes
 //!   %ProgramData%\rapidfind\service.log
+//!
+//! The service runs its own copy rather than the one in the install folder
+//! because that folder can be anywhere (`rapidfind-setup --dir`, a build
+//! folder), and a folder off a drive's root inherits write access for every
+//! user, which would let anyone replace what LocalSystem runs. The installer
+//! makes the copy from the install folder's binary; installing or updating
+//! from anywhere else (a development build) updates the install folder too
+//! (see [`sync_install_dir`]), so the service, CLI, GUI and MCP server stay
+//! the same build.
 
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
@@ -16,7 +25,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use rapidfind_core::engine::{Engine, EngineOptions};
-use rapidfind_core::{ipc, persist};
+use rapidfind_core::{ipc, persist, upgrade};
 use windows_service::service::{
     ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceInfo,
     ServiceStartType, ServiceState, ServiceStatus, ServiceType,
@@ -42,6 +51,48 @@ fn manager(access: ServiceManagerAccess) -> anyhow::Result<ServiceManager> {
     ServiceManager::local_computer(None::<&str>, access).context("can't open the Service Control Manager (run elevated)")
 }
 
+/// When this binary isn't the installed one (a development build): copies
+/// it, and the GUI and MCP server next to it, into the install folder, so
+/// everything there is the same build as the service. Returns whether it did.
+fn sync_install_dir() -> anyhow::Result<bool> {
+    if std::env::var_os(upgrade::NO_SYNC_ENV).is_some() {
+        return Ok(false);
+    }
+    let Some(dir) = upgrade::install_dir() else { return Ok(false) };
+    let me = std::env::current_exe()?;
+    let Some(src) = me.parent() else { return Ok(false) };
+    if upgrade::same_dir(src, &dir) {
+        return Ok(false);
+    }
+    let mut any = false;
+    for name in upgrade::PROGRAMS {
+        let (from, to) = (src.join(name), dir.join(name));
+        if !from.exists() {
+            continue;
+        }
+        let data = std::fs::read(&from).with_context(|| format!("reading {}", from.display()))?;
+        if std::fs::read(&to).is_ok_and(|old| old == data) {
+            continue;
+        }
+        upgrade::replace_file(&to, &data).map_err(anyhow::Error::msg)?;
+        println!("updated {}", to.display());
+        any = true;
+    }
+    Ok(any)
+}
+
+/// After the programs changed: MCP servers that AI apps started from the
+/// install folder still run the old code; end them (the apps start the new
+/// one on their next call) and delete moved-aside copies.
+fn retire_old_programs() {
+    if let Some(dir) = upgrade::install_dir() {
+        let (ended, _) = upgrade::retire_old_programs(&dir);
+        if ended > 0 {
+            println!("restarted {ended} running rapidfind-mcp server(s)");
+        }
+    }
+}
+
 pub fn install() -> anyhow::Result<()> {
     let dir = home();
     ipc::create_private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -50,6 +101,7 @@ pub fn install() -> anyhow::Result<()> {
     if src != dst {
         std::fs::copy(&src, &dst).with_context(|| format!("copying binary to {} (is the service running? stop it first)", dst.display()))?;
     }
+    let synced = sync_install_dir()?;
     let m = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
     let info = ServiceInfo {
         name: NAME.into(),
@@ -66,7 +118,10 @@ pub fn install() -> anyhow::Result<()> {
     let svc = m.create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START).context("creating service")?;
     svc.set_description(DESCRIPTION)?;
     svc.start(&[] as &[&OsStr]).context("starting service")?;
-    println!("installed and started service '{NAME}' ({})", dst.display());
+    println!("installed and started service '{NAME}' ({}, {})", dst.display(), ipc::BUILD);
+    if synced {
+        retire_old_programs();
+    }
     Ok(())
 }
 
@@ -76,6 +131,7 @@ pub fn update() -> anyhow::Result<()> {
     if was_running {
         stop()?;
     }
+    let changed = std::fs::read(installed_exe()).ok() != Some(std::fs::read(std::env::current_exe()?)?);
     // SERVICE_STOPPED is reported before the process has exited, so the old
     // binary can stay locked for a moment.
     let mut tries = 0;
@@ -86,11 +142,15 @@ pub fn update() -> anyhow::Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    println!("updated {}", installed_exe().display());
+    println!("updated {} ({})", installed_exe().display(), ipc::BUILD);
+    let synced = sync_install_dir();
     if was_running {
         start()?;
     }
-    Ok(())
+    if changed || matches!(synced, Ok(true)) {
+        retire_old_programs();
+    }
+    synced.map(|_| ())
 }
 
 pub fn uninstall() -> anyhow::Result<()> {
@@ -165,6 +225,8 @@ fn init_logging() {
 
 fn service_main(_args: Vec<OsString>) {
     init_logging();
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    log::info!("rapidfind service {} starting ({exe}, protocol v{}-v{}, pid {})", ipc::BUILD, ipc::MIN_PROTOCOL, ipc::PROTOCOL, std::process::id());
     if let Err(e) = run_service() {
         log::error!("service failed: {e:#}");
     }

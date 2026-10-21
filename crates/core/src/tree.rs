@@ -454,7 +454,7 @@ pub struct Tree {
     pub base: Option<Arc<crate::history::PathMap>>,
 }
 
-fn disk_space(root: &str) -> (u64, u64) {
+pub(crate) fn disk_space(root: &str) -> (u64, u64) {
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let mut path = root.to_string();
     if !path.ends_with('\\') {

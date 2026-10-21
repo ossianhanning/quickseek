@@ -1,15 +1,11 @@
-//! System pieces of installing: registry, PATH, shortcuts, processes.
+//! System pieces of installing: registry, PATH, shortcuts.
 
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::ptr::{null, null_mut};
+use std::ptr::null_mut;
 
-use windows_sys::Win32::Foundation::{CloseHandle, MAX_PATH};
-use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows_sys::Win32::System::Registry::*;
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess};
 use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE};
 
 use crate::install::{ARP_KEY, SETUP_EXE, VERSION};
@@ -169,43 +165,7 @@ pub fn shortcut(link: &Path, target: &Path, _args: &str, description: &str) -> R
     }
 }
 
-// ---- processes and leftovers -------------------------------------------------------------
-
-/// Ends running copies of these programs from `dir` (before removing them).
-pub fn kill_in(dir: &Path, names: &[&str]) {
-    let dir = dir.to_string_lossy().to_lowercase();
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snap.is_null() || snap as isize == -1 {
-            return;
-        }
-        let mut e: PROCESSENTRY32W = std::mem::zeroed();
-        e.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-        let mut ok = Process32FirstW(snap, &mut e) != 0;
-        while ok {
-            let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-            let name = String::from_utf16_lossy(&e.szExeFile[..n]);
-            if names.iter().any(|x| x.eq_ignore_ascii_case(&name)) {
-                let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, 0, e.th32ProcessID);
-                if !h.is_null() {
-                    let mut buf = [0u16; MAX_PATH as usize * 2];
-                    let mut len = buf.len() as u32;
-                    if QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 && String::from_utf16_lossy(&buf[..len as usize]).to_lowercase().starts_with(&dir) {
-                        TerminateProcess(h, 0);
-                    }
-                    CloseHandle(h);
-                }
-            }
-            ok = Process32NextW(snap, &mut e) != 0;
-        }
-        CloseHandle(snap);
-    }
-}
-
-pub fn delete_on_reboot(p: &Path) {
-    let w = wide(&p.to_string_lossy());
-    unsafe { MoveFileExW(w.as_ptr(), null(), MOVEFILE_DELAY_UNTIL_REBOOT) };
-}
+// ---- leftovers ------------------------------------------------------------------------
 
 /// Deletes the running uninstaller (and its folder, if empty) once it has exited.
 pub fn delete_after_exit(exe: &Path, dir: &Path) {

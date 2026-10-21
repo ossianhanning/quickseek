@@ -5,6 +5,16 @@
 //! that many bytes, starting with a protocol version byte. Strings are `u32`
 //! length + UTF-8.
 //!
+//! Versions: a client opens with a hello (first byte [`HELLO`], a layout that
+//! never changes) naming the protocol range and build it speaks; the service
+//! picks the newest version both know and answers every later request in the
+//! version it came in. The service serves [`MIN_PROTOCOL`]..=[`PROTOCOL`], so
+//! a client one release older (an MCP server an AI app started before an
+//! update) keeps working. Services from before the hello answer it with an
+//! error in their own version, which tells the client what they speak. When
+//! the two have no version in common, calls fail with a [`VersionMismatch`]
+//! error, which clients can tell apart from the service restarting.
+//!
 //! Each connection is a [`Session`]: `Search` runs a query and keeps its
 //! [`ResultSet`]; `Fetch` pages through it (the GUI's virtual list asks for
 //! the rows it is about to draw). A fetch after the index was compacted
@@ -43,11 +53,20 @@ use crate::tree::{NodeRef, Tree, TreeLevel, TreeRow, TreeSort};
 
 pub const PIPE_NAME: &str = r"\\.\pipe\rapidfind";
 const MAX_FRAME: u32 = 64 << 20;
-const PROTOCOL: u8 = 4;
+/// Newest protocol version this build speaks.
+pub const PROTOCOL: u8 = 4;
+/// Oldest version it still serves and speaks (3: before folder-size history).
+pub const MIN_PROTOCOL: u8 = 3;
+/// First byte of a hello and of its answer (no protocol version is 0).
+const HELLO: u8 = 0;
+/// This build: version + git commit (see build.rs).
+pub const BUILD: &str = env!("RAPIDFIND_BUILD");
 /// Error text for a fetch from a result set the index has outgrown.
 pub const STALE: &str = "stale result set";
 pub const LOADING: &str = "index is still loading";
 pub const NO_HISTORY: &str = "folder-size history isn't kept here";
+/// In a volume's status state when its index can't be saved (e.g. the disk is full).
+pub const SAVE_FAILED: &str = "index can't be saved";
 
 /// Pipe DACL: full access for SYSTEM, Administrators and the pipe owner (the
 /// service); interactive users get
@@ -243,9 +262,19 @@ pub fn sort_from_u8(v: u8) -> io::Result<SortKey> {
     })
 }
 
+/// Whether protocol `ver` (a supported one) has request kind `kind`.
+fn request_known(ver: u8, kind: u8) -> bool {
+    ver >= 4 || kind <= 11
+}
+
 impl Request {
     pub fn encode(&self) -> Vec<u8> {
-        let mut w = W(vec![PROTOCOL]);
+        self.encode_for(PROTOCOL).expect("the newest protocol has every request")
+    }
+
+    /// Encodes in protocol `ver`; fails if that version doesn't have this request.
+    pub fn encode_for(&self, ver: u8) -> io::Result<Vec<u8>> {
+        let mut w = W(vec![ver]);
         match self {
             Request::Search { query, flags, sort, descending, page } => {
                 w.u8(1);
@@ -319,15 +348,31 @@ impl Request {
                 }
             }
         }
-        w.0
+        if !request_known(ver, w.0[1]) {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, format!("the rapidfind service is too old for this (it speaks protocol v{ver}); update rapidfind")));
+        }
+        Ok(w.0)
     }
 
     pub fn decode(b: &[u8]) -> io::Result<Request> {
+        match Self::decode_any(b)? {
+            (PROTOCOL, r) => Ok(r),
+            _ => Err(bad("protocol version")),
+        }
+    }
+
+    /// Decodes a request in any supported version; returns the version too.
+    pub fn decode_any(b: &[u8]) -> io::Result<(u8, Request)> {
         let mut r = R(b);
-        if r.u8()? != PROTOCOL {
+        let ver = r.u8()?;
+        if !(MIN_PROTOCOL..=PROTOCOL).contains(&ver) {
             return Err(bad("protocol version"));
         }
-        Ok(match r.u8()? {
+        let kind = r.u8()?;
+        if !request_known(ver, kind) {
+            return Err(bad("request kind"));
+        }
+        Ok((ver, match kind {
             1 => {
                 let flags = SearchFlags::from_bits(r.u8()?);
                 let sort = sort_from_u8(r.u8()?)?;
@@ -373,13 +418,22 @@ impl Request {
                 Request::DropRows { positions, page }
             }
             _ => return Err(bad("request kind")),
-        })
+        }))
     }
 }
 
 impl Response {
     pub fn encode(&self) -> Vec<u8> {
-        let mut w = W(vec![PROTOCOL]);
+        self.encode_for(PROTOCOL)
+    }
+
+    /// Encodes in protocol `ver` (a supported one). Answers that version
+    /// doesn't have become errors (its clients never ask for them).
+    pub fn encode_for(&self, ver: u8) -> Vec<u8> {
+        if ver < 4 && matches!(self, Response::Snapshots(_) | Response::Series(_)) {
+            return Response::Error("not available in this client's protocol version".into()).encode_for(ver);
+        }
+        let mut w = W(vec![ver]);
         match self {
             Response::Page(p) => {
                 w.u8(1);
@@ -431,8 +485,11 @@ impl Response {
                 w.u64(l.cloud);
                 w.u64(l.files);
                 w.u64(l.total);
-                w.u64(l.before);
-                w.u8(l.has_before as u8);
+                let history = ver >= 4;
+                if history {
+                    w.u64(l.before);
+                    w.u8(l.has_before as u8);
+                }
                 w.u32(l.rows.len() as u32);
                 for r in &l.rows {
                     w.str(&r.name);
@@ -441,9 +498,14 @@ impl Response {
                     w.u64(r.cloud);
                     w.u64(r.files);
                     w.u64(r.modified as u64);
-                    w.u8(r.is_dir as u8 | (r.has_children as u8) << 1 | (r.has_size as u8) << 2 | (r.matched as u8) << 3 | (r.hardlink as u8) << 4 | (r.has_before as u8) << 5 | (r.changed as u8) << 6);
-                    w.u64(r.before);
-                    w.u64(r.free_before);
+                    let f = r.is_dir as u8 | (r.has_children as u8) << 1 | (r.has_size as u8) << 2 | (r.matched as u8) << 3 | (r.hardlink as u8) << 4;
+                    if history {
+                        w.u8(f | (r.has_before as u8) << 5 | (r.changed as u8) << 6);
+                        w.u64(r.before);
+                        w.u64(r.free_before);
+                    } else {
+                        w.u8(f);
+                    }
                     w.str(&r.vol);
                     w.u32(r.idx);
                     w.u64(r.epoch);
@@ -476,10 +538,16 @@ impl Response {
     }
 
     pub fn decode(b: &[u8]) -> io::Result<Response> {
+        Self::decode_for(b, PROTOCOL)
+    }
+
+    /// Decodes an answer in protocol `ver` (the one the request went in).
+    pub fn decode_for(b: &[u8], ver: u8) -> io::Result<Response> {
         let mut r = R(b);
-        if r.u8()? != PROTOCOL {
+        if r.u8()? != ver {
             return Err(bad("protocol version (client and service versions differ?)"));
         }
+        let history = ver >= 4;
         Ok(match r.u8()? {
             1 => {
                 let (total, offset, elapsed_us, generation) = (r.u64()?, r.u64()?, r.u64()?, r.u64()?);
@@ -508,13 +576,16 @@ impl Response {
             5 => Response::Count(r.u32()?),
             6 => Response::Ok,
             7 => {
-                let mut l = TreeLevel { size: r.u64()?, cloud: r.u64()?, files: r.u64()?, total: r.u64()?, before: r.u64()?, has_before: r.u8()? != 0, rows: Vec::new() };
+                let mut l = TreeLevel { size: r.u64()?, cloud: r.u64()?, files: r.u64()?, total: r.u64()?, before: 0, has_before: false, rows: Vec::new() };
+                if history {
+                    (l.before, l.has_before) = (r.u64()?, r.u8()? != 0);
+                }
                 let n = r.u32()? as usize;
                 l.rows.reserve(n.min(1 << 16));
                 for _ in 0..n {
                     let (name, dir) = (r.str()?, r.str()?);
                     let (size, cloud, files, modified, f) = (r.u64()?, r.u64()?, r.u64()?, r.u64()? as i64, r.u8()?);
-                    let (before, free_before) = (r.u64()?, r.u64()?);
+                    let (before, free_before) = if history { (r.u64()?, r.u64()?) } else { (0, 0) };
                     l.rows.push(TreeRow {
                         before,
                         free_before,
@@ -540,8 +611,8 @@ impl Response {
                 }
                 Response::Tree(l)
             }
-            8 => Response::Snapshots(snaps_in(&mut r)?),
-            9 => {
+            8 if history => Response::Snapshots(snaps_in(&mut r)?),
+            9 if history => {
                 let snaps = snaps_in(&mut r)?;
                 let n = r.u32()? as usize;
                 let mut rows = Vec::with_capacity(n.min(4096));
@@ -607,6 +678,89 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut buf = vec![0u8; len as usize];
     r.read_exact(&mut buf)?;
     Ok(Some(buf))
+}
+
+// ---- versions -------------------------------------------------------------------
+
+/// The client and the service share no protocol version: one of them is
+/// from another rapidfind build and has to be updated (or restarted).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VersionMismatch {
+    /// Versions the service speaks, if it said.
+    pub service: Option<(u8, u8)>,
+    pub service_build: Option<String>,
+}
+
+impl std::fmt::Display for VersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "this program (rapidfind {BUILD}, protocol v{MIN_PROTOCOL}-v{PROTOCOL}) and the rapidfind service")?;
+        match (&self.service_build, self.service) {
+            (Some(b), Some((lo, hi))) => write!(f, " ({b}, protocol v{lo}-v{hi})")?,
+            (None, Some((lo, hi))) if lo == hi => write!(f, " (protocol v{lo})")?,
+            (None, Some((lo, hi))) => write!(f, " (protocol v{lo}-v{hi})")?,
+            _ => {}
+        }
+        write!(f, " are different versions")
+    }
+}
+
+impl std::error::Error for VersionMismatch {}
+
+/// Whether `e` says the service is another, incompatible build (as opposed to
+/// not running, restarting or busy).
+pub fn is_version_mismatch(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|i| i.is::<VersionMismatch>())
+}
+
+fn mismatch(service: Option<(u8, u8)>, service_build: Option<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, VersionMismatch { service, service_build })
+}
+
+/// What a client sends first: `HELLO, min, max, build, program`.
+fn hello(program: &str) -> Vec<u8> {
+    let mut w = W(vec![HELLO, MIN_PROTOCOL, PROTOCOL]);
+    w.str(BUILD);
+    w.str(program);
+    w.0
+}
+
+/// Answers a hello: `HELLO, chosen (0 = none in common), min, max, build`.
+/// Returns the answer and the chosen version.
+fn answer_hello(frame: &[u8]) -> (Vec<u8>, u8) {
+    let mut r = R(&frame[1..]);
+    let parsed = (|| -> io::Result<(u8, u8, String, String)> { Ok((r.u8()?, r.u8()?, r.str()?, r.str()?)) })();
+    let (lo, hi, build, program) = parsed.unwrap_or((0, 0, "?".into(), "?".into()));
+    let chosen = hi.min(PROTOCOL);
+    let chosen = if chosen >= lo.max(MIN_PROTOCOL) { chosen } else { 0 };
+    if chosen == 0 {
+        log::warn!("{program} {build} (protocol v{lo}-v{hi}) can't talk to this service ({BUILD}, v{MIN_PROTOCOL}-v{PROTOCOL}); update it");
+    } else if build != BUILD {
+        log::info!("{program} {build} connected (protocol v{chosen}; this service is {BUILD})");
+    } else {
+        log::debug!("{program} connected");
+    }
+    let mut w = W(vec![HELLO, chosen, MIN_PROTOCOL, PROTOCOL]);
+    w.str(BUILD);
+    (w.0, chosen)
+}
+
+/// Reads the service's answer to [`hello`]: the version to use and its build.
+fn read_hello_answer(frame: &[u8]) -> io::Result<(u8, Option<String>)> {
+    match frame.first() {
+        Some(&HELLO) => {
+            let mut r = R(&frame[1..]);
+            let (chosen, lo, hi) = (r.u8()?, r.u8()?, r.u8()?);
+            let build = r.str()?;
+            if chosen == 0 || !(MIN_PROTOCOL..=PROTOCOL).contains(&chosen) {
+                return Err(mismatch(Some((lo, hi)), Some(build)));
+            }
+            Ok((chosen, Some(build)))
+        }
+        // A service from before hellos: it rejected ours in its own version.
+        Some(&v) if (MIN_PROTOCOL..=PROTOCOL).contains(&v) => Ok((v, None)),
+        Some(&v) => Err(mismatch(Some((v, v)), None)),
+        None => Err(bad("empty answer")),
+    }
 }
 
 // ---- answering requests -------------------------------------------------------
@@ -909,11 +1063,21 @@ pub fn serve_on(pipe_name: &str, factory: HandlerFactory) -> io::Result<()> {
         std::thread::spawn(move || {
             let mut pipe = pipe;
             while let Ok(Some(frame)) = read_frame(&mut pipe) {
-                let resp = match Request::decode(&frame) {
-                    Ok(req) => handler(&req),
-                    Err(e) => Response::Error(e.to_string()),
+                let out = if frame.first() == Some(&HELLO) {
+                    answer_hello(&frame).0
+                } else {
+                    // Answer in the request's version (clients older than the
+                    // hello just send theirs); unknown ones get ours, which
+                    // tells the client we differ.
+                    match Request::decode_any(&frame) {
+                        Ok((ver, req)) => handler(&req).encode_for(ver),
+                        Err(e) => {
+                            let ver = frame.first().copied().filter(|v| (MIN_PROTOCOL..=PROTOCOL).contains(v)).unwrap_or(PROTOCOL);
+                            Response::Error(e.to_string()).encode_for(ver)
+                        }
+                    }
                 };
-                if write_frame(&mut pipe, &resp.encode()).is_err() {
+                if write_frame(&mut pipe, &out).is_err() {
                     break;
                 }
             }
@@ -921,10 +1085,37 @@ pub fn serve_on(pipe_name: &str, factory: HandlerFactory) -> io::Result<()> {
     }
 }
 
+/// For tests: serves `name` on a background thread, answering each frame
+/// with `answer(frame)`, the way a service of another build would.
+#[doc(hidden)]
+pub fn serve_frames(name: &str, answer: fn(&[u8]) -> Vec<u8>) {
+    use std::os::windows::io::AsRawHandle;
+    let name = name.to_string();
+    std::thread::spawn(move || {
+        let sd = Sd::new(PIPE_SDDL).unwrap();
+        let sa = sd.attrs();
+        let mut first = true;
+        while let Ok(mut pipe) = create_instance(&name, &sa, first) {
+            first = false;
+            unsafe { ConnectNamedPipe(pipe.as_raw_handle(), null_mut()) };
+            std::thread::spawn(move || {
+                while let Ok(Some(f)) = read_frame(&mut pipe) {
+                    if write_frame(&mut pipe, &answer(&f)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+}
+
 // ---- client -------------------------------------------------------------------
 
 pub struct Client {
     pipe: File,
+    /// Protocol version agreed on in the hello.
+    ver: u8,
+    service_build: Option<String>,
 }
 
 impl Client {
@@ -936,12 +1127,23 @@ impl Client {
         }
     }
 
+    /// Connects and agrees on a protocol version; fails with a
+    /// [`VersionMismatch`] (see [`is_version_mismatch`]) if there is none.
     pub fn connect_to(pipe_name: &str) -> io::Result<Client> {
+        let mut c = Self::open(pipe_name)?;
+        let program = std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default();
+        write_frame(&mut c.pipe, &hello(&program))?;
+        let frame = read_frame(&mut c.pipe)?.ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "service closed the connection"))?;
+        (c.ver, c.service_build) = read_hello_answer(&frame)?;
+        Ok(c)
+    }
+
+    fn open(pipe_name: &str) -> io::Result<Client> {
         let open = || std::fs::OpenOptions::new().access_mode(CLIENT_ACCESS).open(pipe_name);
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             match open() {
-                Ok(pipe) => return Ok(Client { pipe }),
+                Ok(pipe) => return Ok(Client { pipe, ver: PROTOCOL, service_build: None }),
                 // All instances busy: wait for one.
                 Err(e) if e.raw_os_error() == Some(231) && Instant::now() < deadline => {
                     let name = wide(pipe_name);
@@ -952,10 +1154,23 @@ impl Client {
         }
     }
 
+    /// The protocol version in use.
+    pub fn protocol(&self) -> u8 {
+        self.ver
+    }
+
+    /// The service's build ([`BUILD`]), if it is new enough to say.
+    pub fn service_build(&self) -> Option<&str> {
+        self.service_build.as_deref()
+    }
+
     pub fn call(&mut self, req: &Request) -> io::Result<Response> {
-        write_frame(&mut self.pipe, &req.encode())?;
+        write_frame(&mut self.pipe, &req.encode_for(self.ver)?)?;
         let frame = read_frame(&mut self.pipe)?.ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "service closed the connection"))?;
-        Response::decode(&frame)
+        match frame.first() {
+            Some(&v) if v != self.ver => Err(mismatch(Some((v, v)), self.service_build.clone())),
+            _ => Response::decode_for(&frame, self.ver),
+        }
     }
 }
 
@@ -1356,5 +1571,105 @@ mod tests {
         assert!(matches!(c2.call(&Request::Fetch { offset: 0, count: 1 }).unwrap(), Response::Error(_)));
         let Response::Page(p) = c.call(&Request::Fetch { offset: 1, count: 5 }).unwrap() else { panic!() };
         assert_eq!(p.rows[0].name, "notes.txt");
+        assert_eq!((c.protocol(), c.service_build()), (PROTOCOL, Some(BUILD)));
+    }
+
+    /// v3 (the release before folder-size history) still encodes and decodes.
+    #[test]
+    fn previous_protocol() {
+        let tree = Response::Tree(TreeLevel {
+            size: 9,
+            total: 1,
+            before: 3,
+            has_before: true,
+            rows: vec![TreeRow { name: "C:".into(), size: 9, is_dir: true, has_children: true, before: 4, has_before: true, changed: true, free_before: 5, ..Default::default() }],
+            ..Default::default()
+        });
+        let Response::Tree(back) = Response::decode_for(&tree.encode_for(3), 3).unwrap() else { panic!() };
+        assert_eq!((back.size, back.has_before, back.rows[0].name.as_str(), back.rows[0].has_children, back.rows[0].has_before), (9, false, "C:", true, false));
+        assert_eq!(Response::decode_for(&Response::Snapshots(vec![]).encode_for(3), 3).unwrap(), Response::Error("not available in this client's protocol version".into()));
+        assert!(Request::History.encode_for(3).is_err());
+        let s = Request::Search { query: "x".into(), flags: SearchFlags::default(), sort: SortKey::Size, descending: true, page: 9 };
+        assert_eq!(Request::decode_any(&s.encode_for(3).unwrap()).unwrap(), (3, s));
+        // A v3 frame with a v4-only kind, or versions nobody speaks, are rejected.
+        assert!(Request::decode_any(&[3, 12]).is_err());
+        assert!(Request::decode_any(&[MIN_PROTOCOL - 1, 3]).is_err());
+        assert!(Request::decode_any(&[PROTOCOL + 1, 3]).is_err());
+    }
+
+    fn fake_service(name: &str, answer: fn(&[u8]) -> Vec<u8>) {
+        serve_frames(name, answer);
+    }
+
+    fn connect_retry(name: &str) -> io::Result<Client> {
+        for _ in 0..100 {
+            match Client::connect_to(name) {
+                Err(e) if e.raw_os_error() == Some(2) => std::thread::sleep(Duration::from_millis(20)),
+                r => return r,
+            }
+        }
+        Client::connect_to(name)
+    }
+
+    #[test]
+    fn talks_to_a_service_from_before_hellos() {
+        // A v3 service rejects anything else (the hello too) with a v3 error.
+        let name = format!(r"\\.\pipe\rapidfind-test-v3-{}", std::process::id());
+        fake_service(&name, |f| match Request::decode_any(f) {
+            Ok((3, Request::Status)) => Response::Status(StatusInfo { ready: true, ..Default::default() }).encode_for(3),
+            _ => Response::Error("malformed message: protocol version".into()).encode_for(3),
+        });
+        let mut c = connect_retry(&name).unwrap();
+        assert_eq!((c.protocol(), c.service_build()), (3, None));
+        assert!(matches!(c.call(&Request::Status).unwrap(), Response::Status(s) if s.ready));
+        // What v3 doesn't have fails cleanly, without a round trip.
+        assert!(c.call(&Request::History).is_err_and(|e| !is_version_mismatch(&e)));
+    }
+
+    #[test]
+    fn incompatible_service_is_a_version_mismatch() {
+        let name = format!(r"\\.\pipe\rapidfind-test-v9-{}", std::process::id());
+        fake_service(&name, |_| Response::Error("malformed message: protocol version".into()).encode_for(9));
+        let e = connect_retry(&name).err().unwrap();
+        assert!(is_version_mismatch(&e), "{e}");
+        assert!(e.to_string().contains("different versions") && e.to_string().contains("v9"), "{e}");
+        // A newer service that does hellos but dropped our versions says so (and its build).
+        let name = format!(r"\\.\pipe\rapidfind-test-v9h-{}", std::process::id());
+        fake_service(&name, |_| {
+            let mut w = W(vec![HELLO, 0, 8, 9]);
+            w.str("9.0.0+abc");
+            w.0
+        });
+        let e = connect_retry(&name).err().unwrap();
+        assert!(is_version_mismatch(&e) && e.to_string().contains("9.0.0+abc"), "{e}");
+        // Not running is not a mismatch.
+        let e = Client::connect_to(r"\\.\pipe\rapidfind-test-nobody-here").err().unwrap();
+        assert!(!is_version_mismatch(&e));
+    }
+
+    /// The real server answers an old client (no hello) in its version, and
+    /// picks a version both know from a hello.
+    #[test]
+    fn serves_older_clients() {
+        let name = format!(r"\\.\pipe\rapidfind-test-old-{}", std::process::id());
+        let server_name = name.clone();
+        let engine = Arc::new(std::sync::OnceLock::new());
+        let _ = engine.set(Arc::new(Engine::from_indexes(vec![sample()])));
+        std::thread::spawn(move || serve_on(&server_name, engine_handler(engine)));
+        connect_retry(&name).unwrap();
+        let mut raw = Client::open(&name).unwrap();
+        let tree = Request::Tree { query: String::new(), flags: SearchFlags::default(), sort: TreeSort::Size, descending: true };
+        write_frame(&mut raw.pipe, &tree.encode_for(3).unwrap()).unwrap();
+        let f = read_frame(&mut raw.pipe).unwrap().unwrap();
+        assert!(matches!(Response::decode_for(&f, 3).unwrap(), Response::Tree(l) if l.rows[0].name == "C:"));
+        // A hello from a client speaking v2-v3 gets v3.
+        let mut w = W(vec![HELLO, 2, 3]);
+        w.str("0.0.9");
+        w.str("old-gui");
+        write_frame(&mut raw.pipe, &w.0).unwrap();
+        assert_eq!(read_hello_answer(&read_frame(&mut raw.pipe).unwrap().unwrap()).unwrap(), (3, Some(BUILD.to_string())));
+        // And a v9 request gets an error in our version: the client sees the mismatch.
+        write_frame(&mut raw.pipe, &[9, 3]).unwrap();
+        assert_eq!(read_frame(&mut raw.pipe).unwrap().unwrap()[0], PROTOCOL);
     }
 }

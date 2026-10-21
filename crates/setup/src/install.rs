@@ -4,12 +4,13 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use rapidfind_core::upgrade;
 use rapidfind_mcp::register as reg;
 
 use crate::sys;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const ARP_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\rapidfind";
+pub use rapidfind_core::upgrade::ARP_KEY;
 pub const SETUP_EXE: &str = "rapidfind-setup.exe";
 
 static PAYLOAD: [(&str, &[u8]); 3] = [
@@ -56,23 +57,12 @@ impl Options {
     }
 }
 
-/// Writes `data` to `dst`; if `dst` is in use (a running GUI or MCP server),
-/// moves it aside first (Windows allows renaming a running exe) and deletes
-/// the old copy at the next reboot.
-fn replace_file(dst: &Path, data: &[u8]) -> Result<(), String> {
-    if std::fs::write(dst, data).is_ok() {
-        return Ok(());
-    }
-    let old = dst.with_extension(format!("old-{}", std::process::id()));
-    std::fs::rename(dst, &old).map_err(|e| format!("{} is in use and can't be moved aside: {e}", dst.display()))?;
-    sys::delete_on_reboot(&old);
-    std::fs::write(dst, data).map_err(|e| format!("writing {}: {e}", dst.display()))
-}
-
 /// Runs the installed CLI (for the service steps), returning its output.
 fn cli(dir: &Path, args: &[&str]) -> Result<String, String> {
     let exe = dir.join("rapidfind.exe");
-    let out = sys::hidden(Command::new(&exe).args(args)).output().map_err(|e| format!("running {}: {e}", exe.display()))?;
+    // We put every program in place ourselves (maybe in a new --dir): the CLI
+    // mustn't copy itself into the previous install's folder.
+    let out = sys::hidden(Command::new(&exe).args(args).env(upgrade::NO_SYNC_ENV, "1")).output().map_err(|e| format!("running {}: {e}", exe.display()))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string();
     if out.status.success() { Ok(text) } else { Err(format!("rapidfind {}: {text}", args.join(" "))) }
 }
@@ -86,18 +76,28 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     log(&format!("Copying files to {}", o.dir.display()));
     for (name, z) in &PAYLOAD {
         let data = zstd::decode_all(*z).map_err(|e| format!("unpacking {name}: {e}"))?;
-        replace_file(&o.dir.join(name), &data)?;
+        upgrade::replace_file(&o.dir.join(name), &data)?;
     }
     // A copy of the installer is the uninstaller.
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let setup = o.dir.join(SETUP_EXE);
     if !same_file(&me, &setup) {
-        replace_file(&setup, &std::fs::read(&me).map_err(|e| e.to_string())?)?;
+        upgrade::replace_file(&setup, &std::fs::read(&me).map_err(|e| e.to_string())?)?;
     }
-    if o.service {
+    let service = if o.service {
         log("Installing the rapidfind service");
-        cli(&o.dir, &["service", "install-or-update"])?;
+        cli(&o.dir, &["service", "install-or-update"]).map(|_| ())
+    } else {
+        Ok(())
+    };
+    // MCP servers AI apps started from the old files still run the old code:
+    // end them (the apps start the new one on their next call), now that the
+    // service is the new one too, and delete the moved-aside copies.
+    let (ended, _) = upgrade::retire_old_programs(&o.dir);
+    if ended > 0 {
+        log(&format!("Restarted {ended} running rapidfind MCP server{}", if ended == 1 { "" } else { "s" }));
     }
+    service?;
     if o.path {
         log("Adding rapidfind to PATH");
         sys::path_add(&o.dir)?;
@@ -159,7 +159,7 @@ pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
             }
         }
     }
-    sys::kill_in(&r.dir, &["rapidfind-gui.exe", "rapidfind-mcp.exe"]);
+    upgrade::kill_in(&r.dir, &["rapidfind-gui.exe", upgrade::MCP_EXE]);
     if r.service && r.dir.join("rapidfind.exe").exists() {
         log("Removing the rapidfind service");
         if let Err(e) = cli(&r.dir, &["service", "uninstall"]) {
@@ -180,21 +180,16 @@ pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     }
     log("Removing files");
     let me = std::env::current_exe().ok();
-    for name in ["rapidfind.exe", "rapidfind-gui.exe", "rapidfind-mcp.exe", SETUP_EXE] {
+    for name in upgrade::PROGRAMS.into_iter().chain([SETUP_EXE]) {
         let p = r.dir.join(name);
         if me.as_ref().is_some_and(|m| same_file(m, &p)) {
             continue;
         }
         if std::fs::remove_file(&p).is_err() && p.exists() {
-            sys::delete_on_reboot(&p);
+            upgrade::delete_on_reboot(&p);
         }
     }
-    // Leftovers from in-use updates.
-    for e in std::fs::read_dir(&r.dir).into_iter().flatten().flatten() {
-        if e.file_name().to_string_lossy().contains(".old-") {
-            let _ = std::fs::remove_file(e.path());
-        }
-    }
+    upgrade::remove_leftovers(&r.dir);
     match &me {
         Some(m) if m.starts_with(&r.dir) => sys::delete_after_exit(m, &r.dir),
         _ => {
@@ -208,23 +203,6 @@ pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn replace_moves_a_locked_file_aside() {
-        let d = std::env::temp_dir().join(format!("rapidfind-setup-test-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        let p = d.join("x.exe");
-        std::fs::write(&p, b"old").unwrap();
-        // Hold the file open without sharing write access, like a running exe.
-        use std::os::windows::fs::OpenOptionsExt;
-        let lock = std::fs::OpenOptions::new().read(true).share_mode(1 | 4 /* read | delete */).open(&p).unwrap();
-        replace_file(&p, b"new").unwrap();
-        assert_eq!(std::fs::read(&p).unwrap(), b"new");
-        drop(lock);
-        let leftovers = std::fs::read_dir(&d).unwrap().count();
-        assert_eq!(leftovers, 2, "the old copy waits for deletion");
-        std::fs::remove_dir_all(&d).ok();
-    }
 
     #[test]
     fn options_default_to_program_files() {

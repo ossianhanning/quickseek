@@ -188,13 +188,33 @@ fn column(n: usize, f: impl Fn(usize, &mut Vec<u8>) + Sync) -> Vec<u8> {
 /// Saves `ix` atomically (compacting first once garbage passes 20%, or once
 /// enough entries were added out of record order to slow record lookups).
 pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
+    prepare_save(ix);
+    write(ix, path)
+}
+
+/// The part of [`save`] that changes the index (compacting, if worthwhile).
+pub fn prepare_save(ix: &mut Index) {
     if ix.garbage * 5 > ix.entries.len() || ix.late_count() * 16 > ix.entries.len() {
         ix.compact();
     }
+}
+
+/// The part of [`save`] that only reads the index (so it can run under a
+/// read lock, letting searches go on). On failure (a full disk) the partial
+/// temporary file is removed and the previous save stays.
+pub fn write(ix: &Index, path: &Path) -> io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let ix = &*ix;
+    let tmp = path.with_extension("tmp");
+    let r = write_to(ix, &tmp).and_then(|()| std::fs::rename(&tmp, path));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+fn write_to(ix: &Index, tmp: &Path) -> io::Result<()> {
     let n = ix.entries.len();
     let e = &ix.entries;
     let prev = |i: usize| if i == 0 { None } else { Some(&e[i - 1]) };
@@ -226,9 +246,8 @@ pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
         ids.extend_from_slice(&v.to_le_bytes());
     }
 
-    let tmp = path.with_extension("tmp");
     {
-        let mut w = io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
+        let mut w = io::BufWriter::with_capacity(1 << 20, std::fs::File::create(tmp)?);
         w.write_all(MAGIC)?;
         w.write_all(&(ix.letter as u32).to_le_bytes())?;
         w.write_all(&ix.volume_serial.to_le_bytes())?;
@@ -244,7 +263,7 @@ pub fn save(ix: &mut Index, path: &Path) -> io::Result<()> {
         }
         w.flush()?;
     }
-    std::fs::rename(&tmp, path)
+    Ok(())
 }
 
 pub fn load(path: &Path) -> io::Result<Index> {

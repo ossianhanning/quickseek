@@ -194,6 +194,8 @@ enum McpCmd {
 #[derive(Subcommand)]
 enum ServiceCmd {
     /// Copy this binary to %ProgramData%\rapidfind, register and start the service (admin).
+    /// Run from outside the install folder (a development build), it also
+    /// updates the programs there, so they all stay the same build.
     Install,
     /// Stop and remove the service (admin). Index files are kept.
     Uninstall,
@@ -354,14 +356,16 @@ fn main() -> anyhow::Result<()> {
                 Ok(None) => println!("service: not installed"),
                 Err(e) => println!("service: unknown ({e})"),
             }
-            match ipc::Client::connect().and_then(|mut c| c.call(&ipc::Request::Status)) {
-                Ok(ipc::Response::Status(s)) => {
-                    println!("pipe {}: {}", ipc::PIPE_NAME, if s.ready { "ready" } else { "index still loading" });
+            println!("this program: rapidfind {}", ipc::BUILD);
+            match ipc::Client::connect().and_then(|mut c| Ok((c.call(&ipc::Request::Status)?, c.service_build().unwrap_or("an older build").to_string(), c.protocol()))) {
+                Ok((ipc::Response::Status(s), build, ver)) => {
+                    println!("pipe {}: {} (service {build}, protocol v{ver})", ipc::PIPE_NAME, if s.ready { "ready" } else { "index still loading" });
                     for v in &s.volumes {
                         println!("  {:<28} {:<6} {:>10} entries  {}", v.key, v.kind, v.entries, v.state);
                     }
                 }
                 Ok(_) => println!("pipe {}: unexpected answer", ipc::PIPE_NAME),
+                Err(e) if ipc::is_version_mismatch(&e) => println!("pipe {}: {e}; reinstall rapidfind so they match", ipc::PIPE_NAME),
                 Err(e) => println!("pipe {}: not available ({e})", ipc::PIPE_NAME),
             }
             println!("local indexes ({}):", persist::db_dir().display());

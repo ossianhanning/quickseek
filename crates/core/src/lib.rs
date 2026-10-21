@@ -7,6 +7,7 @@
 //! * [`persist`] — instant startup from a saved index + journal cursor.
 //! * [`engine`] — multi-volume lifecycle and watcher threads.
 //! * [`ipc`] — named-pipe protocol between the elevated service and clients.
+//! * [`upgrade`] — replacing running programs on install/update.
 
 pub mod config;
 pub mod content;
@@ -26,3 +27,4 @@ pub mod query;
 pub mod runs;
 pub mod search;
 pub mod tree;
+pub mod upgrade;
