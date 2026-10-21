@@ -367,6 +367,32 @@ pub fn install_skill() -> Result<(), String> {
     std::fs::write(&p, crate::guide::SKILL_MD).map_err(|e| format!("writing {}: {e}", p.display()))
 }
 
+/// Brings an installed skill up to date with this build's (registering is
+/// the only other time it's written, and updates don't re-register). Leaves
+/// a file that isn't ours alone. Returns whether it rewrote it.
+pub fn refresh_skill() -> Result<bool, String> {
+    let Some(p) = skill_path() else {
+        return Ok(false);
+    };
+    refresh_skill_at(&p)
+}
+
+fn refresh_skill_at(p: &Path) -> Result<bool, String> {
+    let Ok(old) = std::fs::read_to_string(p) else {
+        return Ok(false); // not installed
+    };
+    let ours = old.starts_with("---")
+        && old
+            .lines()
+            .any(|l| l.trim() == format!("name: {}", crate::guide::SKILL_NAME));
+    if !ours || old == crate::guide::SKILL_MD {
+        return Ok(false);
+    }
+    std::fs::write(p, crate::guide::SKILL_MD)
+        .map_err(|e| format!("writing {}: {e}", p.display()))?;
+    Ok(true)
+}
+
 pub fn remove_skill() -> Result<bool, String> {
     let Some(p) = skill_path() else {
         return Ok(false);
@@ -465,6 +491,25 @@ pub fn restart_hint(c: Client) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refreshes_only_our_outdated_skill() {
+        let d = std::env::temp_dir().join(format!("rapidfind-skill-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("SKILL.md");
+        assert!(!refresh_skill_at(&p).unwrap(), "not installed: left alone");
+        std::fs::write(
+            &p,
+            "---\nname: rapidfind\ndescription: old\n---\n3. Summarise in plain words\n",
+        )
+        .unwrap();
+        assert!(refresh_skill_at(&p).unwrap());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), crate::guide::SKILL_MD);
+        assert!(!refresh_skill_at(&p).unwrap(), "already current");
+        std::fs::write(&p, "---\nname: someone-elses\n---\n").unwrap();
+        assert!(!refresh_skill_at(&p).unwrap(), "not ours");
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rapidfind-reg-{}-{name}", std::process::id()));

@@ -36,9 +36,11 @@ pub fn annotate(tool: &str, args: &Value, result: Value) -> Value {
 }
 
 /// A unit that makes `max` (bytes) read well, and its size.
+/// TB only from 10 TB, so a drive's free space next to its size doesn't
+/// round away (27 GB free on a 1.8 TB drive is 0.0 TB).
 fn unit(max: u64) -> (&'static str, f64) {
     match max {
-        m if m >= 1 << 40 => ("TB", (1u64 << 40) as f64),
+        m if m >= 10 << 40 => ("TB", (1u64 << 40) as f64),
         m if m >= 1 << 30 => ("GB", (1u64 << 30) as f64),
         m if m >= 1 << 20 => ("MB", (1u64 << 20) as f64),
         _ => ("KB", 1024.0),
@@ -47,6 +49,14 @@ fn unit(max: u64) -> (&'static str, f64) {
 
 fn round1(bytes: f64, per: f64) -> f64 {
     (bytes / per * 10.0).round() / 10.0 + 0.0 // + 0.0: no "-0.0"
+}
+
+/// Like [`round1`], but a value that isn't zero doesn't round to zero (3 decimals then).
+fn round_keep(bytes: f64, per: f64) -> f64 {
+    match round1(bytes, per) {
+        0.0 if bytes != 0.0 => (bytes / per * 1000.0).round() / 1000.0 + 0.0,
+        v => v,
+    }
 }
 
 fn chart(kind: &str, title: String, why: &str, unit: &str, mut data: Value) -> Value {
@@ -228,7 +238,7 @@ fn disk_overview(r: &Value) -> Option<Value> {
         .iter()
         .filter(|v| v["capacity"].as_u64().is_some_and(|c| c > 0))
         .collect();
-    if drives.len() < 2 {
+    if drives.is_empty() {
         return None;
     }
     let (u, per) = unit(
@@ -242,13 +252,13 @@ fn disk_overview(r: &Value) -> Option<Value> {
         .iter()
         .map(|v| {
             let (cap, free) = (v["capacity"].as_u64().unwrap_or(0), v["free"].as_u64().unwrap_or(0));
-            json!({ "label": v["volume"], "used": round1(cap.saturating_sub(free) as f64, per), "free": round1(free as f64, per) })
+            json!({ "label": v["volume"], "used": round_keep(cap.saturating_sub(free) as f64, per), "free": round_keep(free as f64, per) })
         })
         .collect();
     Some(chart(
         "stacked_bar",
         "How full each drive is".into(),
-        "Used and free space per drive, side by side.",
+        "Used and free space of every drive in one chart.",
         u,
         Value::Array(data),
     ))
@@ -386,8 +396,34 @@ mod tests {
             None
         );
 
-        let one_drive = json!({ "volumes": [{ "volume": "C", "capacity": 10, "free": 2 }] });
-        assert_eq!(present("disk_overview", &json!({}), &one_drive), None);
+        let none = json!({ "volumes": [{ "volume": "\\\\nas\\x", "entries": 5 }] });
+        assert_eq!(
+            present("disk_overview", &json!({}), &none),
+            None,
+            "no drive with a capacity"
+        );
+        let one_drive =
+            json!({ "volumes": [{ "volume": "C", "capacity": 10 * GB, "free": 2 * GB }] });
+        assert_eq!(
+            present("disk_overview", &json!({}), &one_drive).unwrap()["type"],
+            json!("stacked_bar")
+        );
+        // 27 GB free on a 1.8 TB drive: GB, not 0.0 TB (which drew the drive as full).
+        let tb = 1u64 << 40;
+        let big = json!({ "volumes": [
+            { "volume": "S", "capacity": tb * 18 / 10, "free": 27 * GB },
+            { "volume": "C", "capacity": 930 * GB, "free": 0 },
+            { "volume": "F", "capacity": 931 * GB, "free": GB / 50 },
+        ] });
+        let p = present("disk_overview", &json!({}), &big).unwrap();
+        assert_eq!(p["unit"], json!("GB"));
+        assert_eq!(
+            p["data"][0],
+            json!({ "label": "S", "used": 1816.2, "free": 27.0 })
+        );
+        assert_eq!(p["data"][1]["free"], json!(0.0), "really full");
+        assert_eq!(p["data"][2]["free"], json!(0.02), "small, not rounded away");
+        assert_eq!(unit(12 * tb).0, "TB");
         let two = json!({ "volumes": [{ "volume": "C", "capacity": 4 * GB, "free": GB }, { "volume": "D", "capacity": 2 * GB, "free": GB }] });
         assert_eq!(
             present("disk_overview", &json!({}), &two).unwrap()["data"][0],
@@ -440,7 +476,7 @@ mod tests {
             serde_json::to_string(&json!(round1(-1.0, GB as f64))).unwrap(),
             "0.0"
         );
-        assert_eq!(unit(5 << 40).0, "TB");
+        assert_eq!(unit(5 << 40).0, "GB");
         assert_eq!(unit(5 << 20).0, "MB");
     }
 }

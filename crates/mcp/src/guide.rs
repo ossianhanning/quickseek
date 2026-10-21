@@ -19,9 +19,9 @@ Disk space: disk_overview, then folder_sizes (path like \"D:\\\", depth 1-2, dri
 what grew or shrank since yesterday, last week, a date or a save point: folder_growth (daily snapshots). \
 Before delete_paths, show what would go with sizes and get a yes; it recycles by default, so space is freed only after \
 empty_recycle_bin (ask first) or permanent: true. Online-only OneDrive files are reported apart (they take no disk space). \
-After a disk-space answer (disk_overview, folder_sizes, folder_growth, cleanup_candidates), show the result as a chart when your client \
-can render visuals: users of this tool expect a picture of where the space went. The result's first field, `present`, says which chart \
-to draw (type, title, unit) and holds its data ready to plot; put the explanation in prose next to the chart.";
+Disk-space results (disk_overview, folder_sizes, folder_growth, cleanup_candidates) start with `present`: a chart description with its data \
+ready to plot. If you have a chart or visualization tool (show_widget, visualize, artifacts, ...), draw `present`; otherwise a short table. \
+Explain it in a few sentences next to it.";
 
 /// Name of the Claude Code skill folder (`~/.claude/skills/<name>/SKILL.md`).
 pub const SKILL_NAME: &str = "rapidfind";
@@ -55,13 +55,22 @@ drives, which crawl the disk.
 
 Show paths as links or a short table, and say how many matched in total.
 
+## Charts: the `present` field
+
+Disk-space results (`disk_overview`, `folder_sizes`, `folder_growth`, `cleanup_candidates`) start
+with `present`: the chart that shows the answer (`type`, `title`, `unit`, and `data` ready to
+plot; `folder_growth` can have two). Users asking where their space went expect that picture.
+If you have a chart or visualization tool (show_widget, visualize, an artifact, ...), draw it;
+otherwise show a short table. Then explain in a few sentences.
+
 ## What is using space: `disk_overview`, `folder_sizes`
 
-1. `disk_overview`: capacity and free space per drive.
+1. `disk_overview`: capacity and free space per drive. Draw the chart from the result's `present` field with your chart or visualization tool (for example show_widget, visualize or an artifact) if you have one; otherwise a short table.
 2. `folder_sizes` with `path` `D:\` and `depth` 2: the biggest folders and files with their share
    of the parent; drill into the largest with further calls. `query` restricts it, e.g. `*.mp4`
    shows where videos take space, `folder: wfn:node_modules` where node_modules folders are.
-3. Summarise the biggest items in plain words: size, what they probably are.
+3. Draw the chart from the result's `present` field with your chart or visualization tool (for example show_widget, visualize or an artifact) if you have one; otherwise a short table.
+   Then explain it in a few sentences: the sizes, and what the big items probably are.
 
 ## What grew: `folder_growth`
 
@@ -69,14 +78,15 @@ For "why is my disk filling up", "what got bigger this week", "where did 20 GB g
 cleanup help": `folder_growth` compares folder sizes now with a daily snapshot (`days`, default 7)
 or a save point / date (`since`; `list_snapshots: true` lists them). It lists what grew or shrank
 most under `path`, biggest change first, with sizes then and now and each drive's free space then
-and now; `depth` 2-3 follows the biggest changes down. Snapshots keep folders of 10 MB or more, so
-a smaller folder then shows as new.
+and now; `depth` 2-3 follows the biggest changes down. Snapshots keep folders and files of 10 MB
+or more, so a smaller one then shows as new. Draw the chart from the result's `present` field with your chart or visualization tool (for example show_widget, visualize or an artifact) if you have one; otherwise a short table. Then explain the biggest changes in a
+few sentences: what the folders probably are and whether the growth looks normal.
 
 ## Freeing space: `cleanup_candidates`, then `delete_paths`
 
 1. `cleanup_candidates` (optionally `path` `C:\`): Recycle Bin, temp folders, node_modules and
    other build output, Rust `target` folders, package caches, crash dumps, old Windows installs,
-   big old downloads, huge logs, same-size duplicates.
+   big old downloads, huge logs, same-size duplicates. Draw the chart from the result's `present` field with your chart or visualization tool (for example show_widget, visualize or an artifact) if you have one; otherwise a short table.
 2. Add big personal folders from `folder_sizes` that the categories don't cover.
 3. Propose a list with sizes, grouped by how safe it is. Ask before deleting anything.
 4. `delete_paths` with what the user approved (`dry_run: true` to preview). It moves to the
@@ -149,7 +159,8 @@ pub fn prompt_get(name: &str, args: &Value) -> Result<Value, String> {
                 "Free up disk space",
                 format!(
                     "Help me free up disk space on {drive} using the rapidfind tools. Start with disk_overview and cleanup_candidates, then \
-folder_sizes (depth 2) for big folders the categories miss. Show me a list of what could go, with sizes and how safe each is, and wait \
+folder_sizes (depth 2) for big folders the categories miss. Draw the charts from each result's `present` field if you have a \
+chart or visualization tool. Show me a list of what could go, with sizes and how safe each is, and wait \
 for my OK before deleting anything. After deleting, tell me how much is in the Recycle Bin and ask before emptying it."
                 ),
             )
@@ -161,7 +172,7 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             (
                 "What's using space?",
                 format!(
-                    "What is using the space on {path}? Use rapidfind's folder_sizes (start at depth 2, then drill into the biggest folders) and summarise the biggest items, what they probably are, and which could be cleaned up."
+                    "What is using the space on {path}? Use rapidfind's folder_sizes (start at depth 2, then drill into the biggest folders), draw the chart from the result's `present` field if you have a chart or visualization tool, and explain the biggest items: what they probably are, and which could be cleaned up."
                 ),
             )
         }
@@ -171,7 +182,7 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             (
                 "What's growing?",
                 format!(
-                    "What has grown or shrunk{path} over the last {days} days? Use rapidfind's folder_growth (depth 3) and explain the biggest changes in plain words: what the folders probably are, whether the growth looks normal, and what could be cleaned up."
+                    "What has grown or shrunk{path} over the last {days} days? Use rapidfind's folder_growth (depth 3), draw the charts from the result's `present` field if you have a chart or visualization tool, and explain the biggest changes: what the folders probably are, whether the growth looks normal, and what could be cleaned up."
                 ),
             )
         }

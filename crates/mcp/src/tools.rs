@@ -106,7 +106,7 @@ pub fn list() -> Value {
         {
             "name": "disk_overview",
             "title": "Disk overview",
-            "description": "How full each drive is (start here for disk-space questions): every indexed drive and network share with capacity, free space, space taken by indexed files, file count and index state.",
+            "description": "How full each drive is (start here for disk-space questions): every indexed drive and network share with capacity, free space, space taken by indexed files, file count and index state. Starts with `present`: used and free space of every drive as one chart.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
@@ -116,7 +116,7 @@ pub fn list() -> Value {
             "description": "Clean up / free disk space: finds space that can usually be reclaimed, by category: Recycle Bin, temp folders, build output and dependency folders \
     (node_modules, Rust target, __pycache__, ...), package manager caches, crash dumps, old Windows installations, big old downloads, huge logs and \
     same-size duplicates. Returns each category's total and its biggest items with paths, so you can review and then delete with delete_paths. \
-    Nothing is deleted by this tool.",
+    Nothing is deleted by this tool. Starts with `present`: the reclaimable space by category as a chart.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

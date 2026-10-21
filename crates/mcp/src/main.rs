@@ -334,6 +334,12 @@ fn main() {
             .as_ref()
             .map_or_else(String::new, |x| x.path.display().to_string())
     );
+    // An update brings a new skill text; the installed copy is only written when registering.
+    match rapidfind_mcp::register::refresh_skill() {
+        Ok(true) => eprintln!("rapidfind-mcp: updated the Claude Code skill"),
+        Ok(false) => {}
+        Err(e) => eprintln!("rapidfind-mcp: couldn't update the Claude Code skill: {e}"),
+    }
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
