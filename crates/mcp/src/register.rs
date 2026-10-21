@@ -195,6 +195,16 @@ pub fn stable_exe(src: &Path) -> Result<PathBuf, String> {
     Ok(dst)
 }
 
+/// `p` without the `\\?\` that `canonicalize` puts in front of a local path
+/// on Windows (clients get a plain path, and [`is_stable_dir`] can match it).
+pub fn plain_path(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => p,
+    }
+}
+
 /// `rapidfind-mcp.exe` next to the running program, if it's there.
 pub fn sibling_exe() -> Option<PathBuf> {
     let p = std::env::current_exe().ok()?.parent()?.join(EXE);
@@ -837,6 +847,23 @@ mod tests {
     #[test]
     fn stable_dirs_and_ids() {
         assert!(is_stable_dir(&user_dir()));
+        // What --exe gives after canonicalize: still Program Files, as a plain path.
+        let pf = plain_path(PathBuf::from(
+            r"\\?\C:\Program Files\rapidfind\rapidfind-mcp.exe",
+        ));
+        assert_eq!(
+            pf,
+            PathBuf::from(r"C:\Program Files\rapidfind\rapidfind-mcp.exe")
+        );
+        if env_path("ProgramFiles").is_some_and(|p| p == Path::new(r"C:\Program Files")) {
+            assert_eq!(
+                stable_exe(&pf).unwrap_or_default(),
+                pf,
+                "registered where it is"
+            );
+        }
+        let unc = PathBuf::from(r"\\?\UNC\nas\tools\rapidfind-mcp.exe");
+        assert_eq!(plain_path(unc.clone()), unc);
         assert!(!is_stable_dir(Path::new(
             r"S:\dev\rapidfind\target\release"
         )));

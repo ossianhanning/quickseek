@@ -866,9 +866,10 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
         }
         McpCmd::Install { client, exe } => {
             let src = match exe {
-                Some(e) => e
-                    .canonicalize()
-                    .with_context(|| format!("{}", e.display()))?,
+                Some(e) => reg::plain_path(
+                    e.canonicalize()
+                        .with_context(|| format!("{}", e.display()))?,
+                ),
                 None => reg::sibling_exe()
                     .context("rapidfind-mcp.exe isn't next to this program; pass --exe")?,
             };
