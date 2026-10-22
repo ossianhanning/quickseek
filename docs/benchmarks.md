@@ -15,7 +15,7 @@ machine.
 | Disks | NVMe 1 TB (C:), NVMe 2 TB, SATA SSD 1 TB |
 | OS | Windows 11 Pro 10.0.26200 |
 | rapidfind | 0.1.0+adcf11a, service, 6,968,803 entries on C:, F:, S: |
-| Everything | 1.4.1.1024, 6,437,381 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
+| Everything | 1.4.1.1024 with its service, 6,437,381 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
 
 ## Method
 
@@ -33,11 +33,12 @@ machine.
   run elevated. Everything's `-reindex` rebuilds all of its volumes, not one, so that comparison is
   rough.
 
-**Caveat:** Everything ran without its service and without admin rights, so it served its saved
-database from four days earlier and couldn't update it. On F: the two indexes match (1,918,931 vs
-1,912,735 entries, the same 5,886 JPEGs and 486 PDFs). C: had changed a lot since, so hit counts
-there differ. The latency numbers still compare like with like in size, but rerun with an up-to-date
-Everything for exact parity.
+**Caveat:** the two indexes don't hold exactly the same files. This PC's Everything settings
+exclude one large cloud-synced folder on C:, which rapidfind indexes, and differ in a few other
+places. On F: they match (1,918,931 vs 1,912,735 entries, the same 5,886 JPEGs and 486 PDFs). On C:
+the hit counts differ, by up to 6× for PDFs, which mostly live in that folder. The `f:\` rows and the
+system32 rows compare exactly the same files. For full parity, give both tools the same volumes and
+excludes.
 
 ## Results
 
@@ -56,7 +57,7 @@ Median round trip in milliseconds over 15 runs; lower is quicker.
 | `a` (4.4 million hits) | 201.6 | **31.3** | 4,409,487 / 4,101,211 |
 | `f:\` (a whole drive, 1.9 million hits) | 155.2 | **44.7** | 1,918,931 / 1,912,735 |
 
-¹ Everything's database was four days old (see the caveat).
+¹ Different files on C: (see the caveat): Everything excludes a folder holding many of these.
 
 | | rapidfind | Everything |
 |---|---:|---:|
