@@ -1121,6 +1121,17 @@ impl Index {
         self.entries.par_iter().filter(|e| e.is_visible()).count()
     }
 
+    /// The name is kept as its folded form plus a case mask (so it's ASCII
+    /// and folded = lower case).
+    #[inline]
+    pub fn name_is_case_mask(&self, i: u32) -> bool {
+        let e = &self.entries[i as usize];
+        e.flags & F_NAME_IN_FOLD == 0 && {
+            let at = e.name_ref as usize;
+            u32::from_le_bytes(self.names[at..at + 4].try_into().unwrap()) & CASE_MASK != 0
+        }
+    }
+
     /// Calls `f` with the entry's name as it is on disk, without allocating:
     /// a name kept as a case mask is put back together on the stack. For
     /// hot loops (case-sensitive matching); [`Index::name`] otherwise.

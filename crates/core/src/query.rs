@@ -85,6 +85,13 @@ pub enum Leaf {
     Regex {
         re: regex::bytes::Regex,
         path: bool,
+        /// Ignores case throughout (not `case:`, no inline flags that could
+        /// turn it back on), so lower-cased text gives the same answer.
+        ignores_case: bool,
+        /// For a case-sensitive regex without inline flags, the same one
+        /// ignoring case: what it rejects on lower-cased text the regex
+        /// rejects on the original, so most names needn't be rebuilt.
+        prefilter: Option<regex::bytes::Regex>,
     },
     /// Folded extensions without the dot.
     Ext(HashSet<Vec<u8>>),
@@ -587,7 +594,21 @@ impl Parser<'_> {
                     .case_insensitive(!m.case)
                     .build()
                     .map_err(|e| e.to_string())?;
-                Leaf::Regex { re, path }
+                let flags = text.contains("(?");
+                let prefilter = if m.case && !flags {
+                    regex::bytes::RegexBuilder::new(&text)
+                        .case_insensitive(true)
+                        .build()
+                        .ok()
+                } else {
+                    None
+                };
+                Leaf::Regex {
+                    re,
+                    path,
+                    ignores_case: !m.case && !flags,
+                    prefilter,
+                }
             } else if text.contains(['*', '?']) || m.exact {
                 let mut pat = if m.case {
                     text.into_bytes()
@@ -1193,7 +1214,24 @@ impl Leaf {
                 path: false,
                 ..
             } => c.with_hay(false, *case, |h| glob_match(pat, h)),
-            Leaf::Regex { re, path } => c.with_hay(*path, true, |h| re.is_match(h)),
+            // A name kept as a case mask is ASCII, so its folded form is
+            // exactly its lower case: a regex that ignores case answers the
+            // same on it, without putting the name back together.
+            Leaf::Regex {
+                re,
+                path: false,
+                ignores_case: true,
+                ..
+            } if c.ix.name_is_case_mask(c.i) => re.is_match(c.ix.fold_name(c.i)),
+            Leaf::Regex {
+                re,
+                path: false,
+                prefilter: Some(pre),
+                ..
+            } if c.ix.name_is_case_mask(c.i) => {
+                pre.is_match(c.ix.fold_name(c.i)) && c.with_hay(false, true, |h| re.is_match(h))
+            }
+            Leaf::Regex { re, path, .. } => c.with_hay(*path, true, |h| re.is_match(h)),
             Leaf::Ext(exts) => {
                 !e.is_dir()
                     && extension(c.ix.fold_name(c.i)).is_some_and(|x| {
@@ -1423,6 +1461,21 @@ mod tests {
                 "pattern {raw:?} path {path:?}"
             );
         }
+    }
+
+    /// Regexes on names kept as case masks (ASCII) may run on the folded
+    /// name only when they ignore case all the way through.
+    #[test]
+    fn regex_case_on_masked_names() {
+        assert_eq!(matches("regex:^report"), vec!["Report.PDF"]);
+        assert_eq!(matches("regex:^REPORT\\.pdf$"), vec!["Report.PDF"]);
+        assert_eq!(matches("case:regex:^Report"), vec!["Report.PDF"]);
+        assert!(matches("case:regex:^report").is_empty());
+        assert!(
+            matches("regex:(?-i)^report").is_empty(),
+            "inline flag: case-sensitive"
+        );
+        assert_eq!(matches("regex:(?-i)^Report"), vec!["Report.PDF"]);
     }
 
     /// `ext:` is driven by `.ext` plus the name's end in the arena: only
