@@ -28,6 +28,17 @@ static PAYLOAD: [(&str, &[u8]); 3] = [
     ),
 ];
 
+/// License notices installed next to the programs (MIT and Apache-2.0 ask
+/// for them to go with binary copies).
+pub const NOTICES: [(&str, &str); 3] = [
+    ("LICENSE-MIT.txt", include_str!("../../../LICENSE-MIT")),
+    (
+        "LICENSE-APACHE.txt",
+        include_str!("../../../LICENSE-APACHE"),
+    ),
+    ("THIRD-PARTY.md", include_str!("../../../THIRD-PARTY.md")),
+];
+
 pub fn has_payload() -> bool {
     PAYLOAD.iter().all(|(_, d)| !d.is_empty())
 }
@@ -102,6 +113,10 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     for (name, z) in &PAYLOAD {
         let data = zstd::decode_all(*z).map_err(|e| format!("unpacking {name}: {e}"))?;
         upgrade::replace_file(&o.dir.join(name), &data)?;
+    }
+    for (name, text) in NOTICES {
+        let p = o.dir.join(name);
+        std::fs::write(&p, text).map_err(|e| format!("writing {}: {e}", p.display()))?;
     }
     // A copy of the installer is the uninstaller.
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -222,6 +237,9 @@ pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     }
     log("Removing files");
     let me = std::env::current_exe().ok();
+    for (name, _) in NOTICES {
+        let _ = std::fs::remove_file(r.dir.join(name));
+    }
     for name in upgrade::PROGRAMS.into_iter().chain([SETUP_EXE]) {
         let p = r.dir.join(name);
         if me.as_ref().is_some_and(|m| same_file(m, &p)) {

@@ -8,6 +8,9 @@ default-members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+authors = ["Ossian Hanning"]
+repository = "https://github.com/ossianhanning/rapidfind"
+homepage = "https://github.com/ossianhanning/rapidfind"
 
 [profile.release]
 opt-level = 3

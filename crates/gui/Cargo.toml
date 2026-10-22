@@ -1,8 +1,11 @@
 [package]
 name = "rapidfind-gui"
+description = "rapidfind's window: search as you type, folder size tree, what grew"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
