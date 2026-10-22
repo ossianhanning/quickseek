@@ -563,7 +563,25 @@ pub struct Tree {
     pub base: Option<Arc<crate::history::PathMap>>,
 }
 
+/// Made-up (capacity, free) per volume root (`C:`), used instead of asking
+/// Windows: the demo service's drives aren't this PC's.
+static DISK_SPACE_OVERRIDE: std::sync::OnceLock<Vec<(String, u64, u64)>> =
+    std::sync::OnceLock::new();
+
+/// Reports `drives` (root, capacity, free) for those roots from now on; for
+/// demos and tests. Only the first call counts.
+pub fn override_disk_space(drives: Vec<(String, u64, u64)>) {
+    let _ = DISK_SPACE_OVERRIDE.set(drives);
+}
+
 pub(crate) fn disk_space(root: &str) -> (u64, u64) {
+    if let Some(d) = DISK_SPACE_OVERRIDE.get() {
+        let key = root.trim_end_matches('\\');
+        return d
+            .iter()
+            .find(|(r, _, _)| r.trim_end_matches('\\').eq_ignore_ascii_case(key))
+            .map_or((0, 0), |&(_, c, f)| (c, f));
+    }
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let mut path = root.to_string();
     if !path.ends_with('\\') {

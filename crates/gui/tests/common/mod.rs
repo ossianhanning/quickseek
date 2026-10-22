@@ -2,6 +2,8 @@
 //! `mock_service` example.
 #![allow(dead_code)]
 
+pub mod demo;
+
 use std::sync::{Arc, OnceLock};
 
 use rapidfind_core::engine::Engine;
@@ -155,7 +157,11 @@ pub fn serve(pipe: &str, engine: Arc<Engine>) {
     let slot = Arc::new(OnceLock::new());
     let _ = slot.set(engine);
     let p = pipe.to_string();
-    std::thread::spawn(move || ipc::serve_on(&p, ipc::engine_handler(slot)));
+    std::thread::spawn(move || {
+        if let Err(e) = ipc::serve_on(&p, ipc::engine_handler(slot)) {
+            eprintln!("serving {p}: {e}");
+        }
+    });
     for _ in 0..200 {
         if ipc::Client::connect_to(pipe).is_ok() {
             return;
