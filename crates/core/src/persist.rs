@@ -1,14 +1,15 @@
 //! On-disk index, plus the journal cursor so a restart only replays the
 //! changes since the last save.
 //!
-//! Format v5 is columnar and compressed: each field of every entry is its own
+//! Format v6 is columnar and compressed: each field of every entry is its own
 //! stream, transformed so neighbours look alike (record numbers and
 //! timestamps as zigzag-varint deltas, parents relative to the entry, sizes
 //! as varints), then cut into 4 MB blocks and zstd-compressed in parallel.
 //! Names are stored once, in entry order. Anything derivable (folded names,
 //! sort ranks, hard-link chains, exclusion flags, arena offsets) is rebuilt
 //! on load. Loading reads a fraction of the bytes of a raw dump, which on a
-//! slow disk makes it faster, not slower.
+//! slow disk makes it faster, not slower. v6 stores dates modified as the
+//! seconds entries keep (v5 had FILETIMEs; it still loads).
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +21,9 @@ use crate::index::{
     Entry, F_DELETED, F_EXCLUDED, F_INCLUDE_ANCESTOR, F_NAME_IN_FOLD, Index, IndexOptions, NONE,
 };
 
-const MAGIC: &[u8; 8] = b"RAPIDFD\x05";
+const MAGIC: &[u8; 8] = b"RAPIDFD\x06";
+/// Dates modified as FILETIMEs; loaded and converted.
+const MAGIC_V5: &[u8; 8] = b"RAPIDFD\x05";
 const BLOCK: usize = 4 << 20;
 const LEVEL: i32 = 3;
 /// Flag bits rebuilt on load rather than stored.
@@ -251,10 +254,7 @@ fn write_to(ix: &Index, tmp: &Path) -> io::Result<()> {
     let modified = column(n, |i, o| {
         put_varint(
             o,
-            zigzag(
-                e[i].modified
-                    .wrapping_sub(prev(i).map_or(0, |p| p.modified)),
-            ),
+            zigzag(e[i].mtime as i64 - prev(i).map_or(0, |p| p.mtime as i64)),
         )
     });
     let created = if with_created {
@@ -313,7 +313,8 @@ fn write_to(ix: &Index, tmp: &Path) -> io::Result<()> {
 pub fn load(path: &Path) -> io::Result<Index> {
     let data = std::fs::read(path)?;
     let mut r: &[u8] = &data;
-    if r.len() < 8 || &r[..8] != MAGIC {
+    let v5 = r.len() >= 8 && &r[..8] == MAGIC_V5;
+    if r.len() < 8 || (&r[..8] != MAGIC && !v5) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "not a rapidfind index (or old version)",
@@ -420,7 +421,11 @@ pub fn load(path: &Path) -> io::Result<Index> {
         let fl = u16::from_le_bytes([flags[2 * i], flags[2 * i + 1]]);
         entries.push(Entry {
             size: szs[i] as u64,
-            modified: mods[i],
+            mtime: if v5 {
+                crate::index::mtime_of(mods[i])
+            } else {
+                mods[i].clamp(0, u32::MAX as i64) as u32
+            },
             parent,
             // Offset into the loaded `names` until rebuild_fold below.
             name_ref: off as u32,
@@ -541,8 +546,8 @@ mod tests {
             assert_eq!({ back.entries[i as usize].size }, {
                 ix.entries[i as usize].size
             });
-            assert_eq!({ back.entries[i as usize].modified }, {
-                ix.entries[i as usize].modified
+            assert_eq!({ back.entries[i as usize].mtime }, {
+                ix.entries[i as usize].mtime
             });
             assert_eq!(back.created(i), ix.created(i));
             assert_eq!(

@@ -1208,7 +1208,7 @@ impl Leaf {
             Leaf::IsDir => e.is_dir(),
             Leaf::Date { field, lo, hi } => {
                 let t = match field {
-                    DateField::Modified => e.modified,
+                    DateField::Modified => e.modified(),
                     DateField::Created => match c.ix.created(c.i) {
                         Some(t) => t,
                         None => return false,

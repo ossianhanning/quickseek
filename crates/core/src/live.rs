@@ -164,7 +164,7 @@ impl Applier {
         let e = &mut ix.entries[entry as usize];
         e.set_attrs(r.attrs);
         if reason & DATA_CHANGE != 0 {
-            e.modified = r.timestamp.max(e.modified);
+            e.mtime = e.mtime.max(crate::index::mtime_of(r.timestamp));
             if !is_dir {
                 refresh.push((rec, r.frn128));
             }

@@ -441,7 +441,7 @@ impl VolTree {
             cloud,
             hardlink: !e.is_dir() && files == 0 && size == 0 && cloud == 0 && e.size > 0,
             files,
-            modified: e.modified,
+            modified: e.modified(),
             is_dir: e.is_dir(),
             has_children: e.is_dir()
                 && if full_here || self.agg.is_none() {

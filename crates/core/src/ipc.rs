@@ -967,7 +967,7 @@ fn rows(eng: &Engine, hits: &[Hit]) -> Vec<Row> {
                     name: ix.name(h.idx).to_string(),
                     dir: ix.parent_path(h.idx),
                     size: e.size,
-                    modified: e.modified,
+                    modified: e.modified(),
                     created: ix.created(h.idx).unwrap_or(0),
                     attrs: e.attrs(),
                     run_count: runs

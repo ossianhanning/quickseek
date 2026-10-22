@@ -72,7 +72,9 @@ pub const MAX_NAME: usize = 1023;
 pub struct Entry {
     /// File size, or total size of everything below a directory.
     pub size: u64,
-    pub modified: i64,
+    /// Date modified to the second, see [`mtime_of`]; [`Entry::modified`]
+    /// gives the FILETIME back.
+    pub mtime: u32,
     /// Entry index of the parent directory (`NONE` for the root).
     pub parent: u32,
     /// With `F_NAME_IN_FOLD`: offset of the name in `fold`. Otherwise offset
@@ -83,7 +85,43 @@ pub struct Entry {
     pub flags: u16,
 }
 
+/// FILETIME of 1950-01-01: entries keep their date modified as whole
+/// seconds since then in 4 bytes (1950 to 2086), not 8.
+pub const MTIME_BASE: i64 = 110_133_216_000_000_000;
+
+/// A FILETIME as an entry's `mtime`: 0 for no date (or one before 1950),
+/// else 1 + seconds since 1950, capped in 2086. Order-preserving.
+#[inline]
+pub fn mtime_of(ft: i64) -> u32 {
+    if ft <= MTIME_BASE {
+        0
+    } else {
+        ((ft - MTIME_BASE) / 10_000_000 + 1).min(u32::MAX as i64) as u32
+    }
+}
+
+/// The FILETIME an `mtime` stands for (to the second).
+#[inline]
+pub fn ft_of(mtime: u32) -> i64 {
+    if mtime == 0 {
+        0
+    } else {
+        MTIME_BASE + (mtime as i64 - 1) * 10_000_000
+    }
+}
+
 impl Entry {
+    /// Date modified as a FILETIME (whole seconds).
+    #[inline]
+    pub fn modified(&self) -> i64 {
+        ft_of(self.mtime)
+    }
+
+    #[inline]
+    pub fn set_modified(&mut self, ft: i64) {
+        self.mtime = mtime_of(ft);
+    }
+
     #[inline]
     pub fn name_len(&self) -> usize {
         (self.len_rec & 0x3FF) as usize
@@ -429,7 +467,7 @@ impl Index {
             let len = name.floor_char_boundary(name.len().min(MAX_NAME));
             ix.entries.push(Entry {
                 size: if m.is_dir { 0 } else { m.size },
-                modified: m.modified,
+                mtime: mtime_of(m.modified),
                 parent: NONE,
                 name_ref: tmp.len() as u32,
                 len_rec: Entry::len_rec(len, record),
@@ -850,7 +888,7 @@ impl Index {
                         }
                         let mut o = live.clone();
                         o.par_sort_unstable_by_key(|&i| {
-                            (self.entries[i as usize].modified, name[i as usize])
+                            (self.entries[i as usize].mtime, name[i as usize])
                         });
                         to_rank(&o)
                     },
@@ -1472,7 +1510,7 @@ impl Index {
         let sorted = self.rec_sorted == idx && (idx == 0 || self.record(idx - 1) <= record);
         self.entries.push(Entry {
             size: if is_dir { 0 } else { size },
-            modified,
+            mtime: mtime_of(modified),
             parent,
             name_ref,
             len_rec: Entry::len_rec(name_len, record),
@@ -1628,14 +1666,14 @@ impl Index {
             let e = self.entries[l as usize];
             self.unrank(l, &[RankKey::Modified]);
             if e.is_dir() {
-                self.entries[l as usize].modified = modified;
+                self.entries[l as usize].set_modified(modified);
                 continue;
             }
             self.unrank(l, &[RankKey::Size]);
             self.add_size_up(e.parent, size as i64 - e.size as i64);
             let m = &mut self.entries[l as usize];
             m.size = size;
-            m.modified = modified;
+            m.set_modified(modified);
             if created != 0
                 && let Some(c) = self.created.get_mut(l as usize)
             {
@@ -1836,6 +1874,26 @@ pub(crate) mod tests {
         (0..ix.entries.len() as u32)
             .find(|&i| ix.is_live(i) && ix.name(i) == n)
             .unwrap()
+    }
+
+    /// Dates modified kept to the second in 4 bytes: exact for whole
+    /// seconds 1950-2086, order-preserving, 0 for none.
+    #[test]
+    fn mtime_encoding() {
+        let second = 10_000_000i64;
+        let now = 134_060_000_000_000_000; // 2025
+        assert_eq!(ft_of(mtime_of(now)), now);
+        assert_eq!(
+            ft_of(mtime_of(now + second - 1)),
+            now,
+            "truncated to the second"
+        );
+        assert!(mtime_of(now) < mtime_of(now + second));
+        assert_eq!((mtime_of(0), ft_of(0)), (0, 0));
+        assert_eq!(mtime_of(MTIME_BASE - second), 0, "before 1950: no date");
+        assert_eq!(ft_of(mtime_of(MTIME_BASE + second)), MTIME_BASE + second);
+        assert_eq!(mtime_of(i64::MAX), u32::MAX, "capped, not wrapped");
+        assert_eq!(size_of::<Entry>(), 24);
     }
 
     #[test]

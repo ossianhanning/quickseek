@@ -229,8 +229,8 @@ impl Cmp<'_> {
                     .then_with(|| self.by_name(a, b))
             }),
             SortKey::Modified => self.ranked(RankKey::Modified, a, b).unwrap_or_else(|| {
-                { e(a).modified }
-                    .cmp(&{ e(b).modified })
+                { e(a).mtime }
+                    .cmp(&{ e(b).mtime })
                     .then_with(|| self.by_name(a, b))
             }),
             SortKey::Path => self
@@ -428,9 +428,7 @@ impl ResultSet {
         // instead of calling the comparator millions of times.
         let value: Option<Box<dyn Fn(u32) -> u64 + Sync>> = match self.opts.sort {
             SortKey::Size => Some(Box::new(|i| ix.entries[i as usize].size)),
-            SortKey::Modified => Some(Box::new(|i| {
-                (ix.entries[i as usize].modified as u64) ^ (1 << 63)
-            })),
+            SortKey::Modified => Some(Box::new(|i| ix.entries[i as usize].mtime as u64)),
             SortKey::Created if !ix.created.is_empty() => Some(Box::new(|i| {
                 (ix.created(i).unwrap_or(0) as u64) ^ (1 << 63)
             })),
