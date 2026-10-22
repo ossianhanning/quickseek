@@ -211,6 +211,8 @@ impl Vol {
 
     /// A file that appeared `age` days ago and hasn't changed since.
     fn file(&mut self, dir: usize, name: &str, size: u64, age: f64) {
+        // Not all at the same time of day.
+        let age = age + self.rng.range(0.0, 0.45);
         self.file_with(dir, name, size, age, None, 0x20);
     }
 
@@ -1194,6 +1196,7 @@ fn profile(c: &mut Vol) {
 
 fn documents(c: &mut Vol) {
     let u = USER;
+    let now = c.now;
     let docs: &[(&str, &str, u64, f64)] = &[
         ("Finance", "Q3 budget final v2.xlsx", 186 * KB, 24.0),
         ("Finance", "Q3 budget final v2 (1).xlsx", 186 * KB, 24.0),
@@ -1290,10 +1293,15 @@ fn documents(c: &mut Vol) {
     );
     c.spread(
         &format!("{u}\\Documents\\Adobe\\Premiere Pro\\26.0\\Auto-Save"),
-        40,
-        gib(1.8),
+        12,
+        gib(0.7),
         (0.1, 18.0),
-        |_, i, _a| format!("Iceland trip 2026 - edit--{:02}.prproj", i),
+        |_, _, a| {
+            format!(
+                "Iceland trip 2026 - edit-{}.prproj",
+                stamp(a, now, "-", "-").replace(' ', "_")
+            )
+        },
     );
 }
 
