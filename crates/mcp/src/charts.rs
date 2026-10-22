@@ -268,6 +268,8 @@ fn cleanup(r: &Value) -> Option<Value> {
     let mut cats: Vec<(String, u64)> = r["categories"]
         .as_array()?
         .iter()
+        // Page and hibernation files are shown for information, not reclaimable.
+        .filter(|c| c["id"] != "system_files")
         .map(|c| {
             (
                 c["title"].as_str().unwrap_or("").to_string(),
@@ -445,6 +447,21 @@ mod tests {
             present("search_files", &json!({ "sort": "size" }), &few),
             None
         );
+        // Cleanup: reclaimable categories only (system files are informational).
+        let cats = json!({ "categories": [
+            { "id": "temp", "title": "Temp", "total_size": 3 * GB },
+            { "id": "system_files", "title": "System files", "total_size": 30 * GB },
+            { "id": "recycle_bin", "title": "Recycle Bin", "total_size": 2 * GB },
+            { "id": "crash_dumps", "title": "Dumps", "total_size": GB },
+        ] });
+        let p = present("cleanup_candidates", &json!({}), &cats).unwrap();
+        let labels: Vec<&str> = p["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["Temp", "Recycle Bin", "Dumps"]);
         for t in ["delete_paths", "empty_recycle_bin"] {
             assert_eq!(present(t, &json!({}), &sizes), None);
         }
