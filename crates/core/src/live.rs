@@ -326,6 +326,135 @@ mod tests {
         assert!(find(&ix, "main.rs").is_empty());
     }
 
+    /// Journal changes (create, rename, delete) on an index big enough for
+    /// the fast paths (name order walk, `ext:` arena scan, packed dates):
+    /// `ext:`, `dm:` and name-sorted results match a brute-force answer.
+    #[test]
+    fn journal_changes_keep_fast_paths_right() {
+        use crate::index::tests::scan_of;
+        use crate::search::SortKey;
+        let mut items: Vec<(u32, u32, String, bool, u64)> = vec![(30, 5, "Dir".into(), true, 0)];
+        for k in 0..12_000u32 {
+            let ext = ["dll", "txt", "DLL", "log"][(k % 4) as usize];
+            items.push((
+                40 + k,
+                30,
+                format!("{}File{k}.{ext}", ["a", "B", "c"][(k % 3) as usize]),
+                false,
+                10,
+            ));
+        }
+        let refs: Vec<(u32, u32, &str, bool, u64)> = items
+            .iter()
+            .map(|i| (i.0, i.1, i.2.as_str(), i.3, i.4))
+            .collect();
+        let mut ix = Index::from_scan('C', &scan_of(&refs));
+        let mut a = Applier::default();
+        // 2026-10-20 12:00 UTC as a FILETIME.
+        let day = 134_369_712_000_000_000i64;
+        let mut recs = Vec::new();
+        let mut usn = 10;
+        let mut r = |frn: u64, parent: u64, reason: u32, name: &str, ts: i64| {
+            usn += 1;
+            UsnRecord {
+                timestamp: ts,
+                ..rec(frn, parent, reason, 0x20, name, usn)
+            }
+        };
+        for k in 0..300u64 {
+            // New files, half of them .dll, all dated that day.
+            let name = format!("new{k}.{}", if k % 2 == 0 { "dll" } else { "dat" });
+            recs.push(r(
+                50_000 + k,
+                30,
+                USN_REASON_FILE_CREATE | USN_REASON_CLOSE,
+                &name,
+                day,
+            ));
+        }
+        for k in (1..12_000u64).step_by(37) {
+            // Renames: .txt files become .dll and the other way round.
+            let old = items[k as usize + 1].2.clone();
+            let new = if old.ends_with(".txt") {
+                old.replace(".txt", ".dll")
+            } else {
+                old.replace(".dll", ".txt")
+            };
+            recs.push(r(40 + k, 30, USN_REASON_RENAME_OLD_NAME, &old, day));
+            recs.push(r(
+                40 + k,
+                30,
+                USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE,
+                &new,
+                day,
+            ));
+        }
+        for k in (5..12_000u64).step_by(53) {
+            recs.push(r(
+                40 + k,
+                30,
+                USN_REASON_FILE_DELETE | USN_REASON_CLOSE,
+                "x",
+                day,
+            ));
+        }
+        a.apply(&mut ix, &recs);
+        assert!(
+            !ix.ranks.unranked_names.is_empty(),
+            "changes since the ranks were computed"
+        );
+
+        let reference = |keep: &dyn Fn(u32) -> bool, desc: bool| {
+            let mut v: Vec<u32> = (0..ix.entries.len() as u32)
+                .filter(|&i| ix.is_visible(i) && keep(i))
+                .collect();
+            v.sort_by(|&x, &y| {
+                ix.fold_name(x)
+                    .cmp(ix.fold_name(y))
+                    .then_with(|| ix.name(x).cmp(&ix.name(y)))
+                    .then(x.cmp(&y))
+            });
+            if desc {
+                v.reverse();
+            }
+            v
+        };
+        let is_dll =
+            |i: u32| !ix.entries[i as usize].is_dir() && ix.fold_name(i).ends_with(b".dll");
+        let on_day =
+            |i: u32| ix.entries[i as usize].modified() / 864_000_000_000 == day / 864_000_000_000;
+        let all = |_: u32| true;
+        for (q, keep) in [
+            ("ext:dll", &is_dll as &dyn Fn(u32) -> bool),
+            ("dm:2026-10-20", &on_day),
+            ("", &all),
+        ] {
+            for desc in [false, true] {
+                for limit in [100, 0] {
+                    let o = SearchOptions {
+                        sort: SortKey::Name,
+                        descending: desc,
+                        limit,
+                    };
+                    let h = search(&[&ix], &Query::parse(q).unwrap(), &o);
+                    let want = reference(keep, desc);
+                    assert_eq!(h.total, want.len(), "{q}");
+                    let got: Vec<u32> = h.items.iter().map(|h| h.idx).collect();
+                    let n = if limit == 0 {
+                        want.len()
+                    } else {
+                        limit.min(want.len())
+                    };
+                    assert_eq!(got[..n], want[..n], "{q} desc={desc} limit={limit}");
+                }
+            }
+        }
+        // The new files are there.
+        assert!(find(&ix, "new0.dll").len() == 1 && find(&ix, "new1.dat").len() == 1);
+        // Renames keep the date modified, as on NTFS: just the new files.
+        assert_eq!(reference(&on_day, false).len(), 300);
+    }
+
     #[test]
     fn child_before_parent_is_retried() {
         let mut ix = sample();
