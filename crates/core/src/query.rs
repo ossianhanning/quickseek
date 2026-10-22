@@ -739,9 +739,12 @@ impl Query {
                     path: true,
                     ..
                 }) => glob_tail(pat).map(|t| t.to_vec()),
+                // `.dll` and the `\0` ending the name in the folded arena:
+                // only names that end in the extension are candidates.
                 Node::Leaf(Leaf::Ext(exts)) if exts.len() == 1 => {
                     let mut v = vec![b'.'];
                     v.extend_from_slice(exts.iter().next().unwrap());
+                    v.push(0);
                     Some(v)
                 }
                 _ => None,
@@ -1190,7 +1193,15 @@ impl Leaf {
             } => glob_match(pat, c.hay(false, *case)),
             Leaf::Regex { re, path } => re.is_match(c.hay(*path, true)),
             Leaf::Ext(exts) => {
-                !e.is_dir() && extension(c.ix.fold_name(c.i)).is_some_and(|x| exts.contains(x))
+                !e.is_dir()
+                    && extension(c.ix.fold_name(c.i)).is_some_and(|x| {
+                        // A few extensions: comparing beats hashing each name.
+                        if exts.len() <= 8 {
+                            exts.iter().any(|e| e.as_slice() == x)
+                        } else {
+                            exts.contains(x)
+                        }
+                    })
             }
             Leaf::Size { lo, hi } => !e.is_dir() && e.size >= *lo && e.size <= *hi,
             Leaf::IsFile => !e.is_dir(),
@@ -1412,6 +1423,20 @@ mod tests {
         }
     }
 
+    /// `ext:` is driven by `.ext` plus the name's end in the arena: only
+    /// real extensions match, folded, and several still work.
+    #[test]
+    fn extensions() {
+        assert_eq!(matches("ext:pdf"), vec!["Report.PDF"]);
+        assert_eq!(matches("ext:PDF"), vec!["Report.PDF"]);
+        assert!(matches("ext:pd").is_empty());
+        assert!(matches("ext:df").is_empty());
+        let mut both = matches("ext:txt;exe");
+        both.sort();
+        assert_eq!(both, vec!["notepad.exe", "notes.txt"]);
+        assert_eq!(matches("note ext:exe"), vec!["notepad.exe"]);
+    }
+
     #[test]
     fn dates() {
         // sample(): modified = record number as FILETIME ticks (i.e. 1601).
@@ -1509,7 +1534,7 @@ mod tests {
             ]
         );
         assert_eq!(parse("ab *.longer").driver(), Some(b".longer".to_vec()));
-        assert_eq!(parse("ext:rs").driver(), Some(b".rs".to_vec()));
+        assert_eq!(parse("ext:rs").driver(), Some(b".rs\0".to_vec()));
         assert_eq!(parse("a|b").driver(), None);
         assert_eq!(
             parse("foo !bar *.r?s").highlight_terms(),
