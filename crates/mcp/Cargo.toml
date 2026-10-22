@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-rapidfind-core = { version = "0.1.0", path = "../core" }
+rapidfind-core = { path = "../core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 toml_edit = "0.25.15"

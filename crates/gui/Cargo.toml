@@ -13,8 +13,8 @@ env_logger = "0.11.11"
 log = "0.4.34"
 memchr = "2.8.3"
 parking_lot = "0.12.5"
-rapidfind-core = { version = "0.1.0", path = "../core" }
-rapidfind-mcp = { version = "0.1.0", path = "../mcp" }
+rapidfind-core = { path = "../core" }
+rapidfind-mcp = { path = "../mcp" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemServices", "Win32_Graphics_Gdi", "Win32_System_SystemServices", "Win32_UI_Shell_Common", "Win32_UI_Accessibility", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_UI_Controls_RichEdit"] }
