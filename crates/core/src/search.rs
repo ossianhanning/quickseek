@@ -129,6 +129,16 @@ fn concat(parts: Vec<Vec<u32>>) -> Vec<u32> {
     out
 }
 
+/// A required path term names another drive (`f:\...` on C:): nothing on
+/// this volume can match. (A folder index's root can be a folder,
+/// `g:\photos`: compare the drive.)
+fn other_drive(ix: &Index, q: &Query) -> bool {
+    let root = ix.fold_name(ix.root);
+    q.required_drives()
+        .iter()
+        .any(|&d| !(root.len() >= 2 && root[0] == d && root[1] == b':'))
+}
+
 fn matching(ix: &Index, q: &Query, prep: &Prep) -> Vec<u32> {
     if q.is_empty() {
         return filter_range(ix.entries.len(), |i| ix.is_visible(i));
@@ -339,6 +349,12 @@ impl ResultSet {
         let mut per_vol: Vec<Vec<u32>> = Vec::with_capacity(ixs.len());
         let mut runs = Vec::with_capacity(ixs.len());
         for ix in ixs {
+            // Before building matchers: path patterns hold a state per entry.
+            if other_drive(ix, q) {
+                per_vol.push(Vec::new());
+                runs.push(HashMap::new());
+                continue;
+            }
             let prep = build_prep(ix, q, extras.runs, need_runs);
             per_vol.push(matching(ix, q, &prep));
             runs.push(prep.runs);
@@ -763,6 +779,41 @@ mod tests {
             ]
         );
         assert_eq!(h.total, 6);
+    }
+
+    /// A path term starting with a drive skips other volumes; a folder
+    /// volume rooted below a drive still counts as that drive.
+    #[test]
+    fn drive_terms_pick_volumes() {
+        use crate::fold::FoldMode;
+        use crate::index::tests::scan_of;
+        let c = sample();
+        let photos = Index::from_scan_named(
+            'G',
+            r"G:\Photos",
+            &scan_of(&[(30, 5, "2024", true, 0), (31, 30, "beach.jpg", false, 9)]),
+            FoldMode::Lower,
+        );
+        let total = |q: &str| {
+            search(
+                &[&c, &photos],
+                &Query::parse(q).unwrap(),
+                &SearchOptions::default(),
+            )
+            .total
+        };
+        assert_eq!(total(r"d:\"), 0);
+        assert_eq!(total(r"g:\ *.jpg"), 1);
+        assert_eq!(total(r"g:\photos\2024\"), 1);
+        assert_eq!(total(r"c:\users\ *.pdf"), 1);
+        assert_eq!(total(r"C:\USERS\ *.PDF"), 1);
+        assert_eq!(
+            total(r"case:c:\users\ *.pdf"),
+            0,
+            "case-sensitive: C: is upper case"
+        );
+        assert_eq!(total(r"c:\*\*.txt"), 1);
+        assert_eq!(total(r"*.jpg | d:\"), 1, "inside an OR it's not required");
     }
 
     /// Name-sorted pages read off the stored name order (big result sets)

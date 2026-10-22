@@ -722,6 +722,32 @@ impl Query {
         matches!(&self.root, Node::All(v) if v.is_empty()) && self.dupe.is_none()
     }
 
+    /// Drive letters (folded) that a required path term pins matches to:
+    /// a path pattern or substring starting with `x:` can only match at the
+    /// start of a path (names can't hold `:`), so other volumes have none.
+    pub fn required_drives(&self) -> Vec<u8> {
+        let Node::All(items) = &self.root else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|n| {
+                let pat = match n {
+                    Node::Leaf(Leaf::Glob {
+                        pat, path: true, ..
+                    }) => pat.as_slice(),
+                    Node::Leaf(Leaf::Text {
+                        needle, path: true, ..
+                    }) => needle.as_slice(),
+                    _ => return None,
+                };
+                let p = pat.strip_prefix(b"*").unwrap_or(pat);
+                (p.len() >= 2 && p[0].is_ascii_alphabetic() && p[1] == b':')
+                    .then(|| p[0].to_ascii_lowercase())
+            })
+            .collect()
+    }
+
     /// True when the whole query is one case-insensitive name substring.
     pub fn is_single_name_substring(&self) -> bool {
         self.dupe.is_none()
