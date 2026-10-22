@@ -98,12 +98,40 @@ pub fn build_prep(ix: &Index, q: &Query, runs: Option<&RunHistory>, need_runs: b
     }
 }
 
+/// The entries `0..n` that `keep` accepts, in order. Fixed chunks that each
+/// fill a vector, then one copy: rayon's `filter().collect()` builds and
+/// joins a list of vectors, several times slower for millions of hits.
+pub fn filter_range(n: usize, keep: impl Fn(u32) -> bool + Sync) -> Vec<u32> {
+    const CHUNK: usize = 1 << 15;
+    let parts: Vec<Vec<u32>> = (0..n.div_ceil(CHUNK))
+        .into_par_iter()
+        .map(|c| {
+            (c * CHUNK..((c + 1) * CHUNK).min(n))
+                .map(|i| i as u32)
+                .filter(|&i| keep(i))
+                .collect()
+        })
+        .collect();
+    concat(parts)
+}
+
+/// The candidates `keep` accepts, in order. Rayon's adaptive splitting
+/// balances uneven checks (path patterns climb folders) best here.
+fn filter_list(ids: &[u32], keep: impl Fn(u32) -> bool + Sync) -> Vec<u32> {
+    ids.par_iter().copied().filter(|&i| keep(i)).collect()
+}
+
+fn concat(parts: Vec<Vec<u32>>) -> Vec<u32> {
+    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
+    for p in parts {
+        out.extend_from_slice(&p);
+    }
+    out
+}
+
 fn matching(ix: &Index, q: &Query, prep: &Prep) -> Vec<u32> {
     if q.is_empty() {
-        return (0..ix.entries.len() as u32)
-            .into_par_iter()
-            .filter(|&i| ix.is_visible(i))
-            .collect();
+        return filter_range(ix.entries.len(), |i| ix.is_visible(i));
     }
     let check = |i: u32| ix.is_visible(i) && q.root.eval(&mut Ctx::new(ix, i, prep));
     match q.driver() {
@@ -115,14 +143,8 @@ fn matching(ix: &Index, q: &Query, prep: &Prep) -> Vec<u32> {
             }
             c
         }
-        Some(needle) => arena_candidates(ix, &needle)
-            .into_par_iter()
-            .filter(|&i| check(i))
-            .collect(),
-        None => (0..ix.entries.len() as u32)
-            .into_par_iter()
-            .filter(|&i| check(i))
-            .collect(),
+        Some(needle) => filter_list(&arena_candidates(ix, &needle), check),
+        None => filter_range(ix.entries.len(), check),
     }
 }
 

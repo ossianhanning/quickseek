@@ -943,6 +943,10 @@ pub struct PathGlob {
     one: u64,
     stay: u64,
     dirs_loop: u64,
+    /// Positions from which only `*`s remain: a state holding one accepts
+    /// every continuation, so everything below such a folder matches
+    /// without feeding its names (`C:\*`, `*\node_modules\*`).
+    rest_any: u64,
     /// Epsilon closure of each position.
     eps: Vec<u64>,
     /// Per entry: `KNOWN | state` once computed (0 = not yet).
@@ -990,6 +994,9 @@ impl PathGlob {
                     _ => 0,
                 };
         }
+        let rest_any = (0..m)
+            .filter(|&p| toks[p..].iter().all(|t| *t == GTok::Star))
+            .fold(0u64, |a, p| a | 1 << p);
         let mut g = PathGlob {
             toks,
             case,
@@ -998,6 +1005,7 @@ impl PathGlob {
             one,
             stay,
             dirs_loop,
+            rest_any,
             eps,
             states: Vec::new(),
         };
@@ -1075,8 +1083,12 @@ impl PathGlob {
         if let Some(v) = cached(i) {
             return v & !KNOWN;
         }
-        // Climb to the nearest known ancestor, then compute back down.
-        let mut chain = Vec::with_capacity(16);
+        // Climb to the nearest known ancestor, then compute back down. The
+        // chain lives on the stack (paths deeper than 24 spill to the heap):
+        // this runs for every entry.
+        let mut near = [0u32; 24];
+        let mut far: Vec<u32> = Vec::new();
+        let mut len = 0usize;
         let mut cur = i;
         let mut s = loop {
             if cur == crate::index::NONE {
@@ -1085,14 +1097,29 @@ impl PathGlob {
             if let Some(v) = cached(cur) {
                 break Some(v & !KNOWN);
             }
-            chain.push(cur);
-            if chain.len() > 1024 {
+            if len < near.len() {
+                near[len] = cur;
+            } else {
+                if far.is_empty() {
+                    far.extend_from_slice(&near);
+                }
+                far.push(cur);
+            }
+            len += 1;
+            if len > 1024 {
                 return 0;
             }
             cur = ix.entries[cur as usize].parent;
         };
+        let chain = if far.is_empty() {
+            &near[..len]
+        } else {
+            &far[..]
+        };
         for &c in chain.iter().rev() {
             let next = match s {
+                // Anything below matches: keep the state, skip the names.
+                Some(st) if st & self.rest_any != 0 => st,
                 None => self.feed(self.start, self.name(ix, c)),
                 Some(st) => self.feed(self.step(st, '\\'), self.name(ix, c)),
             };
@@ -1336,6 +1363,11 @@ mod tests {
             r"case:users\*",
             r"*e*\*e*",
             r"c:\w*\n?tepad.*",
+            // Path substrings (`*text*`): everything below a match matches.
+            r"c:\",
+            r"users\",
+            r"\me\",
+            r"c:\users\ *.txt",
         ] {
             let parsed = parse(q);
             let nfa = Prep {
