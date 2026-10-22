@@ -822,7 +822,8 @@ impl Tree {
         // Longest matching root wins (folder indexes inside drives).
         let mut best: Option<(usize, usize)> = None;
         for (v, (_, _, ix)) in ixs.iter().enumerate() {
-            let root = ix.name(ix.root).trim_end_matches('\\');
+            let root_name = ix.name(ix.root);
+            let root = root_name.trim_end_matches('\\');
             let ok = path.len() >= root.len()
                 && path[..root.len()].eq_ignore_ascii_case(root)
                 && (path.len() == root.len() || path.as_bytes()[root.len()] == b'\\');

@@ -14,6 +14,7 @@
 //!   results into integer compares; they're bit-packed to the width the
 //!   volume needs (22 bits for 3M files).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -380,10 +381,77 @@ struct FoldPart {
 
 /// Folds `n` names in parallel chunks (a multiple of 64 records each, so
 /// fold samples line up).
+/// Marks a `names` record whose bytes after the fold offset are a case
+/// mask rather than the name (see [`push_original`]).
+const CASE_MASK: u32 = 1 << 31;
+
+/// Byte j of `CASE_XOR[m]` is 0x20 when bit j of mask byte `m` is set:
+/// XOR-ing 8 folded (lower-case ASCII) bytes with it upper-cases those.
+static CASE_XOR: [u64; 256] = {
+    let mut t = [0u64; 256];
+    let mut m = 0;
+    while m < 256 {
+        let mut j = 0;
+        while j < 8 {
+            if m >> j & 1 == 1 {
+                t[m] |= 0x20 << (8 * j);
+            }
+            j += 1;
+        }
+        m += 1;
+    }
+    t
+};
+
+/// Upper-cases the bytes of `out` (a folded ASCII name) that `mask` marks,
+/// eight at a time.
+#[inline]
+fn apply_case_mask(out: &mut [u8], mask: &[u8]) {
+    let (chunks, rest) = out.as_chunks_mut::<8>();
+    let full = chunks.len();
+    for (c, &m) in chunks.iter_mut().zip(mask) {
+        *c = (u64::from_le_bytes(*c) ^ CASE_XOR[m as usize]).to_le_bytes();
+    }
+    if let Some(&m) = mask.get(full) {
+        for (j, b) in rest.iter_mut().enumerate() {
+            if m >> j & 1 == 1 {
+                *b ^= 0x20;
+            }
+        }
+    }
+}
+
+/// Appends the original form of a name whose folded form is `folded` to a
+/// `names` buffer, behind a 4-byte slot for its fold offset. A name that
+/// differs from its folded form only in ASCII upper case (most of them:
+/// `Program Files`, `IMG_1234.JPG`) is kept as one bit per byte saying which
+/// are upper case, not as a second copy; the slot's top bit says so.
+fn push_original(names: &mut Vec<u8>, name: &str, folded: &[u8]) {
+    if name.is_ascii()
+        && folded.len() == name.len()
+        && name
+            .bytes()
+            .zip(folded)
+            .all(|(a, &b)| a.to_ascii_lowercase() == b)
+    {
+        names.extend_from_slice(&CASE_MASK.to_le_bytes());
+        let at = names.len();
+        names.resize(at + name.len().div_ceil(8), 0);
+        for (j, b) in name.bytes().enumerate() {
+            if b.is_ascii_uppercase() {
+                names[at + j / 8] |= 1 << (j % 8);
+            }
+        }
+    } else {
+        names.extend_from_slice(&[0; 4]);
+        names.extend_from_slice(name.as_bytes());
+    }
+}
+
 fn fold_parts<'a>(
     n: usize,
     mode: FoldMode,
-    name: impl Fn(usize) -> &'a str + Sync,
+    name: impl Fn(usize) -> Cow<'a, str> + Sync,
 ) -> Vec<FoldPart> {
     const CHUNK: usize = 1 << 15;
     (0..n.div_ceil(CHUNK))
@@ -402,13 +470,12 @@ fn fold_parts<'a>(
                 if i.is_multiple_of(64) {
                     p.samples.push(at as u32);
                 }
-                fold_into_mode(s, &mut p.fold, mode);
+                fold_into_mode(&s, &mut p.fold, mode);
                 if &p.fold[at..] == s.as_bytes() {
                     p.refs.push((at as u32, NONE));
                 } else {
                     p.refs.push((at as u32, p.names.len() as u32));
-                    p.names.extend_from_slice(&[0; 4]);
-                    p.names.extend_from_slice(s.as_bytes());
+                    push_original(&mut p.names, &s, &p.fold[at..]);
                 }
                 p.fold.push(0);
             }
@@ -697,11 +764,11 @@ impl Index {
         let parts = fold_parts(entries.len(), self.fold_mode, |i| {
             let e = &entries[i];
             // SAFETY: `raw` is UTF-8, cut only at char boundaries.
-            unsafe {
+            Cow::Borrowed(unsafe {
                 std::str::from_utf8_unchecked(
                     &raw[e.name_ref as usize..e.name_ref as usize + e.name_len()],
                 )
-            }
+            })
         });
         self.install_fold(parts);
     }
@@ -725,8 +792,9 @@ impl Index {
                 } else {
                     e.flags &= !F_NAME_IN_FOLD;
                     e.name_ref = no + nb;
-                    names[e.name_ref as usize..e.name_ref as usize + 4]
-                        .copy_from_slice(&(fo + fb).to_le_bytes());
+                    let slot = &mut names[e.name_ref as usize..e.name_ref as usize + 4];
+                    let mask = u32::from_le_bytes((&*slot).try_into().unwrap()) & CASE_MASK;
+                    slot.copy_from_slice(&((fo + fb) | mask).to_le_bytes());
                 }
                 i += 1;
             }
@@ -785,7 +853,7 @@ impl Index {
             e.name_ref as usize
         } else {
             let at = e.name_ref as usize;
-            u32::from_le_bytes(self.names[at..at + 4].try_into().unwrap()) as usize
+            (u32::from_le_bytes(self.names[at..at + 4].try_into().unwrap()) & !CASE_MASK) as usize
         }
     }
 
@@ -860,7 +928,7 @@ impl Index {
         order.par_sort_unstable_by(|&a, &b| {
             keys[a as usize]
                 .cmp(keys[b as usize])
-                .then_with(|| self.name(a).cmp(self.name(b)))
+                .then_with(|| self.with_name_bytes(a, |x| self.with_name_bytes(b, |y| x.cmp(y))))
                 .then(a.cmp(&b))
         });
         drop(keys);
@@ -1053,16 +1121,55 @@ impl Index {
         self.entries.par_iter().filter(|e| e.is_visible()).count()
     }
 
+    /// Calls `f` with the entry's name as it is on disk, without allocating:
+    /// a name kept as a case mask is put back together on the stack. For
+    /// hot loops (case-sensitive matching); [`Index::name`] otherwise.
     #[inline]
-    pub fn name(&self, i: u32) -> &str {
+    pub fn with_name_bytes<R>(&self, i: u32, f: impl FnOnce(&[u8]) -> R) -> R {
+        let e = &self.entries[i as usize];
+        let (at, len) = (e.name_ref as usize, e.name_len());
+        if e.flags & F_NAME_IN_FOLD != 0 {
+            return f(&self.fold[at..at + len]);
+        }
+        let slot = u32::from_le_bytes(self.names[at..at + 4].try_into().unwrap());
+        if slot & CASE_MASK == 0 {
+            return f(&self.names[at + 4..at + 4 + len]);
+        }
+        let fold = (slot & !CASE_MASK) as usize;
+        let src = &self.fold[fold..fold + len];
+        let mask = &self.names[at + 4..at + 4 + len.div_ceil(8)];
+        let mut buf = std::mem::MaybeUninit::<[u8; MAX_NAME]>::uninit();
+        // SAFETY: the first `len` (<= MAX_NAME) bytes are written before use.
+        let out = unsafe {
+            let p = buf.as_mut_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(src.as_ptr(), p, len);
+            std::slice::from_raw_parts_mut(p, len)
+        };
+        apply_case_mask(out, mask);
+        f(out)
+    }
+
+    /// The entry's name as it is on disk. Borrowed, except for names kept
+    /// as their folded form plus a case mask, which are put back together.
+    #[inline]
+    pub fn name(&self, i: u32) -> Cow<'_, str> {
         let e = &self.entries[i as usize];
         let (at, len) = (e.name_ref as usize, e.name_len());
         let bytes = if e.flags & F_NAME_IN_FOLD != 0 {
             &self.fold[at..at + len]
         } else {
+            let slot = u32::from_le_bytes(self.names[at..at + 4].try_into().unwrap());
+            if slot & CASE_MASK != 0 {
+                let fold = (slot & !CASE_MASK) as usize;
+                let mask = &self.names[at + 4..at + 4 + len.div_ceil(8)];
+                let mut s = self.fold[fold..fold + len].to_vec();
+                apply_case_mask(&mut s, mask);
+                // SAFETY: ASCII.
+                return Cow::Owned(unsafe { String::from_utf8_unchecked(s) });
+            }
             &self.names[at + 4..at + 4 + len]
         };
-        unsafe { std::str::from_utf8_unchecked(bytes) }
+        Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) })
     }
 
     #[inline]
@@ -1095,7 +1202,7 @@ impl Index {
             if k > 0 {
                 s.push('\\');
             }
-            s.push_str(self.name(c));
+            s.push_str(&self.name(c));
         }
         if chain.len() == 1 && !s.ends_with('\\') {
             s.push('\\');
@@ -1470,8 +1577,11 @@ impl Index {
         } else {
             Self::headroom(&mut self.names, name.len() + 4);
             let o = self.names.len() as u32;
-            self.names.extend_from_slice(&(at as u32).to_le_bytes());
-            self.names.extend_from_slice(name.as_bytes());
+            let folded = &self.fold[at..self.fold.len() - 1];
+            push_original(&mut self.names, name, folded);
+            let slot = &mut self.names[o as usize..o as usize + 4];
+            let mask = u32::from_le_bytes((&*slot).try_into().unwrap()) & CASE_MASK;
+            slot.copy_from_slice(&(at as u32 | mask).to_le_bytes());
             o
         };
         (name_ref, name.len(), in_fold)
@@ -1896,6 +2006,62 @@ pub(crate) mod tests {
         assert_eq!(size_of::<Entry>(), 24);
     }
 
+    /// Names that differ from their folded form only in ASCII case are kept
+    /// as a mask; every name still reads back exactly, after renames,
+    /// additions and arena rebuilds too.
+    #[test]
+    fn original_names_round_trip() {
+        let names = [
+            "Program Files",
+            "IMG_20260814_183022.JPG",
+            "ALLCAPS",
+            "lower.txt",
+            "Ångström.PNG",
+            "MiXeD-CaSe With Spaces 123",
+            "a",
+            "Z",
+            "ÄÖÜ",
+            "nineCharS",
+        ];
+        let items: Vec<(u32, u32, &str, bool, u64)> = names
+            .iter()
+            .enumerate()
+            .map(|(k, n)| (30 + k as u32, 5, *n, false, 1))
+            .collect();
+        let mut ix = Index::from_scan('C', &scan_of(&items));
+        let check = |ix: &Index, want: &[&str]| {
+            for n in want {
+                assert!(
+                    (0..ix.entries.len() as u32).any(|i| ix.is_live(i) && ix.name(i) == *n),
+                    "{n}"
+                );
+            }
+        };
+        check(&ix, &names);
+        let masked = (0..ix.entries.len() as u32)
+            .filter(|&i| matches!(ix.name(i), Cow::Owned(_)))
+            .count();
+        assert!(masked >= 5, "case-only names kept as masks: {masked}");
+        let i = by_name(&ix, "lower.txt");
+        ix.rename_entry(i, ix.root, "NowUpper.TXT");
+        let j = by_name(&ix, "ALLCAPS");
+        ix.rename_entry(j, ix.root, "Ünïcode Now");
+        ix.add_link(90, 0, ix.root, "Added LATER.Rs", 0x20, 1, 0, 0);
+        let after = [
+            "NowUpper.TXT",
+            "Ünïcode Now",
+            "Added LATER.Rs",
+            "Program Files",
+            "Ångström.PNG",
+        ];
+        check(&ix, &after);
+        ix.set_fold_mode(FoldMode::StripDiacritics);
+        check(&ix, &after);
+        ix.set_fold_mode(FoldMode::Lower);
+        check(&ix, &after);
+        assert_eq!(ix.path(by_name(&ix, "NowUpper.TXT")), r"C:\NowUpper.TXT");
+    }
+
     #[test]
     fn builds_paths_and_sizes() {
         let ix = sample();
@@ -2144,7 +2310,7 @@ pub(crate) mod tests {
 
     fn fold_into_vec(ix: &Index, i: u32) -> Vec<u8> {
         let mut v = Vec::new();
-        fold_into_mode(ix.name(i), &mut v, ix.fold_mode);
+        fold_into_mode(&ix.name(i), &mut v, ix.fold_mode);
         v
     }
 

@@ -172,7 +172,7 @@ impl Cmp<'_> {
         }
         ia.fold_name(a.idx)
             .cmp(ib.fold_name(b.idx))
-            .then_with(|| ia.name(a.idx).cmp(ib.name(b.idx)))
+            .then_with(|| ia.with_name_bytes(a.idx, |x| ib.with_name_bytes(b.idx, |y| x.cmp(y))))
             .then(a.vol.cmp(&b.vol))
             .then(a.idx.cmp(&b.idx))
     }

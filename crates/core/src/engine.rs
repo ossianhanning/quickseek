@@ -1017,7 +1017,7 @@ impl Engine {
             for (v, ix) in ixs.iter().enumerate() {
                 let root = ix.name(ix.root);
                 let matches = path.len() >= root.len()
-                    && path[..root.len()].eq_ignore_ascii_case(root)
+                    && path[..root.len()].eq_ignore_ascii_case(&root)
                     && (path.len() == root.len() || path.as_bytes()[root.len()] == b'\\');
                 if matches && best.is_none_or(|(_, l)| root.len() > l) {
                     best = Some((v, root.len()));

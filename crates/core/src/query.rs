@@ -829,12 +829,14 @@ impl<'a> Ctx<'a> {
         }
         self.raw_path.as_deref().unwrap()
     }
-    fn hay(&mut self, path: bool, case: bool) -> &[u8] {
+    /// Calls `f` with what a term matches against: the name or the path,
+    /// folded or as it is.
+    fn with_hay<R>(&mut self, path: bool, case: bool, f: impl FnOnce(&[u8]) -> R) -> R {
         match (path, case) {
-            (false, false) => self.ix.fold_name(self.i),
-            (false, true) => self.ix.name(self.i).as_bytes(),
-            (true, false) => self.fold_path(),
-            (true, true) => self.raw_path(),
+            (false, false) => f(self.ix.fold_name(self.i)),
+            (false, true) => self.ix.with_name_bytes(self.i, f),
+            (true, false) => f(self.fold_path()),
+            (true, true) => f(self.raw_path()),
         }
     }
 }
@@ -1066,11 +1068,12 @@ impl PathGlob {
         s
     }
 
-    fn name<'a>(&self, ix: &'a Index, i: u32) -> &'a [u8] {
+    /// Feeds entry `i`'s name (as it is, or folded) to state `s`.
+    fn feed_name(&self, s: u64, ix: &Index, i: u32) -> u64 {
         if self.case {
-            ix.name(i).as_bytes()
+            ix.with_name_bytes(i, |b| self.feed(s, b))
         } else {
-            ix.fold_name(i)
+            self.feed(s, ix.fold_name(i))
         }
     }
 
@@ -1123,8 +1126,8 @@ impl PathGlob {
             let next = match s {
                 // Anything below matches: keep the state, skip the names.
                 Some(st) if st & self.rest_any != 0 => st,
-                None => self.feed(self.start, self.name(ix, c)),
-                Some(st) => self.feed(self.step(st, '\\'), self.name(ix, c)),
+                None => self.feed_name(self.start, ix, c),
+                Some(st) => self.feed_name(self.step(st, '\\'), ix, c),
             };
             // Only folders' states are reused (by their children).
             if ix.entries[c as usize].is_dir()
@@ -1168,14 +1171,13 @@ impl Leaf {
                 case,
                 path,
                 whole_word,
-            } => {
-                let hay = c.hay(*path, *case);
+            } => c.with_hay(*path, *case, |hay| {
                 if *whole_word {
                     contains_word(hay, needle)
                 } else {
                     memchr::memmem::find(hay, needle).is_some()
                 }
-            }
+            }),
             Leaf::Glob {
                 pat,
                 case,
@@ -1183,15 +1185,15 @@ impl Leaf {
                 slot,
             } => match c.prep.path_globs.get(*slot) {
                 Some(Some(g)) => g.matches(c.ix, c.i),
-                _ => glob_match(pat, c.hay(true, *case)),
+                _ => c.with_hay(true, *case, |h| glob_match(pat, h)),
             },
             Leaf::Glob {
                 pat,
                 case,
                 path: false,
                 ..
-            } => glob_match(pat, c.hay(false, *case)),
-            Leaf::Regex { re, path } => re.is_match(c.hay(*path, true)),
+            } => c.with_hay(false, *case, |h| glob_match(pat, h)),
+            Leaf::Regex { re, path } => c.with_hay(*path, true, |h| re.is_match(h)),
             Leaf::Ext(exts) => {
                 !e.is_dir()
                     && extension(c.ix.fold_name(c.i)).is_some_and(|x| {
