@@ -573,6 +573,10 @@ impl Index {
                 self.link_late(i as u32);
             }
         }
+        // `clear` keeps the capacity: after a compaction that had many late
+        // entries, that's tens of MB of empty table for as long as it runs.
+        self.late_links.shrink_to_fit();
+        self.more_links.shrink_to_fit();
         if let Some(&r) = records.iter().max() {
             self.rec_count = self.rec_count.max(r + 1);
         }
