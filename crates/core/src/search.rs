@@ -233,6 +233,42 @@ impl Cmp<'_> {
     }
 }
 
+/// Whether reading a name-sorted page off the stored name order beats
+/// gathering and selecting the matches' ranks. Walking costs a bit test per
+/// position until `k` hits turn up, about `k * n / m` of them for `m`
+/// matches spread evenly; gathering costs a rank lookup per match. All of
+/// them (`k` = None) is a full walk against a sort of `m` keys.
+fn walk_pays(ix: &Index, m: usize, k: Option<usize>) -> bool {
+    let n = ix.entries.len();
+    if ix.ranks.name_order.is_empty() || ix.ranks_missing() || m < 4096 {
+        return false;
+    }
+    match k {
+        Some(k) => (m as u128) * (m as u128) >= (k as u128) * (n as u128) / 4,
+        None => m * 8 >= n,
+    }
+}
+
+/// One bit per entry, set for `ids` (in parallel for big sets).
+fn bitset(n: usize, ids: &[u32]) -> Vec<u64> {
+    let words = n.div_ceil(64);
+    if ids.len() < 1 << 16 {
+        let mut b = vec![0u64; words];
+        for &i in ids {
+            b[i as usize / 64] |= 1 << (i % 64);
+        }
+        return b;
+    }
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    let b: Vec<AtomicU64> = (0..words).map(|_| AtomicU64::new(0)).collect();
+    ids.par_chunks(1 << 14).for_each(|c| {
+        for &i in c {
+            b[i as usize / 64].fetch_or(1 << (i % 64), Relaxed);
+        }
+    });
+    b.into_iter().map(AtomicU64::into_inner).collect()
+}
+
 fn merge(mut lists: Vec<Vec<Hit>>, c: &Cmp) -> Vec<Hit> {
     while lists.len() > 1 {
         let b = lists.pop().unwrap();
@@ -336,6 +372,9 @@ impl ResultSet {
             SortKey::Created | SortKey::RunCount => None,
         };
         let desc = self.opts.descending;
+        if self.opts.sort == SortKey::Name && walk_pays(ix, ids.len(), k) {
+            return self.walk_name_order(ixs, v, k);
+        }
         if let Some(rk) = rank_key {
             let keys: Option<Vec<u64>> = ids
                 .par_iter()
@@ -418,6 +457,58 @@ impl ResultSet {
         }
         h.par_sort_unstable_by(|a, b| c.cmp(a, b));
         h
+    }
+
+    /// Name-sorted hits of volume `v` (the first `k`, or all) read off the
+    /// stored name order instead of sorted: the matches go into a bitset,
+    /// then the order is walked from the start (or the end, descending)
+    /// until `k` are found. Entries renamed or added since the order was
+    /// computed are sorted on their own and merged in.
+    fn walk_name_order(&self, ixs: &[&Index], v: usize, k: Option<usize>) -> Vec<Hit> {
+        let ix = ixs[v];
+        let vol = v as u16;
+        let ids = &self.per_vol[v];
+        let bits = bitset(ix.entries.len(), ids);
+        let has = |i: u32| bits[i as usize / 64] & (1u64 << (i % 64)) != 0;
+        let want = k.unwrap_or(ids.len());
+        let order = &ix.ranks.name_order;
+        // Valid at position p: still matched, and its rank is still p.
+        let at = |p: usize| {
+            let i = order.get(p);
+            (i != NONE && has(i) && ix.ranks.get(RankKey::Name, i) == p as u32).then_some(i)
+        };
+        let walked: Vec<Hit> = if self.opts.descending {
+            (0..order.len())
+                .rev()
+                .filter_map(at)
+                .take(want)
+                .map(|idx| Hit { vol, idx })
+                .collect()
+        } else {
+            (0..order.len())
+                .filter_map(at)
+                .take(want)
+                .map(|idx| Hit { vol, idx })
+                .collect()
+        };
+        let mut late: Vec<Hit> = ix
+            .ranks
+            .unranked_names
+            .iter()
+            .filter(|&&i| {
+                (i as usize) < ix.entries.len() && has(i) && ix.ranks.get(RankKey::Name, i) == NONE
+            })
+            .map(|&idx| Hit { vol, idx })
+            .collect();
+        if late.is_empty() {
+            return walked;
+        }
+        let c = self.cmp(ixs);
+        late.sort_unstable_by(|a, b| c.cmp(a, b));
+        late.dedup();
+        let mut m = merge(vec![walked, late], &c);
+        m.truncate(want);
+        m
     }
 
     /// Top `k` per volume, then merged.
@@ -652,6 +743,105 @@ mod tests {
             ]
         );
         assert_eq!(h.total, 6);
+    }
+
+    /// Name-sorted pages read off the stored name order (big result sets)
+    /// equal a full sort, also after renames, moves, additions and
+    /// deletions the order doesn't know about yet.
+    #[test]
+    fn name_order_walk_matches_a_sort_with_live_changes() {
+        use crate::index::tests::scan_of;
+        let words = [
+            "alpha",
+            "Beta",
+            "gamma",
+            "Delta",
+            "eps",
+            "zeta",
+            "Ångström",
+            "a",
+            "b",
+        ];
+        let exts = ["txt", "log", "dll", "TXT", "rs"];
+        let mut items: Vec<(u32, u32, String, bool, u64)> = vec![
+            (30, 5, "dir one".into(), true, 0),
+            (31, 5, "Dir two".into(), true, 0),
+        ];
+        let mut r = 0x2545F4914F6CDD1Du64;
+        for rec in 40..30_040u32 {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            let name = format!(
+                "{}{}.{}",
+                words[(r % 9) as usize],
+                r % 997,
+                exts[(r >> 20) as usize % 5]
+            );
+            items.push((rec, 30 + (rec % 2), name, false, r % 5000));
+        }
+        let refs: Vec<(u32, u32, &str, bool, u64)> = items
+            .iter()
+            .map(|i| (i.0, i.1, i.2.as_str(), i.3, i.4))
+            .collect();
+        let mk = || {
+            let mut ix = Index::from_scan('C', &scan_of(&refs));
+            assert!(!ix.ranks_missing());
+            let dir2 = by_name(&ix, "Dir two");
+            for (k, i) in (100..30_000u32).step_by(97).enumerate() {
+                let to = if k % 3 == 0 {
+                    dir2
+                } else {
+                    ix.entries[i as usize].parent
+                };
+                ix.rename_entry(i, to, &format!("{}renamed{k}.txt", ["A", "z", "m"][k % 3]));
+            }
+            for k in 0..400u32 {
+                ix.add_link(
+                    40_000 + k,
+                    0,
+                    dir2,
+                    &format!("new{}.log", k * 7 % 400),
+                    0x20,
+                    k as u64,
+                    7,
+                    0,
+                );
+            }
+            for i in (50..30_000u32).step_by(149) {
+                ix.remove_entry(i);
+            }
+            ix
+        };
+        let stale = mk();
+        let mut fresh = mk();
+        fresh.compute_ranks();
+        assert!(stale.ranks.dirty > 0 && !stale.ranks.unranked_names.is_empty());
+        for text in ["", "a", "*.txt", "ext:log", "renamed"] {
+            let q = Query::parse(text).unwrap();
+            for desc in [false, true] {
+                for limit in [100, 0, 5000] {
+                    let o = SearchOptions {
+                        sort: SortKey::Name,
+                        descending: desc,
+                        limit,
+                    };
+                    let a = search(&[&fresh], &q, &o);
+                    let b = search(&[&stale], &q, &o);
+                    assert!(
+                        a.total >= 4096 || text == "renamed" || text == "ext:log",
+                        "{text}: walk not used ({})",
+                        a.total
+                    );
+                    assert_eq!(a.total, b.total, "{text}");
+                    assert_eq!(
+                        names(&[&fresh], &a.items),
+                        names(&[&stale], &b.items),
+                        "{text} desc={desc} limit={limit}"
+                    );
+                }
+            }
+        }
     }
 
     /// Ranked and fallback comparisons must agree, or partially-stale ranks

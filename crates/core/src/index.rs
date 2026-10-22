@@ -236,6 +236,14 @@ impl Packed {
 #[derive(Default)]
 pub struct Ranks {
     pub by: [Packed; 4],
+    /// The name order itself: position → entry (the inverse of the name
+    /// rank, as of the last computation), so a name-sorted page can be read
+    /// off in order instead of sorting the matches. An entry whose name rank
+    /// is no longer its position here (`NONE`) has changed since.
+    pub name_order: Packed,
+    /// Entries without a valid name rank: renamed, moved or added since the
+    /// ranks were computed (may hold deleted entries; check before use).
+    pub unranked_names: Vec<u32>,
     /// A folder was renamed/moved: path ranks of its subtree are unknown.
     pub path_stale: bool,
     /// Ranks invalidated since the last computation.
@@ -857,8 +865,14 @@ impl Index {
             },
         );
         drop(live);
+        let mut name_order = Packed::new(order.len(), n);
+        for (r, &i) in order.iter().enumerate() {
+            name_order.set(r, i);
+        }
         Ranks {
             by: [to_rank(&order), size, modified, path],
+            name_order,
+            unranked_names: Vec::new(),
             path_stale: false,
             dirty: 0,
         }
@@ -924,6 +938,9 @@ impl Index {
             if r.get(i as usize) != NONE {
                 r.set(i as usize, NONE);
                 self.ranks.dirty += 1;
+                if k == RankKey::Name {
+                    self.ranks.unranked_names.push(i);
+                }
             }
         }
     }
@@ -1445,6 +1462,9 @@ impl Index {
                 r.push_none();
             }
         }
+        if self.ranks.by[RankKey::Name as usize].len() == idx as usize + 1 {
+            self.ranks.unranked_names.push(idx);
+        }
         self.ranks.dirty += 1;
         self.rec_count = self.rec_count.max(record + 1);
         // Still in record order (always so for folder indexes, whose records
@@ -1718,7 +1738,13 @@ impl Index {
     }
 
     fn rank_bytes(&self) -> usize {
-        self.ranks.by.iter().map(Packed::capacity_bytes).sum()
+        self.ranks
+            .by
+            .iter()
+            .map(Packed::capacity_bytes)
+            .sum::<usize>()
+            + self.ranks.name_order.capacity_bytes()
+            + self.ranks.unranked_names.capacity() * 4
     }
 
     pub fn memory_bytes(&self) -> usize {
