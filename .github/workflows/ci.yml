@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        # The GUI's end-to-end test (tests/ui.rs) needs an interactive desktop
+        # it can click in: run it locally (see docs/development.md).
+        run: |
+          cargo test --workspace --exclude rapidfind-gui --locked
+          cargo test -p rapidfind-gui --bins --test demo --locked
+      - name: Third-party notices are current
+        run: python tools/third-party.py --check

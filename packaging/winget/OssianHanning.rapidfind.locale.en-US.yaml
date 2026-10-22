@@ -3,25 +3,34 @@ PackageIdentifier: OssianHanning.rapidfind
 PackageVersion: {VERSION}
 PackageLocale: en-US
 Publisher: Ossian Hanning
+PublisherUrl: {REPO}
+PublisherSupportUrl: {REPO}/issues
+Author: Ossian Hanning
 PackageName: rapidfind
 PackageUrl: {REPO}
 License: MIT OR Apache-2.0
-ShortDescription: Instant file search, folder sizes and an MCP server for AI assistants, for all your drives.
+LicenseUrl: {REPO}/blob/main/LICENSE-MIT
+Copyright: Copyright (c) 2026 Ossian Hanning
+ShortDescription: Instant file search for all your drives, folder sizes with history, and an MCP server for AI assistants.
 Description: |-
   rapidfind indexes every file on your NTFS and ReFS drives from the master file table and keeps the index live
-  from the USN journal, so searching millions of files by name, path wildcards, size or date is instant
-  (like Everything). It also shows a folder size tree of what takes space, indexes network shares and folders,
-  searches file contents, and ships rapidfind-mcp, an MCP server that lets AI assistants find files and free
-  disk space. Installs a background service (so searches run unelevated), the GUI, the CLI and the MCP server.
-  Detected AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf) are connected for the installing user;
-  pass --custom "--no-mcp" to skip that.
+  from the USN journal, so searching millions of files by name, path wildcards, size or date is instant.
+  It shows a live folder size tree, keeps daily snapshots of folder sizes to show what grew or shrank,
+  indexes network shares and other folders, searches file contents, and ships rapidfind-mcp, an MCP server
+  that lets AI assistants find files and free disk space. Installs a background service (so searches run
+  unelevated), the window, the CLI and the MCP server. Detected AI assistants (Claude Code, Claude Desktop,
+  Codex, Cursor, VS Code, Windsurf, Antigravity) are connected for the installing user; pass
+  --custom "--no-mcp" to skip that. Everything stays on the PC: no telemetry, no network access.
 Moniker: rapidfind
 Tags:
   - search
   - file-search
-  - everything
   - disk-usage
+  - disk-space
+  - folder-size
   - ntfs
   - mcp
+  - ai
+ReleaseNotesUrl: {REPO}/releases/tag/v{VERSION}
 ManifestType: defaultLocale
 ManifestVersion: 1.10.0

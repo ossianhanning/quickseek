@@ -1,2 +1,4 @@
 target/
 *.db
+__pycache__/
+*.pyc

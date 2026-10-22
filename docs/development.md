@@ -65,17 +65,11 @@ The README images come from it, never from a real machine:
 see [benchmarks.md](benchmarks.md).
 
 ## Releases
-`tools\build-release.ps1 -Repo https://github.com/<owner>/rapidfind` builds
-everything into `target\dist`:
-- the installer, with the release binaries embedded (zstd-compressed);
-- the `.mcpb` extension;
-- winget manifests in `winget\manifests\o\OssianHanning\rapidfind\<version>`,
-  carrying the installer's SHA-256 and checked with `winget validate`.
 
-To publish, upload the installer to the GitHub release `v<version>`. Then
-open a pull request with the manifest folder to
-[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) (or run
-`wingetcreate submit` on it). The manifest templates are in `packaging\winget`.
+Tag a version and GitHub Actions builds, signs and drafts the release; see
+[releasing.md](releasing.md), which also lists what's needed before the first public release
+(winget, code signing). `tools\build-release.ps1` packages a release locally. The winget manifest
+templates are in `packaging\winget`.
 
 ## Third-party notices
 

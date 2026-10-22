@@ -54,8 +54,12 @@ foreach ($m in Get-ChildItem $out -Filter *.yaml) {
     if ($line.Matches[0].Groups[2].Value.Trim() -ne $version) { throw "$($m.Name): $($line.Line.Trim()) doesn't match $version" }
   }
 }
-winget validate --manifest $out
-if ($LASTEXITCODE) { throw "winget validate failed" }
+if (Get-Command winget -ErrorAction SilentlyContinue) {
+  winget validate --manifest $out
+  if ($LASTEXITCODE) { throw "winget validate failed" }
+} else {
+  Write-Output "note: winget isn't installed here, so the manifests weren't validated (winget validate --manifest $out)"
+}
 Write-Output ""
 Write-Output "installer: $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB, sha256 $sha)"
 Write-Output "manifests: $out"

@@ -1,0 +1,117 @@
+# Builds a release from a version tag (v0.1.0 for version 0.1.0 in
+# Cargo.toml) and attaches it to a draft GitHub release for review:
+# rapidfind-setup-<version>-x64.exe, the Claude Desktop extension and the
+# winget manifests (as a workflow artifact, with the installer's SHA-256).
+#
+# Code signing (SignPath Foundation, see CODE_SIGNING.md) runs only when the
+# SIGNPATH_API_TOKEN secret and the SIGNPATH_ORGANIZATION_ID variable are
+# set; until then the release is unsigned. Release builds come only from
+# this workflow.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The tag matches the version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ("${{ github.ref_name }}" -ne "v$version") { throw "tag ${{ github.ref_name }} doesn't match version $version in Cargo.toml" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+      - name: Test
+        run: cargo test --workspace --exclude rapidfind-gui --locked
+      - name: Build the programs
+        run: cargo build --release --locked
+      - name: Third-party notices are current
+        run: python tools/third-party.py --check
+
+      # Sign the programs before the installer embeds them.
+      - name: Upload the programs for signing
+        if: env.SIGNPATH == 'true'
+        id: programs
+        uses: actions/upload-artifact@v4
+        with:
+          name: programs-unsigned
+          path: |
+            target/release/rapidfind.exe
+            target/release/rapidfind-gui.exe
+            target/release/rapidfind-mcp.exe
+      - name: Sign the programs
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: rapidfind
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: programs
+          github-artifact-id: ${{ steps.programs.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/signed-programs
+      - name: Use the signed programs
+        if: env.SIGNPATH == 'true'
+        shell: pwsh
+        run: Copy-Item target/signed-programs/*.exe target/release/ -Force
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $env:RAPIDFIND_SETUP_PAYLOAD = (Resolve-Path target/release).Path
+          cargo build --release --locked -p rapidfind-setup
+          if ($LASTEXITCODE) { throw "building the installer failed" }
+
+      - name: Upload the installer for signing
+        if: env.SIGNPATH == 'true'
+        id: installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-unsigned
+          path: target/release/rapidfind-setup.exe
+      - name: Sign the installer
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: rapidfind
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/signed-installer
+      - name: Use the signed installer
+        if: env.SIGNPATH == 'true'
+        shell: pwsh
+        run: Copy-Item target/signed-installer/rapidfind-setup.exe target/release/ -Force
+
+      # Copies the installer to target/dist, packs the .mcpb and fills in the
+      # winget manifests with the final (signed) installer's SHA-256.
+      - name: Package
+        shell: pwsh
+        run: ./tools/build-release.ps1 -SkipBuild -Repo "https://github.com/${{ github.repository }}"
+      - name: Keep the winget manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests-${{ env.VERSION }}
+          path: target/dist/winget
+      - name: Draft the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            target/dist/rapidfind-setup-${{ env.VERSION }}-x64.exe
+            target/dist/rapidfind-${{ env.VERSION }}.mcpb

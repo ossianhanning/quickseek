@@ -1,0 +1,53 @@
+# Opens the pull request that adds a release to winget
+# (microsoft/winget-pkgs), once the release is published: winget downloads
+# the installer from its public URL, so the repository must be public.
+#
+# Off until you set the repository variable WINGET_SUBMIT to true and the
+# secret WINGET_TOKEN (a classic GitHub token with public_repo, for the fork
+# wingetcreate pushes to). The "winget" environment can require an approval.
+# Run it by hand for an existing release from the Actions tab.
+name: winget
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    if: vars.WINGET_SUBMIT == 'true'
+    runs-on: windows-latest
+    environment: winget
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifests for the published installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          $version = $env:TAG.TrimStart("v")
+          $name = "rapidfind-setup-$version-x64.exe"
+          gh release download $env:TAG --pattern $name --dir dl
+          $sha = (Get-FileHash "dl/$name" -Algorithm SHA256).Hash
+          $repo = "https://github.com/${{ github.repository }}"
+          $url = "$repo/releases/download/$env:TAG/$name"
+          $out = "manifests/o/OssianHanning/rapidfind/$version"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          foreach ($t in Get-ChildItem packaging/winget/*.yaml) {
+            $text = [IO.File]::ReadAllText($t.FullName).Replace("{VERSION}", $version).Replace("{URL}", $url).Replace("{SHA256}", $sha).Replace("{REPO}", $repo)
+            [IO.File]::WriteAllText((Join-Path $out $t.Name), $text)
+          }
+          "MANIFESTS=$out" >> $env:GITHUB_ENV
+      - name: Submit to winget-pkgs
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          ./wingetcreate.exe submit --token "${{ secrets.WINGET_TOKEN }}" $env:MANIFESTS

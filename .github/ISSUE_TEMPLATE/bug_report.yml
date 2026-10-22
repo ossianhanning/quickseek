@@ -1,0 +1,41 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part
+      options:
+        - Search window (rapidfind-gui)
+        - Folder sizes or growth
+        - Command line (rapidfind)
+        - Service / index
+        - MCP server / AI assistant
+        - Installer / winget
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: rapidfind status
+      description: The output of `rapidfind status` (versions, drives and index state). Remove anything you'd rather not share.
+      render: text
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: For service problems, the end of `%ProgramData%\rapidfind\service.log` (open it as administrator). It holds paths, so check it first.
+      render: text

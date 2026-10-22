@@ -133,4 +133,4 @@ settings in `%ProgramData%\rapidfind` stay, for a later reinstall; `rapidfind-se
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Third-party licenses are in [THIRD-PARTY.md](THIRD-PARTY.md).
+Third-party licenses are in [THIRD-PARTY.md](THIRD-PARTY.md). Releases are built and signed only by CI ([code signing policy](CODE_SIGNING.md)).
