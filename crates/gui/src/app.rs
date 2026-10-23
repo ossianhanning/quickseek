@@ -3365,7 +3365,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             hbrBackground: (COLOR_WINDOW + 1) as usize as HBRUSH,
             lpszMenuName: null(),
             lpszClassName: class.as_ptr(),
-            hIconSm: icon,
+            hIconSm: crate::app_icon_small(),
         };
         RegisterClassExW(&wc);
 
@@ -3393,7 +3393,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             disp: RefCell::new(Vec::with_capacity(512)),
             last_status: RefCell::new(None),
             test_mode,
-            tray_icon: Cell::new(icon),
+            tray_icon: Cell::new(crate::app_icon_small()),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
             tree_btn: Cell::new(null_mut()),
             tree_list: Cell::new(null_mut()),

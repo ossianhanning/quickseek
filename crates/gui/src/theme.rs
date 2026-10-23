@@ -77,6 +77,8 @@ pub struct Palette {
     pub edge: COLORREF,
     /// Menu bar items under the mouse, the selected tab.
     pub hot: COLORREF,
+    /// Quickseek's teal: progress, the compared-with marker, folder bars.
+    pub accent: COLORREF,
     /// Chart text and lines.
     pub ink: COLORREF,
     pub grid: COLORREF,
@@ -121,6 +123,7 @@ impl Palette {
             input: sys(COLOR_WINDOW),
             edge: sys(COLOR_3DSHADOW),
             hot: sys(COLOR_HIGHLIGHT),
+            accent: 0x0056_6E0F,
             ink: 0x0035_3535,
             grid: 0x00D9_E0E1,
             grow: 0x004A_4BE2,
@@ -139,9 +142,9 @@ impl Palette {
             on_strong: 0x00FF_FFFF,
             on_weak: 0x0035_3535,
             track: 0x00EC_E8E4,
-            bar_dir: 0x00D7_7800,
-            bar_file: 0x00F0_B060,
-            bar_root: 0x0098_8A00,
+            bar_dir: 0x0056_6E0F,
+            bar_file: 0x00AE_C07F,
+            bar_root: 0x007A_6B5B,
             ghost: 0x0080_8788,
             highlight: 0x0080_E6FF,
         }
@@ -159,6 +162,7 @@ impl Palette {
             input: 0x001F_1F1F,
             edge: 0x0050_5050,
             hot: 0x0045_4545,
+            accent: 0x00A5_CA5D,
             ink: 0x00E3_E3E3,
             grid: 0x0042_3F3B,
             grow: 0x006E_6EFF,
@@ -177,9 +181,9 @@ impl Palette {
             on_strong: 0x00FF_FFFF,
             on_weak: 0x00EA_EAEA,
             track: 0x0042_3D3A,
-            bar_dir: 0x00F0_963A,
-            bar_file: 0x008F_5F2C,
-            bar_root: 0x00C2_B32A,
+            bar_dir: 0x00A5_CA5D,
+            bar_file: 0x0066_7D2E,
+            bar_root: 0x00AA_9A8A,
             ghost: 0x00A0_A0A0,
             highlight: 0x0000_5C80,
         }
@@ -566,7 +570,7 @@ fn apply_control(h: HWND) {
             if d {
                 no_theme(h);
                 send(h, PBM_SETBKCOLOR, 0, pal.input as isize);
-                send(h, PBM_SETBARCOLOR, 0, pal.shrink as isize);
+                send(h, PBM_SETBARCOLOR, 0, pal.accent as isize);
             } else {
                 send(h, PBM_SETBKCOLOR, 0, CLR_DEFAULT as isize);
                 send(h, PBM_SETBARCOLOR, 0, CLR_DEFAULT as isize);
@@ -1196,6 +1200,7 @@ mod tests {
             ("ink on window", d.ink, d.window),
             ("grow on window", d.grow, d.window),
             ("shrink on window", d.shrink, d.window),
+            ("accent on window", d.accent, d.window),
             ("text on highlight", d.text, d.highlight),
             ("on_weak on neutral", d.on_weak, d.neutral),
             ("white on grow_fill", d.on_strong, d.grow_fill),

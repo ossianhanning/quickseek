@@ -454,7 +454,7 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
         fill(p.hdc, &track, pal.track);
         let span = (track.right - track.left) as f64;
         let w = (span * n.fraction()).round() as i32;
-        // Folders in a stronger blue than files; roots (share of the disk) in teal.
+        // Folders in the accent teal, files lighter; drives (share of the disk) in slate.
         let c: COLORREF = if n.row.capacity > 0 {
             pal.bar_root
         } else if n.row.is_dir {

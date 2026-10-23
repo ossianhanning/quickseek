@@ -587,7 +587,7 @@ pub fn draw_strip(
                 pr.top,
                 pr.right - xs[b],
                 pr.bottom - pr.top,
-                accent(),
+                theme::p().accent,
                 28,
             );
         }
@@ -656,7 +656,7 @@ pub fn draw_strip(
                         Y: pr.bottom,
                     },
                 ],
-                accent(),
+                theme::p().accent,
                 2.0,
                 false,
             );
@@ -778,7 +778,7 @@ pub fn draw_strip(
             &label,
             &RECT { left: x, ..bottom },
             DT_LEFT | DT_TOP,
-            accent(),
+            theme::p().accent,
         );
     }
     if let Some(hx) = hover_x

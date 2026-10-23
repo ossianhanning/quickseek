@@ -686,6 +686,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "embed-resource",
  "env_logger",
  "log",
  "quickseek-core",
@@ -718,6 +719,7 @@ name = "quickseek-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "embed-resource",
  "env_logger",
  "log",
  "memchr",
@@ -737,6 +739,7 @@ name = "quickseek-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "embed-resource",
  "quickseek-core",
  "serde",
  "serde_json",

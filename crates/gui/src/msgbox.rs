@@ -78,7 +78,7 @@ pub fn show(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
             hbrBackground: (COLOR_BTNFACE + 1) as usize as HBRUSH,
             lpszClassName: class.as_ptr(),
-            hIconSm: crate::app_icon(),
+            hIconSm: crate::app_icon_small(),
             ..std::mem::zeroed()
         };
         RegisterClassExW(&wc);

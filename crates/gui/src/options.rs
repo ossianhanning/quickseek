@@ -713,7 +713,7 @@ pub fn open(app: &App) {
             hbrBackground: (COLOR_BTNFACE + 1) as usize as HBRUSH,
             lpszMenuName: null(),
             lpszClassName: class.as_ptr(),
-            hIconSm: crate::app_icon(),
+            hIconSm: crate::app_icon_small(),
         };
         RegisterClassExW(&wc);
         let owner = app.hwnd.get();

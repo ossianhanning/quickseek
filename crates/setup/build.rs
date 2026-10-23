@@ -4,6 +4,8 @@
 // when run. Also embeds a manifest asking for administrator rights (the
 // service and Program Files need them) and Common Controls v6.
 
+include!("../../assets/resource.rs");
+
 const FILES: [&str; 3] = ["quickseek.exe", "quickseek-gui.exe", "quickseek-mcp.exe"];
 
 fn main() {
@@ -24,55 +26,10 @@ fn main() {
         };
         std::fs::write(out.join(format!("{f}.zst")), data).unwrap();
     }
-    version_resource(&out);
+    embed_icon_and_version("Quickseek Setup", "quickseek-setup.exe");
     println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
     println!("cargo:rustc-link-arg-bins=/MANIFESTUAC:level='requireAdministrator'");
     println!(
         "cargo:rustc-link-arg-bins=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
     );
-}
-
-/// A VERSIONINFO resource, so the installer's file properties (and anything
-/// that checks them) show the same version the registry entry and the winget
-/// manifest carry: all three come from the workspace version.
-fn version_resource(out: &std::path::Path) {
-    let v = std::env::var("CARGO_PKG_VERSION").unwrap();
-    let mut n: Vec<u16> = v
-        .split(['.', '-', '+'])
-        .filter_map(|p| p.parse().ok())
-        .collect();
-    n.resize(4, 0);
-    let (a, b, c, d) = (n[0], n[1], n[2], n[3]);
-    let rc = format!(
-        r#"1 VERSIONINFO
-FILEVERSION {a},{b},{c},{d}
-PRODUCTVERSION {a},{b},{c},{d}
-FILEOS 0x40004
-FILETYPE 0x1
-BEGIN
-  BLOCK "StringFileInfo"
-  BEGIN
-    BLOCK "040904B0"
-    BEGIN
-      VALUE "CompanyName", "Ossian Hanning"
-      VALUE "FileDescription", "Quickseek Setup"
-      VALUE "FileVersion", "{v}"
-      VALUE "InternalName", "quickseek-setup"
-      VALUE "OriginalFilename", "quickseek-setup.exe"
-      VALUE "ProductName", "Quickseek"
-      VALUE "ProductVersion", "{v}"
-    END
-  END
-  BLOCK "VarFileInfo"
-  BEGIN
-    VALUE "Translation", 0x409, 1200
-  END
-END
-"#
-    );
-    let path = out.join("version.rc");
-    std::fs::write(&path, rc).unwrap();
-    embed_resource::compile(&path, embed_resource::NONE)
-        .manifest_optional()
-        .unwrap();
 }

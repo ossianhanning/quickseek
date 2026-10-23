@@ -187,19 +187,18 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
 }
 
 /// The magnifier stock icon (the GUI uses it too).
-fn app_icon() -> HICON {
-    use windows_sys::Win32::UI::Shell::{
-        SHGSI_ICON, SHGetStockIconInfo, SHSTOCKICONINFO, SIID_FIND,
-    };
+/// Quickseek's icon (resource 1) at the large or small icon size.
+fn app_icon(small: bool) -> HICON {
+    use windows_sys::Win32::UI::Controls::{LIM_LARGE, LIM_SMALL, LoadIconMetric};
+    let mut h: HICON = null_mut();
     unsafe {
-        let mut sii: SHSTOCKICONINFO = std::mem::zeroed();
-        sii.cbSize = size_of::<SHSTOCKICONINFO>() as u32;
-        if SHGetStockIconInfo(SIID_FIND, SHGSI_ICON, &mut sii) == 0 {
-            sii.hIcon
-        } else {
-            LoadIconW(null_mut(), IDI_APPLICATION)
+        let inst = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null());
+        let m = if small { LIM_SMALL } else { LIM_LARGE };
+        if LoadIconMetric(inst, 1 as _, m, &mut h) != 0 || h.is_null() {
+            h = LoadIconW(null_mut(), IDI_APPLICATION);
         }
     }
+    h
 }
 
 fn font(h: HWND) -> HFONT {
@@ -236,7 +235,7 @@ pub fn run(a: Args) -> i32 {
         InitCommonControlsEx(&icc);
         let hinst = GetModuleHandleW(null());
         let class = wide("quickseek.setup");
-        let icon = app_icon();
+        let icon = app_icon(false);
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             style: 0,
@@ -249,7 +248,7 @@ pub fn run(a: Args) -> i32 {
             hbrBackground: (COLOR_WINDOW + 1) as usize as HBRUSH,
             lpszMenuName: null(),
             lpszClassName: class.as_ptr(),
-            hIconSm: icon,
+            hIconSm: app_icon(true),
         };
         RegisterClassExW(&wc);
         let installed = sys::installed_version();

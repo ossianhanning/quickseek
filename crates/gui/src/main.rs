@@ -31,6 +31,7 @@ use quickseek_core::ntfs::win as ntwin;
 use quickseek_core::persist;
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::UI::Controls::{_LI_METRIC, LIM_LARGE, LIM_SMALL, LoadIconMetric};
 use windows_sys::Win32::UI::Controls::{
     ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES,
     INITCOMMONCONTROLSEX, InitCommonControlsEx,
@@ -38,7 +39,6 @@ use windows_sys::Win32::UI::Controls::{
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
-use windows_sys::Win32::UI::Shell::{SHGSI_ICON, SHGetStockIconInfo, SHSTOCKICONINFO, SIID_FIND};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// Visual styles are on (comctl32 v6 via the embedded manifest).
@@ -46,18 +46,27 @@ pub fn themed() -> bool {
     true
 }
 
-/// The magnifier stock icon, for the window and the tray.
+/// Quickseek's icon (resource 1, assets/quickseek.ico) at the system's
+/// large-icon size: windows' title bars and Alt+Tab.
 pub fn app_icon() -> HICON {
     static ICON: OnceLock<isize> = OnceLock::new();
-    *ICON.get_or_init(|| unsafe {
-        let mut sii: SHSTOCKICONINFO = std::mem::zeroed();
-        sii.cbSize = size_of::<SHSTOCKICONINFO>() as u32;
-        if SHGetStockIconInfo(SIID_FIND, SHGSI_ICON, &mut sii) == 0 {
-            sii.hIcon as isize
-        } else {
-            LoadIconW(null_mut(), IDI_APPLICATION) as isize
+    *ICON.get_or_init(|| load_icon(LIM_LARGE)) as HICON
+}
+
+/// The same at the small-icon size: title bars' small icon and the tray.
+pub fn app_icon_small() -> HICON {
+    static ICON: OnceLock<isize> = OnceLock::new();
+    *ICON.get_or_init(|| load_icon(LIM_SMALL)) as HICON
+}
+
+fn load_icon(metric: _LI_METRIC) -> isize {
+    let mut h: HICON = null_mut();
+    unsafe {
+        if LoadIconMetric(w::hinstance(), 1 as _, metric, &mut h) != 0 || h.is_null() {
+            h = LoadIconW(null_mut(), IDI_APPLICATION);
         }
-    }) as HICON
+    }
+    h as isize
 }
 
 fn connect(local: bool) -> Result<Box<dyn Backend>, String> {
