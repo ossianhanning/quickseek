@@ -9,13 +9,13 @@ machine.
 
 | | |
 |---|---|
-| Date | 2026-10-23 (earlier runs: 2026-10-22 and earlier on 2026-10-23) |
+| Date | 2026-10-23 |
 | CPU | AMD Ryzen 9 7950X3D (16 cores) |
 | RAM | 64 GB |
 | Disks | NVMe 1 TB (C:), NVMe 2 TB, SATA SSD 1 TB |
 | OS | Windows 11 Pro 10.0.26200 |
-| rapidfind | 0.1.0+1581c1c as the service, 6,988,455 entries on C:, F:, S: |
-| Everything | 1.4.1.1024 with its service, 6,670,729 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
+| rapidfind | 0.1.0+9cbc196 as the service, 6,897,769 entries on C:, F:, S:, after its one-time rescan |
+| Everything | 1.4.1.1024 with its service, 6,670,958 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
 
 ## Method
 
@@ -23,7 +23,8 @@ machine.
   For rapidfind that's its named pipe ([`ipc_bench`](../crates/core/examples/ipc_bench.rs)), and for
   Everything the `WM_COPYDATA` query from its SDK's `everything_ipc.h`. Both sort by name and return
   the first 100 results, as a list view would ask. Each query gets one warm-up run, then the median
-  of 15 runs. Nothing else ran a benchmark at the same time.
+  of 15 runs. Nothing else ran at the time, and `bench.ps1` waits until no rapidfind volume is
+  rescanning.
 - **Memory** is the working set and private bytes of the process holding the index, after the
   queries.
 - **Index on disk** is rapidfind's `%ProgramData%\rapidfind\index\*.db` and Everything's
@@ -32,56 +33,53 @@ machine.
   It isn't measured yet. `bench.ps1 -ColdBuild C` measures it when run elevated. Everything's
   `-reindex` rebuilds all of its volumes, not one, so that comparison is rough.
 
-**Hit counts.** The two indexes don't hold exactly the same files: this PC's Everything settings
-exclude one large cloud-synced folder on C: that rapidfind indexes. `bench.ps1` reads that list from
-Everything's settings and also counts rapidfind's hits outside it ("outside" below). There the counts
-agree, which shows the queries mean the same thing:
-- `*.pdf` and `size:>1gb` match exactly;
-- `ext:dll` gives 219,363 against 219,354;
-- the F: rows match entry for entry.
-
-The rest is files changing between the two counts. `dm:today` still doesn't match: the installed
-index carries entries from earlier builds for hard links that Rust builds had removed, and new hard
-links dated at the journal's time. Both bugs are fixed, and the next build rescans an index saved by
-an affected build once, so that row needs measuring again after it.
+**Hit counts.** This PC's Everything settings exclude one large cloud-synced folder on C: that
+rapidfind indexes. `bench.ps1` reads that list from Everything's settings and also counts
+rapidfind's hits outside it ("outside" below). There the two agree to within the files that
+changed between the counts, which shows the queries mean the same thing: `report`, `*.pdf`,
+`size:>1gb` and the F: rows exactly, `ext:dll` 219,356 against 219,354, `dm:today` 12,914 against
+12,948.
 
 ## Results
 
 Median round trip in milliseconds over 15 runs; lower is quicker. Hits are rapidfind (outside
 Everything's excludes) / Everything.
 
-| Query | rapidfind 1581c1c | Everything | rapidfind 5a01068 | rapidfind adcf11a | Hits |
-|---|---:|---:|---:|---:|---|
-| `report` (substring) | **5.6** | 34.2 | 6.5 | 8.8 | 7,576 / 7,574 |
-| `*.pdf` | **6.9** | 13.2 | 7.2 | 13.8 | 2,473 / 2,473 |
-| `ext:dll` | **6.9** | 12.0 | 28.2 | 45.6 | 219,363 / 219,354 |
-| `size:>1gb` | **5.2** | 9.6 | 6.4 | 6.4 | 358 / 358 |
-| `dm:today` ¹ | 5.2 | 10.5 | 6.7 | 21.9 | 23,554 / 11,946 |
-| `c:\windows\system32\*.dll` | **14.6** | 62.8 | 17.6 | 50.1 | 5,012 / 5,012 |
-| `*\system32\*.dll` | **26.5** | 266.4 | 34.7 | 35.6 | 6,078 / 6,078 |
-| `f:\ *.jpg` | **5.0** | 22.1 | 7.5 | 44.7 | 5,886 / 5,886 |
-| `a` (4.3 million hits) | **21.7** ² | 36.1 | 18.7 | 201.6 | 4,314,172 / 4,230,515 |
-| `f:\` (a whole drive, 1.9 million hits) | **12.5** | 23.4 | 14.1 | 155.2 | 1,918,931 / 1,912,735 |
+| Query | rapidfind 9cbc196 | Everything | rapidfind adcf11a (first run) | Hits |
+|---|---:|---:|---:|---|
+| `report` (substring) | **8.6** | 40.6 | 8.8 | 7,574 / 7,574 |
+| `*.pdf` | **9.8** | 13.3 | 13.8 | 2,473 / 2,473 |
+| `ext:dll` | **9.5** | 15.7 | 45.6 | 219,356 / 219,354 |
+| `size:>1gb` | **5.4** | 12.3 | 6.4 | 358 / 358 |
+| `dm:today` | **7.6** | 13.2 | 21.9 | 12,914 / 12,948 |
+| `c:\windows\system32\*.dll` | **15.7** | 71.9 | 50.1 | 5,012 / 5,012 |
+| `*\system32\*.dll` | **28.6** | 294.0 | 35.6 | 6,078 / 6,078 |
+| `f:\ *.jpg` | **8.2** | 21.3 | 44.7 | 5,886 / 5,886 |
+| `a` (4.2 million hits) | **19.9** | 28.8 | 201.6 | 4,231,267 / 4,230,658 |
+| `f:\` (a whole drive, 1.9 million hits) | **10.8** | 22.4 | 155.2 | 1,914,007 / 1,912,735 |
 
-¹ Not comparable yet: see "Hit counts".
-² 14.8-15.7 ms in three more rounds of 25 with Everything idle. One run gave 34.4 ms, measured
-  minutes after a service restart while a second benchmark ran; not seen since.
+Earlier clean runs of 1581c1c gave the same picture (`ext:dll` 6.9 against 12.0 ms, `a` 14.8-21.7
+against 36.1).
 
-| | rapidfind 1581c1c | Everything | rapidfind adcf11a |
+| | rapidfind 9cbc196 | Everything | rapidfind 1581c1c |
 |---|---:|---:|---:|
-| Memory, working set / private | 516 / 517 MB | 582 / 568 MB | 566 / 583 MB |
-| Index on disk | 80 MB | 260 MB | 90 MB |
+| Memory, working set / private | 464 / 618 MB ¹ | 587 / 575 MB | 516 / 517 MB |
+| Index on disk | 74 MB | 260 MB | 80 MB |
 | Cold build of C: (3.3 M entries) | not measured (needs admin) | not measured (needs admin) | |
+
+¹ After 9cbc196's one-time rescan, each rescanned volume's old index stayed in memory until that
+drive next changed: its journal watcher held it. Fixed since (the old index is freed when the
+new one replaces it). Without a rescan, 1581c1c used 517 MB.
 
 ## Reading the numbers
 
 - Both answer typical searches well under 50 ms, which feels instant while typing.
-- rapidfind 1581c1c is quicker on every comparable row, by about 2x on most and 10x on path
-  wildcards (`*\system32\*.dll`: 27 against 266 ms).
+- rapidfind is quicker on every row, about 1.5-2x on most, 4.5x on `c:\windows\system32\*.dll` and
+  10x on `*\system32\*.dll`.
 - The biggest changes since the first run are large name-sorted results (`a`, a whole drive), now
-  read off a stored name order instead of sorted (10-15x faster), and `ext:` (6.5x).
-- rapidfind uses about 10% less memory than Everything for slightly more files, and its saved
-  index is under a third of the size.
+  read off a stored name order instead of sorted (10-14x faster), and `ext:` (5x).
+- rapidfind's saved index is under a third of Everything's. Its memory is about 10% below
+  Everything's for slightly more files, once the rescan fix is in.
 
 ## Optimization round (2026-10-23)
 
@@ -167,10 +165,13 @@ each step.
 - Journal: a new hard link's size and dates are read from the file, and
   hard links that were removed are dropped (they stayed before).
 - After 1581c1c: an index saved by a build that kept removed hard links
-  (format v5 or v6) is rescanned once in the background (format v7).
+  (format v5 or v6) is rescanned once in the background (format v7); after
+  it, `dm:today` hit counts match Everything's (12,914 against 12,948).
+- After 9cbc196: a rescan frees the old index at once (before, it stayed
+  until the drive changed again), and status shows "rescanning".
 
 **Not measured yet:**
-- **`dm:today` after that rescan.**
+- **Memory after a rescan with that fix.**
 - **Cold index build:** needs administrator rights for both tools. The
   scan code is unchanged and building from a scan takes the same time, so
   rapidfind's cold build should be where it was.

@@ -100,11 +100,11 @@ inspiration. Measured on one PC with about 7 million files ([details](docs/bench
 
 | | rapidfind | Everything |
 |---|---|---|
-| Typical searches (substring, `*.pdf`, `ext:dll`, `size:>1gb`) | 5–7 ms | 10–34 ms |
-| Path wildcards (`*\system32\*.dll`) | 27 ms | 266 ms |
-| Millions of results sorted by name (`a`, a whole drive) | 12–22 ms | 23–36 ms |
-| Memory for ~7M files | ~515 MB | ~570 MB |
-| Index on disk | 80 MB | 260 MB |
+| Typical searches (substring, `*.pdf`, `ext:dll`, `size:>1gb`, `dm:today`) | 5–10 ms | 12–41 ms |
+| Path wildcards (`*\system32\*.dll`) | 29 ms | 294 ms |
+| Millions of results sorted by name (`a`, a whole drive) | 11–20 ms | 22–29 ms |
+| Memory for ~7M files | ~520 MB | ~575 MB |
+| Index on disk | 74 MB | 260 MB |
 | Folder sizes, history of what grew | yes | folder sizes only |
 | AI assistants (MCP) | yes | no |
 | Maturity and ecosystem | new | since 2009; SDK, `es.exe`, plugins, HTTP/ETP servers |
