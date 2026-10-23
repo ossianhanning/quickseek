@@ -612,6 +612,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("quickseek-links-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // The file system reports long names; TEMP can hold an 8.3 short name
+        // (C:\Users\RUNNER~1 on GitHub's runners), so compare the real path.
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let dir = std::path::PathBuf::from(
+            dir.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string(),
+        );
         let a = dir.join("a.o");
         std::fs::write(&a, b"x").unwrap();
         std::fs::hard_link(&a, dir.join("b.o")).unwrap();
