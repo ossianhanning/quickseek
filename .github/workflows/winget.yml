@@ -36,6 +36,7 @@ jobs:
           $version = $env:TAG.TrimStart("v")
           $name = "quickseek-setup-$version-x64.exe"
           gh release download $env:TAG --pattern $name --dir dl
+          if ($LASTEXITCODE) { throw "downloading $name from $env:TAG failed" }
           $sha = (Get-FileHash "dl/$name" -Algorithm SHA256).Hash
           $repo = "https://github.com/${{ github.repository }}"
           $url = "$repo/releases/download/$env:TAG/$name"
@@ -51,3 +52,4 @@ jobs:
         run: |
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
           ./wingetcreate.exe submit --token "${{ secrets.WINGET_TOKEN }}" $env:MANIFESTS
+          if ($LASTEXITCODE) { throw "wingetcreate submit failed" }

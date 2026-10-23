@@ -20,11 +20,13 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # One command per step: in a multi-line PowerShell step only the last
+      # command's exit code counts, which once hid a failing test.
       - name: Tests
+        run: cargo test --workspace --exclude quickseek-gui --locked
+      - name: GUI tests (without the desktop)
         # The GUI's end-to-end test (tests/ui.rs) needs an interactive desktop
         # it can click in: run it locally (see docs/development.md).
-        run: |
-          cargo test --workspace --exclude quickseek-gui --locked
-          cargo test -p quickseek-gui --bins --test demo --locked
+        run: cargo test -p quickseek-gui --bins --test demo --locked
       - name: Third-party notices are current
         run: python tools/third-party.py --check
