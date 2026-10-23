@@ -127,7 +127,7 @@ pub fn write_arp(dir: &Path, size_kb: u32) -> Result<(), String> {
     let setup = dir.join(SETUP_EXE).to_string_lossy().into_owned();
     let k = ARP_KEY;
     let m = HKEY_LOCAL_MACHINE;
-    set_string(m, k, "DisplayName", "quickseek", REG_SZ)?;
+    set_string(m, k, "DisplayName", "Quickseek", REG_SZ)?;
     set_string(m, k, "DisplayVersion", VERSION, REG_SZ)?;
     set_string(m, k, "Publisher", "Ossian Hanning", REG_SZ)?;
     set_string(m, k, "InstallLocation", &dir.to_string_lossy(), REG_SZ)?;
@@ -236,7 +236,7 @@ pub fn path_remove(dir: &Path) -> Result<(), String> {
 
 /// All users' Start menu entry.
 pub fn start_menu_link() -> PathBuf {
-    program_data().join(r"Microsoft\Windows\Start Menu\Programs\quickseek.lnk")
+    program_data().join(r"Microsoft\Windows\Start Menu\Programs\Quickseek.lnk")
 }
 
 pub fn shortcut(link: &Path, target: &Path, _args: &str, description: &str) -> Result<(), String> {

@@ -53,7 +53,7 @@ Quickseek (outside Everything's excludes) / Everything. The middle column is an 
 same build, a few hours before (Everything was slower then on every row, the machine busier); the
 035aabe column is the build before the stored orders, median of 15 runs.
 
-| Query | Quickseek c514c0b | Everything | earlier run: quickseek / Everything | Quickseek 035aabe | Hits |
+| Query | Quickseek c514c0b | Everything | earlier run: Quickseek / Everything | Quickseek 035aabe | Hits |
 |---|---:|---:|---:|---:|---|
 | `report` (substring) | **4.1** (3.8-5.7) | 18.3 (16.9-20.4) | 4.2 / 36.6 | 7.9 | 7,576 / 7,576 |
 | `*.pdf` | **0.8** (0.7-1.1) | 7.2 (6.6-8.2) | 1.2 / 10.7 | 8.5 | 2,473 / 2,473 |

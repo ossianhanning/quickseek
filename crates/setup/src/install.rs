@@ -148,6 +148,9 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     let gui = o.dir.join("quickseek-gui.exe");
     if o.shortcut {
         log("Adding a Start menu shortcut");
+        // Replaced, not overwritten: an older lowercase quickseek.lnk would
+        // keep its name's case.
+        let _ = std::fs::remove_file(sys::start_menu_link());
         sys::shortcut(
             &sys::start_menu_link(),
             &gui,

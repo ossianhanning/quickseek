@@ -45,6 +45,11 @@ to `C:\Program Files\Quickseek`: a background service that keeps the index (so s
 admin rights), the window with a Start menu entry and a global hotkey (`Ctrl+Alt+Space`), the
 `quickseek` command, and it connects the AI assistants it finds. Windows 10 or 11, 64-bit.
 
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org) ([code signing policy](CODE_SIGNING.md)). Signing is
+waiting for SignPath's approval: 19.9.0 is not signed yet, so Windows SmartScreen may warn when you
+run the installer.
+
 ## A quick tour
 
 **Search.** Results appear as you type, sorted however you like, with the Explorer context menu,
