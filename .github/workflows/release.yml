@@ -23,7 +23,7 @@ jobs:
     env:
       SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - name: The tag matches the version
@@ -43,7 +43,7 @@ jobs:
       - name: Upload the programs for signing
         if: env.SIGNPATH == 'true'
         id: programs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: programs-unsigned
           path: |
@@ -52,8 +52,9 @@ jobs:
             target/release/quickseek-mcp.exe
       - name: Sign the programs
         if: env.SIGNPATH == 'true'
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@v2
         with:
+          connector-url: https://githubactions.connectors.signpath.io
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: quickseek
@@ -77,14 +78,15 @@ jobs:
       - name: Upload the installer for signing
         if: env.SIGNPATH == 'true'
         id: installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installer-unsigned
           path: target/release/quickseek-setup.exe
       - name: Sign the installer
         if: env.SIGNPATH == 'true'
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@v2
         with:
+          connector-url: https://githubactions.connectors.signpath.io
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: quickseek
@@ -104,12 +106,12 @@ jobs:
         shell: pwsh
         run: ./tools/build-release.ps1 -SkipBuild -Repo "https://github.com/${{ github.repository }}"
       - name: Keep the winget manifests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: winget-manifests-${{ env.VERSION }}
           path: target/dist/winget
       - name: Draft the GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true

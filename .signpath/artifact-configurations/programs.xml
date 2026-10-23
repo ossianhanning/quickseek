@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration "programs": the zip the release workflow
+     uploads (actions/upload-artifact) with the three programs, each signed
+     with Authenticode before the installer embeds them. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="quickseek.exe">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="quickseek-gui.exe">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="quickseek-mcp.exe">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

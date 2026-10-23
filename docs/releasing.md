@@ -55,9 +55,9 @@ asks for, and how to apply:
 3. **Once accepted**, in the SignPath web app:
    - create the project with the slug `quickseek` and link it to this GitHub repository as a
      trusted build system (GitHub Actions);
-   - add two artifact configurations: `programs` (a zip with `quickseek.exe`, `quickseek-gui.exe`
-     and `quickseek-mcp.exe`, each signed with Authenticode) and `installer` (a zip with
-     `quickseek-setup.exe`, signed);
+   - add two artifact configurations, `programs` and `installer`: paste
+     [`.signpath/artifact-configurations/programs.xml`](../.signpath/artifact-configurations/programs.xml)
+     and [`installer.xml`](../.signpath/artifact-configurations/installer.xml);
    - use the signing policy `release-signing`, with yourself as approver;
    - create an API token for a CI user that may submit to that policy.
 4. **In this repository**: add the secret `SIGNPATH_API_TOKEN` and the variable
