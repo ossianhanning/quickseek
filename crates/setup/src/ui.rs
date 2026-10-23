@@ -44,7 +44,7 @@ thread_local! {
 }
 
 pub fn message(text: &str, error: bool) {
-    let (t, c) = (wide(text), wide("quickseek setup"));
+    let (t, c) = (wide(text), wide("Quickseek Setup"));
     unsafe {
         MessageBoxW(
             null_mut(),
@@ -252,7 +252,7 @@ pub fn run(a: Args) -> i32 {
         };
         RegisterClassExW(&wc);
         let installed = sys::installed_version();
-        let title = wide(&format!("quickseek {VERSION} setup"));
+        let title = wide(&format!("Quickseek {VERSION} Setup"));
         let h = CreateWindowExW(
             0,
             class.as_ptr(),
@@ -308,17 +308,27 @@ pub fn run(a: Args) -> i32 {
         };
         let intro = match &installed {
             Some(v) if v == VERSION => format!(
-                "quickseek {VERSION} is installed. Running setup again repairs it with the options below."
+                "Quickseek {VERSION} is installed. Running setup again repairs it with the options below."
             ),
             Some(v) => format!(
-                "quickseek {v} is installed; this updates it to {VERSION}. Your index and settings are kept."
+                "Quickseek {v} is installed; this updates it to {VERSION}. Your index and settings are kept."
             ),
             None => format!(
-                "quickseek {VERSION}: instant file search and folder sizes for all your drives."
+                "Quickseek {VERSION}: instant file search and folder sizes for all your drives."
             ),
         };
         add("Static", &intro, 0, 0, -1, 20, 16, 550, 40);
-        add("Static", "Install to:", 0, 0, -1, 20, 62, 90, 22);
+        add(
+            "Static",
+            "Install to:",
+            0x200, /* SS_CENTERIMAGE */
+            0,
+            -1,
+            20,
+            58,
+            90,
+            26,
+        );
         add(
             "Edit",
             &a.opts.dir.to_string_lossy(),
@@ -465,7 +475,7 @@ pub fn uninstall(a: &Args) -> i32 {
             ""
         }
     ));
-    let c = wide("quickseek setup");
+    let c = wide("Quickseek Setup");
     if unsafe {
         MessageBoxW(
             null_mut(),

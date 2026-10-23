@@ -1117,6 +1117,21 @@ fn regions(top: HWND) -> Vec<(String, u8)> {
     out
 }
 
+/// The toolbar's Tree button, search box, filter drop-down and Preview
+/// button: their tops and bottoms, which must all line up.
+fn toolbar_edges(top: HWND) -> Vec<(i32, i32, i32)> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetDlgItem, GetWindowRect};
+    [105, 100, 101, 108]
+        .iter()
+        .map(|&id| {
+            let mut r: RECT = unsafe { std::mem::zeroed() };
+            unsafe { GetWindowRect(GetDlgItem(top, id), &mut r) };
+            (id, r.top, r.bottom)
+        })
+        .collect()
+}
+
 /// View → Theme: dark leaves nothing light (title bar, menu bar, every
 /// control, the tree, charts, status bar, the options window), light
 /// leaves nothing dark, and System follows Windows' app mode.
@@ -1155,6 +1170,11 @@ fn gui_theme_switch() {
     g.command(CMD_THEME_DARK);
     std::thread::sleep(Duration::from_millis(1000));
     check(g.hwnd, true, "main window, dark");
+    let edges = toolbar_edges(g.hwnd);
+    assert!(
+        edges.iter().all(|e| (e.1, e.2) == (edges[0].1, edges[0].2)),
+        "toolbar controls (id, top, bottom) don't line up: {edges:?}"
+    );
     // A dialog opened while dark.
     g.command(CMD_OPTIONS);
     let pid = g.child.id();
@@ -1172,6 +1192,11 @@ fn gui_theme_switch() {
     };
     std::thread::sleep(Duration::from_millis(500));
     check(g.hwnd, false, "main window, light");
+    let edges = toolbar_edges(g.hwnd);
+    assert!(
+        edges.iter().all(|e| (e.1, e.2) == (edges[0].1, edges[0].2)),
+        "toolbar controls (id, top, bottom) don't line up in light: {edges:?}"
+    );
 
     // System: as Windows' app mode says.
     g.command(CMD_THEME_SYSTEM);

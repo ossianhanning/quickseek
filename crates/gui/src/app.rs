@@ -2628,13 +2628,27 @@ impl App {
             cw - fw - bw - pbw - 5 * pad,
             eh,
         );
-        w::move_to(
-            self.combo.get(),
-            cw - fw - pbw - 2 * pad,
-            pad,
-            fw,
-            px(hwnd, 300),
-        );
+        // A drop-down list's closed height comes from its font: set its
+        // selection field so the whole box is `eh`, like the search box and
+        // the buttons (at any DPI: the border is measured, not assumed).
+        // After moving it: resizing it resets the field to the font's.
+        let combo = self.combo.get();
+        w::move_to(combo, cw - fw - pbw - 2 * pad, pad, fw, px(hwnd, 300));
+        let field = send(combo, CB_GETITEMHEIGHT, usize::MAX, 0) as i32;
+        // The closed box's height: the drop button sits inset by the same
+        // border above and below (its window rect is the open list's).
+        let mut info: COMBOBOXINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = size_of::<COMBOBOXINFO>() as u32;
+        let closed = if unsafe { GetComboBoxInfo(combo, &mut info) } != 0 {
+            info.rcButton.top + info.rcButton.bottom
+        } else {
+            0
+        };
+        let border = closed - field;
+        if field > 0 && border > 0 && field + border != eh {
+            send(combo, CB_SETITEMHEIGHT, usize::MAX, (eh - border) as isize);
+        }
+
         w::move_to(self.preview_btn.get(), cw - pbw - pad, pad, pbw, eh);
         send(self.status.get(), WM_SIZE, 0, 0);
         let mut sr = RECT {

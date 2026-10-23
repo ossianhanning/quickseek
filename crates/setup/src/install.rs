@@ -170,7 +170,7 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     if o.arp {
         sys::write_arp(&o.dir, dir_size_kb(&o.dir))?;
     }
-    log(&format!("quickseek {VERSION} is installed"));
+    log(&format!("Quickseek {VERSION} is installed"));
     Ok(())
 }
 

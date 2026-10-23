@@ -238,12 +238,12 @@ pub fn open(app: &App) {
             add(
                 "Static",
                 "",
-                SS_ENDELLIPSIS,
+                SS_ENDELLIPSIS | 0x200, // SS_CENTERIMAGE
                 ID_STATE + i as i32,
                 200,
-                y + 3,
+                y,
                 390,
-                22,
+                24,
             );
         }
         add("Static", "", SS_PATHELLIPSIS, ID_PATH, 16, BELOW, 580, 20);

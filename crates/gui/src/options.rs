@@ -1017,9 +1017,9 @@ pub fn open(app: &App) {
             ID_FOLDER_PATH,
             Some(2),
             x0,
-            y0 + 200,
+            y0 + 198,
             full - 130,
-            24,
+            28,
         );
         add(
             "Button",
@@ -1036,14 +1036,14 @@ pub fn open(app: &App) {
         add(
             "Static",
             "Rescan every (minutes, 0 = only when needed):",
-            0,
+            0x200, /* SS_CENTERIMAGE */
             0,
             -1,
             Some(2),
             x0,
-            y0 + 240,
+            y0 + 236,
             300,
-            20,
+            24,
         );
         add(
             "Edit",
@@ -1169,9 +1169,9 @@ pub fn open(app: &App) {
             ID_EX_PATTERN,
             Some(3),
             x0,
-            y0 + 238,
+            y0 + 236,
             full - 130,
-            24,
+            28,
         );
         add(
             "Button",
@@ -1382,14 +1382,14 @@ pub fn open(app: &App) {
         add(
             "Static",
             "Rescan newly added shares every (minutes, 0 = never):",
-            0,
+            0x200, /* SS_CENTERIMAGE */
             0,
             -1,
             Some(5),
             x0,
-            y0 + 276,
+            y0 + 272,
             340,
-            20,
+            24,
         );
         add(
             "Edit",

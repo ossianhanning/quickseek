@@ -450,6 +450,15 @@ pub fn apply(top: HWND) {
             1
         }
         EnumChildWindows(top, Some(each), 0);
+        // New visual styles can change controls' sizes (a drop-down's
+        // height): lay the window out again.
+        let rc = w::client_rect(top);
+        send(
+            top,
+            WM_SIZE,
+            SIZE_RESTORED as usize,
+            ((rc.bottom as isize) << 16) | (rc.right as isize & 0xFFFF),
+        );
         // The title bar repaints on activation; nudge the frame now.
         SetWindowPos(
             top,
