@@ -3,6 +3,9 @@
 **Find any file on your Windows PC as you type, see where your disk space went, and let your AI
 assistant answer both.**
 
+Quickseek was called rapidfind until October 2026; installing it over rapidfind moves your index,
+history and settings over ([how](docs/user-guide.md#moving-over-from-rapidfind)).
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-as-you-type-dark.webp">

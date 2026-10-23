@@ -20,6 +20,18 @@ connects your AI assistants (see the MCP section). Uninstall from Apps &
 Features; your index and settings in `%ProgramData%\quickseek` are kept
 (`quickseek-setup.exe --uninstall --purge` removes them too).
 
+### Moving over from rapidfind
+Quickseek was called rapidfind. Installing Quickseek (the installer, or
+`quickseek service install` / `update` from an elevated terminal) on a PC
+with rapidfind moves it over first: it removes the `rapidfind` service; moves
+`%ProgramData%\rapidfind` (the saved indexes, the snapshot history behind
+Compare with…, the index options), `%LOCALAPPDATA%\rapidfind` and
+`%APPDATA%\rapidfind` (the window's settings) to the `quickseek` folders;
+connects the AI assistants that had rapidfind to Quickseek instead and removes
+rapidfind's skill (only the one rapidfind wrote); and removes rapidfind's
+program folder, Start menu entry, PATH entry and Apps & Features entry. "Start
+with Windows" carries over.
+
 Silent switches (winget passes `--silent`): `--dir <folder>`, `--no-service`,
 `--no-shortcut`, `--no-path`, `--no-startup`, `--no-mcp` (don't connect AI
 assistants; detected ones are connected by default, except when installing as

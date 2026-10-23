@@ -20,6 +20,7 @@ pub mod history;
 pub mod ifilter;
 pub mod index;
 pub mod ipc;
+pub mod legacy;
 pub mod live;
 pub mod ntfs;
 pub mod persist;

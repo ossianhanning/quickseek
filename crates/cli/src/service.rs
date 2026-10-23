@@ -100,7 +100,78 @@ fn retire_old_programs() {
     }
 }
 
+/// Moves an install of rapidfind (Quickseek's former name) over, before
+/// Quickseek's service is installed or updated: removes the old service,
+/// moves its indexes, snapshot history and settings, connects the AI
+/// assistants it was connected to to Quickseek instead (and removes its
+/// skills), and removes the old programs, shortcut, PATH and Apps & Features
+/// entries. Does nothing when there's no old install.
+pub fn migrate_from_rapidfind() -> anyhow::Result<()> {
+    use quickseek_core::legacy;
+    use quickseek_mcp::register as reg;
+    let roots = legacy::Roots::from_env();
+    let m = manager(ServiceManagerAccess::CONNECT)?;
+    let old = m
+        .open_service(
+            legacy::OLD_SERVICE,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+        )
+        .ok();
+    if old.is_none() && !legacy::present(&roots) {
+        return Ok(());
+    }
+    println!("moving rapidfind (Quickseek's former name) over:");
+    if let Some(svc) = old {
+        if svc.query_status()?.current_state != ServiceState::Stopped {
+            let _ = svc.stop();
+            wait_for(&svc, ServiceState::Stopped)?;
+        }
+        svc.delete().context("removing the rapidfind service")?;
+        drop(svc);
+        println!("  removed the rapidfind service");
+    }
+    let ended = legacy::end_old_programs(&roots);
+    if ended > 0 {
+        println!("  ended {ended} running rapidfind program(s)");
+    }
+    // The service's process can hold its files a moment after it stopped.
+    let mut tries = 0;
+    let moved = loop {
+        let log = legacy::move_data(&roots);
+        if !log.iter().any(|l| l.starts_with("couldn't")) || tries == 20 {
+            break log;
+        }
+        tries += 1;
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    for l in moved {
+        println!("  {l}");
+    }
+    let me = std::env::current_exe()?;
+    let here = me
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let mcp = here.join(reg::EXE);
+    if mcp.exists() {
+        let exe = reg::plain_path(reg::stable_exe(&mcp).map_err(anyhow::Error::msg)?);
+        for c in reg::ALL {
+            match reg::migrate_legacy(c, &exe) {
+                Ok(true) => println!("  {}: now connected to Quickseek", c.label()),
+                Ok(false) => {}
+                Err(e) => println!("  {}: {e}", c.label()),
+            }
+        }
+    }
+    let gui = here.join("quickseek-gui.exe");
+    for l in legacy::remove_old_install(gui.exists().then_some(gui.as_path())) {
+        println!("  {l}");
+    }
+    Ok(())
+}
+
 pub fn install() -> anyhow::Result<()> {
+    migrate_from_rapidfind()?;
     let dir = home();
     ipc::create_private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let src = std::env::current_exe()?;
@@ -145,6 +216,7 @@ pub fn install() -> anyhow::Result<()> {
 
 /// Copies the current binary over the installed one (stopping/restarting the service).
 pub fn update() -> anyhow::Result<()> {
+    migrate_from_rapidfind()?;
     let was_running = matches!(
         query_state()?,
         Some(ServiceState::Running | ServiceState::StartPending)

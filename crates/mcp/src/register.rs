@@ -16,6 +16,8 @@ use serde_json::{Map, Value, json};
 
 /// The name the server is registered under.
 pub const NAME: &str = "quickseek";
+/// Quickseek's former name, as rapidfind registered itself (and its skill).
+pub const LEGACY_NAME: &str = "rapidfind";
 pub const EXE: &str = "quickseek-mcp.exe";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,8 +255,12 @@ fn read_json(path: &Path) -> Result<Option<Map<String, Value>>, String> {
 }
 
 fn registered_in(m: &Map<String, Value>, format: Format) -> Option<String> {
+    registered_as(m, format, NAME)
+}
+
+fn registered_as(m: &Map<String, Value>, format: Format, name: &str) -> Option<String> {
     m.get(key(format))?
-        .get(NAME)?
+        .get(name)?
         .get("command")?
         .as_str()
         .map(String::from)
@@ -284,6 +290,10 @@ pub fn add_to_file(path: &Path, format_vscode: bool, exe: &Path) -> Result<(), S
 
 /// Removes our entry from a JSON config file (other servers stay).
 pub fn remove_from_file(path: &Path, format_vscode: bool) -> Result<bool, String> {
+    remove_named_from_file(path, format_vscode, NAME)
+}
+
+fn remove_named_from_file(path: &Path, format_vscode: bool, name: &str) -> Result<bool, String> {
     let format = if format_vscode {
         Format::VsCode
     } else {
@@ -295,7 +305,7 @@ pub fn remove_from_file(path: &Path, format_vscode: bool) -> Result<bool, String
     let removed = m
         .get_mut(key(format))
         .and_then(Value::as_object_mut)
-        .is_some_and(|s| s.remove(NAME).is_some());
+        .is_some_and(|s| s.remove(name).is_some());
     if removed {
         write_json(path, &m)?;
     }
@@ -347,8 +357,12 @@ fn read_toml(path: &Path) -> Result<Option<toml_edit::DocumentMut>, String> {
 }
 
 fn toml_registered(doc: &toml_edit::DocumentMut) -> Option<String> {
+    toml_registered_as(doc, NAME)
+}
+
+fn toml_registered_as(doc: &toml_edit::DocumentMut, name: &str) -> Option<String> {
     doc.get(key(Format::CodexToml))?
-        .get(NAME)?
+        .get(name)?
         .get("command")?
         .as_str()
         .map(String::from)
@@ -389,13 +403,17 @@ pub fn add_to_toml(path: &Path, exe: &Path) -> Result<(), String> {
 
 /// Removes `[mcp_servers.quickseek]` from a Codex `config.toml` (the rest stays).
 pub fn remove_from_toml(path: &Path) -> Result<bool, String> {
+    remove_named_from_toml(path, NAME)
+}
+
+fn remove_named_from_toml(path: &Path, name: &str) -> Result<bool, String> {
     let Some(mut doc) = read_toml(path)? else {
         return Ok(false);
     };
     let removed = doc
         .get_mut(key(Format::CodexToml))
         .and_then(toml_edit::Item::as_table_like_mut)
-        .is_some_and(|t| t.remove(NAME).is_some());
+        .is_some_and(|t| t.remove(name).is_some());
     if removed {
         write_text(path, &doc.to_string())?;
     }
@@ -516,10 +534,11 @@ pub fn refresh_skill() -> Result<Vec<PathBuf>, String> {
 }
 
 fn is_our_skill(text: &str) -> bool {
-    text.starts_with("---")
-        && text
-            .lines()
-            .any(|l| l.trim() == format!("name: {}", crate::guide::SKILL_NAME))
+    is_skill_named(text, crate::guide::SKILL_NAME)
+}
+
+fn is_skill_named(text: &str, name: &str) -> bool {
+    text.starts_with("---") && text.lines().any(|l| l.trim() == format!("name: {name}"))
 }
 
 fn refresh_skill_at(p: &Path, text: &str) -> Result<bool, String> {
@@ -628,6 +647,92 @@ pub fn unregister(c: Client) -> Result<bool, String> {
     }
 }
 
+// ---- moving over from rapidfind (the former name) ------------------------------
+
+/// rapidfind's registration with `c` (the command it runs), if any.
+pub fn legacy_registered(c: Client) -> Option<String> {
+    match c {
+        Client::ClaudeCode
+        | Client::ClaudeDesktop
+        | Client::Cursor
+        | Client::VsCode
+        | Client::VsCodeInsiders
+        | Client::Windsurf
+        | Client::Antigravity => {
+            let m = read_json(&c.config_path()?).ok()??;
+            registered_as(&m, c.format(), LEGACY_NAME)
+        }
+        Client::Codex => toml_registered_as(&read_toml(&c.config_path()?).ok()??, LEGACY_NAME),
+    }
+}
+
+/// Replaces rapidfind's registration with `c` by Quickseek's (`exe`), and
+/// removes rapidfind's skill if it's the one rapidfind wrote. Ok(false) when
+/// `c` had neither.
+pub fn migrate_legacy(c: Client, exe: &Path) -> Result<bool, String> {
+    let skill = match c {
+        Client::ClaudeCode | Client::Codex => {
+            let p = skill_path(c).and_then(|p| Some(p.parent()?.parent()?.join(LEGACY_NAME)));
+            match p {
+                Some(dir) => remove_skill_at(&dir.join("SKILL.md"), LEGACY_NAME)?,
+                None => false,
+            }
+        }
+        _ => false,
+    };
+    if legacy_registered(c).is_none() {
+        return Ok(skill);
+    }
+    match c {
+        Client::ClaudeCode => {
+            claude(&["mcp", "remove", "--scope", "user", LEGACY_NAME])?;
+        }
+        Client::Codex => {
+            remove_named_from_toml(&c.config_path().ok_or("no profile folder")?, LEGACY_NAME)?;
+        }
+        _ => {
+            remove_named_from_file(
+                &c.config_path().ok_or("no profile folder")?,
+                c.format() == Format::VsCode,
+                LEGACY_NAME,
+            )?;
+        }
+    }
+    register(c, exe)?;
+    Ok(true)
+}
+
+/// Replaces `legacy`'s entry in a JSON config file by ours (`exe`).
+/// Other servers stay. Ok(false) if it had none.
+pub fn migrate_file(path: &Path, format_vscode: bool, exe: &Path) -> Result<bool, String> {
+    if !remove_named_from_file(path, format_vscode, LEGACY_NAME)? {
+        return Ok(false);
+    }
+    add_to_file(path, format_vscode, exe)?;
+    Ok(true)
+}
+
+/// The same for a Codex `config.toml`.
+pub fn migrate_toml(path: &Path, exe: &Path) -> Result<bool, String> {
+    if !remove_named_from_toml(path, LEGACY_NAME)? {
+        return Ok(false);
+    }
+    add_to_toml(path, exe)?;
+    Ok(true)
+}
+
+/// Deletes the skill at `p` (and its folder, if then empty) when it's the
+/// one named `name` that we wrote; leaves anything else alone.
+fn remove_skill_at(p: &Path, name: &str) -> Result<bool, String> {
+    match std::fs::read_to_string(p) {
+        Ok(t) if is_skill_named(&t, name) => {}
+        _ => return Ok(false),
+    }
+    std::fs::remove_file(p).map_err(|e| format!("removing {}: {e}", p.display()))?;
+    let _ = std::fs::remove_dir(p.parent().unwrap());
+    Ok(true)
+}
+
 /// What to tell the user after registering with `c`.
 pub fn restart_hint(c: Client) -> &'static str {
     match c {
@@ -652,6 +757,78 @@ pub fn restart_hint(c: Client) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rapidfind's entries become Quickseek's; other servers, and skills
+    /// that aren't rapidfind's, stay.
+    #[test]
+    fn moves_rapidfind_registrations_over() {
+        let d = std::env::temp_dir().join(format!("quickseek-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let exe = Path::new(r"C:\Program Files\Quickseek\quickseek-mcp.exe");
+        let json = d.join("claude_desktop_config.json");
+        std::fs::write(
+            &json,
+            r#"{"mcpServers": {"a": {"command": "a.exe"}, "rapidfind": {"command": "C:\\Program Files\\rapidfind\\rapidfind-mcp.exe", "args": []}, "b": {"command": "b.exe"}}}"#,
+        )
+        .unwrap();
+        assert!(migrate_file(&json, false, exe).unwrap());
+        let m = read_json(&json).unwrap().unwrap();
+        let servers = m["mcpServers"].as_object().unwrap();
+        assert!(!servers.contains_key("rapidfind"));
+        assert_eq!(
+            servers["quickseek"]["command"],
+            exe.to_string_lossy().as_ref()
+        );
+        assert!(servers.contains_key("a") && servers.contains_key("b"));
+        assert!(
+            !migrate_file(&json, false, exe).unwrap(),
+            "nothing left to move"
+        );
+
+        let vs = d.join("mcp.json");
+        std::fs::write(
+            &vs,
+            r#"{"servers": {"rapidfind": {"type": "stdio", "command": "old.exe"}}}"#,
+        )
+        .unwrap();
+        assert!(migrate_file(&vs, true, exe).unwrap());
+        let m = read_json(&vs).unwrap().unwrap();
+        assert_eq!(m["servers"]["quickseek"]["type"], "stdio");
+        assert!(m["servers"].get("rapidfind").is_none());
+
+        let toml = d.join("config.toml");
+        std::fs::write(
+            &toml,
+            "# mine\nmodel = \"x\"\n\n[mcp_servers.other]\ncommand = \"o.exe\"\n\n[mcp_servers.rapidfind]\ncommand = \"old.exe\"\nargs = []\n",
+        )
+        .unwrap();
+        assert!(migrate_toml(&toml, exe).unwrap());
+        let doc = read_toml(&toml).unwrap().unwrap();
+        assert!(toml_registered_as(&doc, "rapidfind").is_none());
+        assert_eq!(
+            toml_registered(&doc).as_deref(),
+            Some(exe.to_string_lossy().as_ref())
+        );
+        assert!(toml_registered_as(&doc, "other").is_some());
+        assert!(
+            std::fs::read_to_string(&toml)
+                .unwrap()
+                .starts_with("# mine")
+        );
+
+        let ours = d.join(r"skills\rapidfind\SKILL.md");
+        std::fs::create_dir_all(ours.parent().unwrap()).unwrap();
+        std::fs::write(&ours, "---\nname: rapidfind\ndescription: x\n---\nbody").unwrap();
+        let theirs = d.join(r"skills\mine\SKILL.md");
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        std::fs::write(&theirs, "---\nname: mine\n---\nmentions rapidfind").unwrap();
+        assert!(remove_skill_at(&ours, LEGACY_NAME).unwrap());
+        assert!(!ours.parent().unwrap().exists(), "its folder goes too");
+        assert!(!remove_skill_at(&theirs, LEGACY_NAME).unwrap());
+        assert!(theirs.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn refreshes_only_our_outdated_skill() {
