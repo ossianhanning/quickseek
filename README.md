@@ -100,14 +100,19 @@ inspiration. Measured on one PC with about 7 million files ([details](docs/bench
 
 | | rapidfind | Everything |
 |---|---|---|
-| Typical searches (substring, `*.pdf`, `size:>1gb`) | 6–14 ms | 10–38 ms |
-| Path wildcards (`*\system32\*.dll`) | 36 ms | 291 ms |
-| Millions of results sorted by name | 155–200 ms | 31–45 ms |
-| Memory for ~7M files | ~580 MB | ~580 MB |
-| Index on disk | 90 MB | 260 MB |
+| Typical searches (substring, `*.pdf`, `size:>1gb`) | 6–7 ms | 13–35 ms |
+| Path wildcards (`*\system32\*.dll`) | 35 ms | 248 ms |
+| Millions of results sorted by name (`a`, a whole drive) | 14–19 ms | 23–30 ms |
+| `ext:dll` (220,000 hits) | 28 ms ¹ | 13 ms |
+| Memory for ~7M files | ~500 MB | ~575 MB |
+| Index on disk | 88 MB | 260 MB |
 | Folder sizes, history of what grew | yes | folder sizes only |
 | AI assistants (MCP) | yes | no |
 | Maturity and ecosystem | new | since 2009; SDK, `es.exe`, plugins, HTTP/ETP servers |
+
+¹ Measured on build 5a01068. The next build answers a lone `ext:` from bitsets, which in testing
+brings it to the cost of the plain substring `.dll` (8 ms on the same service); not yet measured
+there.
 
 ## Details
 

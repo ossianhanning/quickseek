@@ -55,5 +55,4 @@ uses the USN journal for updates).
 - ETP/HTTP servers and EFU file lists.
 - Content search has no index of its own (Everything doesn't either): every search reads the files again.
 - ReFS volumes have no sizes yet, and ReFS hasn't been tested on a real volume (only with synthetic journal records).
-- Removing one hard link of a multi-link file isn't tracked precisely.
 
