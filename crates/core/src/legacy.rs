@@ -54,7 +54,8 @@ pub fn present(roots: &Roots) -> bool {
 /// the copies in the data folders (an MCP server an AI app started).
 pub fn end_old_programs(roots: &Roots) -> usize {
     let mut n = 0;
-    for dir in roots.0.iter().map(|r| r.join(OLD)).chain(old_install_dir()) {
+    let dirs = roots.0.iter().map(|r| r.join(OLD));
+    for dir in dirs.chain(old_install_dir()).chain(old_user_programs()) {
         n += crate::upgrade::kill_in(&dir, &OLD_PROGRAMS);
     }
     n
@@ -152,6 +153,25 @@ fn delete_value(root: HKEY, key: &str, value: &str) -> bool {
     unsafe { RegDeleteKeyValueW(root, k.as_ptr(), v.as_ptr()) == ERROR_SUCCESS }
 }
 
+/// `%LOCALAPPDATA%\Programs\rapidfind`: where rapidfind kept the copy of
+/// its MCP server it registered when it ran from a build folder.
+pub fn old_user_programs() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Programs").join(OLD))
+}
+
+/// Deletes the old programs in `dir`, then `dir` if that left it empty.
+/// Whether `dir` is gone.
+pub fn remove_old_programs_in(dir: &Path) -> bool {
+    for p in OLD_PROGRAMS {
+        let f = dir.join(p);
+        if f.exists() && std::fs::remove_file(&f).is_err() {
+            crate::upgrade::delete_on_reboot(&f);
+        }
+    }
+    crate::upgrade::remove_leftovers(dir);
+    std::fs::remove_dir(dir).is_ok() || !dir.exists()
+}
+
 /// Where the old installer put rapidfind (its Apps & Features entry).
 pub fn old_install_dir() -> Option<PathBuf> {
     get_string(HKEY_LOCAL_MACHINE, OLD_ARP_KEY, "InstallLocation")
@@ -209,6 +229,11 @@ pub fn remove_old_install(new_gui: Option<&Path>) -> Vec<String> {
                 log.push("removed rapidfind from PATH".into());
             }
         }
+    }
+    if let Some(d) = old_user_programs().filter(|d| d.exists())
+        && remove_old_programs_in(&d)
+    {
+        log.push(format!("removed {}", d.display()));
     }
     if let Some(pd) = std::env::var_os("ProgramData") {
         let link = PathBuf::from(pd).join(r"Microsoft\Windows\Start Menu\Programs\rapidfind.lnk");
@@ -325,6 +350,20 @@ mod tests {
         // Nothing left to do the second time.
         assert!(move_data(&roots).is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The per-user copy of the old MCP server goes; anything else there stays.
+    #[test]
+    fn removes_old_program_copies_only() {
+        let d = tmp("programs");
+        write(&d.join("rapidfind-mcp.exe"), "program");
+        assert!(remove_old_programs_in(&d), "only ours: the folder goes");
+        let d = tmp("programs2");
+        write(&d.join("rapidfind-mcp.exe"), "program");
+        write(&d.join("notes.txt"), "someone's");
+        assert!(!remove_old_programs_in(&d));
+        assert!(d.join("notes.txt").exists() && !d.join("rapidfind-mcp.exe").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
