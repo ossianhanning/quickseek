@@ -2,10 +2,10 @@
 
 use std::time::Instant;
 
-use rapidfind_core::index::Index;
-use rapidfind_core::ntfs::{Meta, Scan, ScanName};
-use rapidfind_core::query::Query;
-use rapidfind_core::search::{SearchOptions, search};
+use quickseek_core::index::Index;
+use quickseek_core::ntfs::{Meta, Scan, ScanName};
+use quickseek_core::query::Query;
+use quickseek_core::search::{SearchOptions, search};
 
 fn main() {
     let n: u32 = std::env::args()
@@ -104,9 +104,9 @@ fn main() {
         ix.memory_bytes() as f64 / 1048576.0
     );
     let mut ix = ix;
-    let p = std::env::temp_dir().join("rapidfind-synth.db");
+    let p = std::env::temp_dir().join("quickseek-synth.db");
     let t = Instant::now();
-    rapidfind_core::persist::save(&mut ix, &p).unwrap();
+    quickseek_core::persist::save(&mut ix, &p).unwrap();
     let size = std::fs::metadata(&p).unwrap().len();
     println!(
         "saved {:.1} MB in {} ms",
@@ -114,7 +114,7 @@ fn main() {
         t.elapsed().as_millis()
     );
     let t = Instant::now();
-    let back = rapidfind_core::persist::load(&p).unwrap();
+    let back = quickseek_core::persist::load(&p).unwrap();
     println!(
         "loaded in {} ms ({:.0} MB before ranks)",
         t.elapsed().as_millis(),
@@ -156,11 +156,11 @@ fn main() {
             t.elapsed().as_secs_f64() * 1000.0
         );
     }
-    use rapidfind_core::index::IndexOptions;
-    use rapidfind_core::search::{Extras, ResultSet, SortKey};
-    use rapidfind_core::tree::{NodeRef, Tree, TreeSort};
+    use quickseek_core::index::IndexOptions;
+    use quickseek_core::search::{Extras, ResultSet, SortKey};
+    use quickseek_core::tree::{NodeRef, Tree, TreeSort};
     let ix = {
-        let e = rapidfind_core::engine::Engine::from_indexes(vec![ix]);
+        let e = quickseek_core::engine::Engine::from_indexes(vec![ix]);
         for q in ["", "*.png", "folder: cache*"] {
             let t = Instant::now();
             let mut tree = Tree::build(&e, q, Default::default()).unwrap();

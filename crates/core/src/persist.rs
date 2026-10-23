@@ -49,7 +49,7 @@ pub fn db_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("rapidfind")
+    base.join("quickseek")
 }
 
 /// Cache file for a folder index, named by a hash of its (case-folded) path.
@@ -323,7 +323,7 @@ pub fn load(path: &Path) -> io::Result<Index> {
     if r.len() < 8 || (&r[..8] != MAGIC && !v5 && !v6) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "not a rapidfind index (or old version)",
+            "not a Quickseek index (or old version)",
         ));
     }
     r = &r[8..];
@@ -538,7 +538,7 @@ mod tests {
         ix.journal_id = 77;
         ix.next_usn = 1234;
         ix.note_recent(by_name(&ix, "notes.txt"), -5);
-        let p = std::env::temp_dir().join(format!("rapidfind-test-{}.db", std::process::id()));
+        let p = std::env::temp_dir().join(format!("quickseek-test-{}.db", std::process::id()));
         save(&mut ix, &p).unwrap();
         let mut back = load(&p).unwrap();
         std::fs::remove_file(&p).ok();
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn older_formats_ask_for_a_rescan_until_rebuilt() {
-        let p = std::env::temp_dir().join(format!("rapidfind-v6-{}.db", std::process::id()));
+        let p = std::env::temp_dir().join(format!("quickseek-v6-{}.db", std::process::id()));
         let mut ix = sample();
         save(&mut ix, &p).unwrap();
         assert_eq!(&std::fs::read(&p).unwrap()[..8], MAGIC);
@@ -600,7 +600,7 @@ mod tests {
         let p = ix.entries[r as usize].parent;
         ix.rename_entry(r, p, "Renamed.TXT");
         ix.remove_record(35);
-        let path = std::env::temp_dir().join(format!("rapidfind-test2-{}.db", std::process::id()));
+        let path = std::env::temp_dir().join(format!("quickseek-test2-{}.db", std::process::id()));
         save(&mut ix, &path).unwrap();
         let back = load(&path).unwrap();
         std::fs::remove_file(&path).ok();
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn rejects_truncated_files() {
         let mut ix = sample();
-        let p = std::env::temp_dir().join(format!("rapidfind-test3-{}.db", std::process::id()));
+        let p = std::env::temp_dir().join(format!("quickseek-test3-{}.db", std::process::id()));
         save(&mut ix, &p).unwrap();
         let data = std::fs::read(&p).unwrap();
         for cut in [9, data.len() / 2, data.len() - 1] {

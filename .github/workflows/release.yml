@@ -1,6 +1,6 @@
 # Builds a release from a version tag (v0.1.0 for version 0.1.0 in
 # Cargo.toml) and attaches it to a draft GitHub release for review:
-# rapidfind-setup-<version>-x64.exe, the Claude Desktop extension and the
+# quickseek-setup-<version>-x64.exe, the Claude Desktop extension and the
 # winget manifests (as a workflow artifact, with the installer's SHA-256).
 #
 # Code signing (SignPath Foundation, see CODE_SIGNING.md) runs only when the
@@ -33,7 +33,7 @@ jobs:
           if ("${{ github.ref_name }}" -ne "v$version") { throw "tag ${{ github.ref_name }} doesn't match version $version in Cargo.toml" }
           "VERSION=$version" >> $env:GITHUB_ENV
       - name: Test
-        run: cargo test --workspace --exclude rapidfind-gui --locked
+        run: cargo test --workspace --exclude quickseek-gui --locked
       - name: Build the programs
         run: cargo build --release --locked
       - name: Third-party notices are current
@@ -47,16 +47,16 @@ jobs:
         with:
           name: programs-unsigned
           path: |
-            target/release/rapidfind.exe
-            target/release/rapidfind-gui.exe
-            target/release/rapidfind-mcp.exe
+            target/release/quickseek.exe
+            target/release/quickseek-gui.exe
+            target/release/quickseek-mcp.exe
       - name: Sign the programs
         if: env.SIGNPATH == 'true'
         uses: signpath/github-action-submit-signing-request@v1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: rapidfind
+          project-slug: quickseek
           signing-policy-slug: release-signing
           artifact-configuration-slug: programs
           github-artifact-id: ${{ steps.programs.outputs.artifact-id }}
@@ -70,8 +70,8 @@ jobs:
       - name: Build the installer
         shell: pwsh
         run: |
-          $env:RAPIDFIND_SETUP_PAYLOAD = (Resolve-Path target/release).Path
-          cargo build --release --locked -p rapidfind-setup
+          $env:QUICKSEEK_SETUP_PAYLOAD = (Resolve-Path target/release).Path
+          cargo build --release --locked -p quickseek-setup
           if ($LASTEXITCODE) { throw "building the installer failed" }
 
       - name: Upload the installer for signing
@@ -80,14 +80,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-unsigned
-          path: target/release/rapidfind-setup.exe
+          path: target/release/quickseek-setup.exe
       - name: Sign the installer
         if: env.SIGNPATH == 'true'
         uses: signpath/github-action-submit-signing-request@v1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: rapidfind
+          project-slug: quickseek
           signing-policy-slug: release-signing
           artifact-configuration-slug: installer
           github-artifact-id: ${{ steps.installer.outputs.artifact-id }}
@@ -96,7 +96,7 @@ jobs:
       - name: Use the signed installer
         if: env.SIGNPATH == 'true'
         shell: pwsh
-        run: Copy-Item target/signed-installer/rapidfind-setup.exe target/release/ -Force
+        run: Copy-Item target/signed-installer/quickseek-setup.exe target/release/ -Force
 
       # Copies the installer to target/dist, packs the .mcpb and fills in the
       # winget manifests with the final (signed) installer's SHA-256.
@@ -114,5 +114,5 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            target/dist/rapidfind-setup-${{ env.VERSION }}-x64.exe
-            target/dist/rapidfind-${{ env.VERSION }}.mcpb
+            target/dist/quickseek-setup-${{ env.VERSION }}-x64.exe
+            target/dist/quickseek-${{ env.VERSION }}.mcpb

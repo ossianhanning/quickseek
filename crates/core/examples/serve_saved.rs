@@ -1,12 +1,12 @@
-//! Serves saved indexes (`*.db`, e.g. `%LOCALAPPDATA%\rapidfind\C.db`) on a
+//! Serves saved indexes (`*.db`, e.g. `%LOCALAPPDATA%\quickseek\C.db`) on a
 //! private pipe, the way the service would with the same data, so a
 //! performance change can be measured on real data without administrator
 //! rights or reinstalling the service. No journal: the index doesn't change.
 //!
 //! ```text
-//! cargo run --release -p rapidfind-core --example serve_saved -- C.db F.db S.db
-//! set RAPIDFIND_PIPE=\\.\pipe\rapidfind-bench
-//! cargo run --release -p rapidfind-core --example ipc_bench -- "*.pdf"
+//! cargo run --release -p quickseek-core --example serve_saved -- C.db F.db S.db
+//! set QUICKSEEK_PIPE=\\.\pipe\quickseek-bench
+//! cargo run --release -p quickseek-core --example ipc_bench -- "*.pdf"
 //! ```
 //!
 //! Prints the load time (load + derived data + sort ranks) and the process's
@@ -19,12 +19,12 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use rapidfind_core::engine::Engine;
-use rapidfind_core::{ipc, persist};
+use quickseek_core::engine::Engine;
+use quickseek_core::{ipc, persist};
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let mut pipe = r"\\.\pipe\rapidfind-bench".to_string();
+    let mut pipe = r"\\.\pipe\quickseek-bench".to_string();
     if let Some(i) = args.iter().position(|a| a == "--pipe") {
         pipe = args[i + 1].clone();
         args.drain(i..=i + 1);

@@ -5,7 +5,7 @@
 # build's load time and memory once ready and after the queries.
 #
 #   tools\bench\ab.ps1 -A S:\tmp\target-base\release\examples\serve_saved.exe `
-#                      -B target\release\examples\serve_saved.exe -Index $env:LOCALAPPDATA\rapidfind\C.db
+#                      -B target\release\examples\serve_saved.exe -Index $env:LOCALAPPDATA\quickseek\C.db
 param(
   [Parameter(Mandatory)] [string]$A,
   [Parameter(Mandatory)] [string]$B,
@@ -21,7 +21,7 @@ $procs = @{}
 foreach ($side in "A", "B") {
   $exe = if ($side -eq "A") { $A } else { $B }
   $log = Join-Path $env:TEMP "ab-$side.log"
-  $procs[$side] = Start-Process $exe -ArgumentList (@("--pipe", "\\.\pipe\rapidfind-ab-$side") + $Index) -RedirectStandardOutput $log -PassThru -WindowStyle Hidden
+  $procs[$side] = Start-Process $exe -ArgumentList (@("--pipe", "\\.\pipe\quickseek-ab-$side") + $Index) -RedirectStandardOutput $log -PassThru -WindowStyle Hidden
   $logs[$side] = $log
 }
 function Mem($p) { $p.Refresh(); "{0:N0} MB working set, {1:N0} MB private" -f ($p.WorkingSet64 / 1MB), ($p.PrivateMemorySize64 / 1MB) }
@@ -38,7 +38,7 @@ try {
   foreach ($q in $Queries) {
     $r = @{}
     foreach ($side in "A", "B") {
-      $env:RAPIDFIND_PIPE = "\\.\pipe\rapidfind-ab-$side"
+      $env:QUICKSEEK_PIPE = "\\.\pipe\quickseek-ab-$side"
       $r[$side] = & $bench --runs $Runs $q | ConvertFrom-Json
     }
     "{0,-28} {1,10} {2,10:N1} {3,10:N1} {4,10:N2}" -f $q, $r.B.total, $r.A.median_ms, $r.B.median_ms, ($r.B.median_ms / [math]::Max($r.A.median_ms, 0.001))

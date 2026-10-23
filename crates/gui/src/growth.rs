@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::ptr::{null, null_mut};
 
-use rapidfind_core::fmt;
-use rapidfind_core::history::SnapInfo;
+use quickseek_core::fmt;
+use quickseek_core::history::SnapInfo;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Graphics::GdiPlus::*;
@@ -22,8 +22,8 @@ use crate::theme;
 use crate::tree::signed_size;
 use crate::w::{self, px, wide};
 
-pub const STRIP_CLASS: &str = "rapidfind.timeline";
-pub const PANE_CLASS: &str = "rapidfind.growthpane";
+pub const STRIP_CLASS: &str = "quickseek.timeline";
+pub const PANE_CLASS: &str = "quickseek.growthpane";
 pub const ID_STRIP: i32 = 106;
 pub const ID_PANE: i32 = 107;
 /// Not in the windows-sys modules we import.
@@ -54,7 +54,7 @@ pub struct Growth {
 }
 
 pub fn key(path: &str) -> String {
-    rapidfind_core::history::path_key(path)
+    quickseek_core::history::path_key(path)
 }
 
 /// "Oct 13" / "Oct 13 14:05" for a unix time.
@@ -76,8 +76,8 @@ pub fn day(t: i64, with_time: bool) -> String {
 
 /// "today", "yesterday", "7 days ago".
 pub fn ago(t: i64) -> String {
-    let now = rapidfind_core::history::now_unix();
-    let today = rapidfind_core::history::local_midnight(now);
+    let now = quickseek_core::history::now_unix();
+    let today = quickseek_core::history::local_midnight(now);
     if t >= today {
         "today".into()
     } else if t >= today - 86_400 {
@@ -89,7 +89,7 @@ pub fn ago(t: i64) -> String {
 
 /// The snapshot closest to `days` ago.
 pub fn snap_days_ago(snaps: &[SnapInfo], days: i64) -> Option<SnapInfo> {
-    let target = rapidfind_core::history::now_unix() - days * 86_400;
+    let target = quickseek_core::history::now_unix() - days * 86_400;
     snaps
         .iter()
         .min_by_key(|s| (s.time - target).abs())
@@ -254,10 +254,10 @@ pub fn daily(times: &[i64], vals: &[u64]) -> Vec<DayChange> {
         }
         let delta = v1 as f64 - v0 as f64;
         let estimated = t1 - t0 > 36 * 3600;
-        let mut ds = rapidfind_core::history::local_midnight(t0);
+        let mut ds = quickseek_core::history::local_midnight(t0);
         while ds < t1 {
             // Noon of the next day, back to its midnight: safe across DST changes.
-            let next = rapidfind_core::history::local_midnight(ds + 36 * 3600);
+            let next = quickseek_core::history::local_midnight(ds + 36 * 3600);
             let overlap = (next.min(t1) - ds.max(t0)).max(0);
             if overlap > 0 {
                 let e = by_day.entry(ds).or_insert((0.0, false));
@@ -524,7 +524,7 @@ pub fn draw_strip(
     let Some(d) = d.filter(|d| d.times.len() >= 2) else {
         let msg = match d {
             Some(_) => {
-                "History starts today: rapidfind keeps a snapshot of folder sizes every day. Come back tomorrow to see what grew."
+                "History starts today: Quickseek keeps a snapshot of folder sizes every day. Come back tomorrow to see what grew."
             }
             None => "Folder size history isn't available.",
         };
@@ -1179,13 +1179,13 @@ fn cal_layout(hwnd: HWND, area: &RECT) -> CalLayout {
     let cell = px(hwnd, 15);
     let step = cell + px(hwnd, 3);
     let weeks = ((area.right - area.left - label_w) / step).clamp(1, 53);
-    let now = rapidfind_core::history::now_unix();
-    let today = rapidfind_core::history::local_midnight(now);
+    let now = quickseek_core::history::now_unix();
+    let today = quickseek_core::history::local_midnight(now);
     let wd = local_date(today + 43_200).3;
     // Back to this week's Monday, then whole weeks.
-    let monday = rapidfind_core::history::local_midnight(today - wd * 86_400 + 43_200);
+    let monday = quickseek_core::history::local_midnight(today - wd * 86_400 + 43_200);
     let first =
-        rapidfind_core::history::local_midnight(monday - (weeks as i64 - 1) * 7 * 86_400 + 43_200);
+        quickseek_core::history::local_midnight(monday - (weeks as i64 - 1) * 7 * 86_400 + 43_200);
     CalLayout {
         first,
         weeks,
@@ -1199,7 +1199,7 @@ fn cal_layout(hwnd: HWND, area: &RECT) -> CalLayout {
 impl CalLayout {
     /// Local midnight of the cell in column `w`, row `d`.
     fn day(&self, w: i32, d: i32) -> i64 {
-        rapidfind_core::history::local_midnight(
+        quickseek_core::history::local_midnight(
             self.first + (w as i64 * 7 + d as i64) * 86_400 + 43_200,
         )
     }
@@ -1224,7 +1224,7 @@ impl CalLayout {
 pub fn calendar_hit(hwnd: HWND, rc: &RECT, x: i32, y: i32) -> Option<i64> {
     let l = cal_layout(hwnd, &content_area(hwnd, rc));
     l.hit(x, y)
-        .filter(|&d| d <= rapidfind_core::history::now_unix())
+        .filter(|&d| d <= quickseek_core::history::now_unix())
 }
 
 fn draw_calendar(
@@ -1237,7 +1237,7 @@ fn draw_calendar(
     font: HFONT,
 ) {
     let l = cal_layout(hwnd, area);
-    let now = rapidfind_core::history::now_unix();
+    let now = quickseek_core::history::now_unix();
     let by_day: HashMap<i64, DayChange> = d.days.iter().map(|c| (c.start, *c)).collect();
     let visible: Vec<&DayChange> = d.days.iter().filter(|c| c.start >= l.first).collect();
     let max = visible
@@ -1945,7 +1945,7 @@ mod tests {
 
     #[test]
     fn forecast_from_free_space() {
-        let now = rapidfind_core::history::now_unix();
+        let now = quickseek_core::history::now_unix();
         let times: Vec<i64> = (0..8).map(|i| now - (7 - i) * 2 * 86_400).collect();
         // Free space drops 1 GB a day from 20 GB: about 6 days left at the end.
         let free: Vec<u64> = (0..8)
@@ -2017,9 +2017,9 @@ mod tests {
 
     #[test]
     fn daily_changes() {
-        let mid = rapidfind_core::history::local_midnight(rapidfind_core::history::now_unix())
+        let mid = quickseek_core::history::local_midnight(quickseek_core::history::now_unix())
             - 10 * 86_400;
-        let next = |t: i64| rapidfind_core::history::local_midnight(t + 36 * 3600);
+        let next = |t: i64| quickseek_core::history::local_midnight(t + 36 * 3600);
         let (d1, d2, d3) = (next(mid), next(next(mid)), next(next(next(mid))));
         // Noon to noon: half of the change lands on each day.
         let t = [mid + 43_200, d1 + 43_200, d3 + 43_200];
@@ -2046,10 +2046,10 @@ mod tests {
     #[test]
     fn days() {
         assert_eq!(day(0, false), day(0, false));
-        let now = rapidfind_core::history::now_unix();
+        let now = quickseek_core::history::now_unix();
         assert_eq!(ago(now), "today");
         assert_eq!(
-            ago(rapidfind_core::history::local_midnight(now) - 3600),
+            ago(quickseek_core::history::local_midnight(now) - 3600),
             "yesterday"
         );
     }

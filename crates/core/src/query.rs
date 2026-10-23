@@ -488,7 +488,7 @@ impl Parser<'_> {
                 k if crate::content::is_content_key(k) => {
                     // Content terms are taken out by the client (crate::content::split_query).
                     return Err(format!(
-                        "{k}: searches file contents, which only the result list, `rapidfind search` and the MCP search do, combined with AND"
+                        "{k}: searches file contents, which only the result list, `quickseek search` and the MCP search do, combined with AND"
                     ));
                 }
                 "wfn" | "wholefilename" | "exact" => (m.exact, consumed_value) = (true, false),

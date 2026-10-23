@@ -1,5 +1,5 @@
-//! GUI preferences (per user), stored as JSON in %APPDATA%\rapidfind\gui.json
-//! (or `RAPIDFIND_GUI_DIR` for tests).
+//! GUI preferences (per user), stored as JSON in %APPDATA%\quickseek\gui.json
+//! (or `QUICKSEEK_GUI_DIR` for tests).
 
 use std::path::PathBuf;
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     /// Global show/hide hotkey, e.g. `Ctrl+Alt+Space` (empty = none).
     pub hotkey: String,
-    /// Closing the window keeps rapidfind in the tray.
+    /// Closing the window keeps Quickseek in the tray.
     pub run_in_background: bool,
     pub match_case: bool,
     pub whole_word: bool,
@@ -72,13 +72,13 @@ impl Default for Settings {
 }
 
 pub fn dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("RAPIDFIND_GUI_DIR") {
+    if let Some(d) = std::env::var_os("QUICKSEEK_GUI_DIR") {
         return PathBuf::from(d);
     }
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("rapidfind")
+        .join("quickseek")
 }
 
 impl Settings {

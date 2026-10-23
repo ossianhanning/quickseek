@@ -406,7 +406,7 @@ const SUB_LIST: usize = 0x7468_6d34;
 const SUB_EDGE: usize = 0x7468_6d35;
 
 fn prop() -> Vec<u16> {
-    wide("rapidfind.theme")
+    wide("quickseek.theme")
 }
 
 fn is_attached(h: HWND) -> bool {
@@ -548,7 +548,7 @@ fn apply_control(h: HWND) {
             SetWindowSubclass(h, Some(tabs_proc), SUB_TABS, 0);
         },
         // Our own panes (the preview): their sunken border.
-        c if c.starts_with("rapidfind")
+        c if c.starts_with("quickseek")
             && unsafe { GetWindowLongW(h, GWL_EXSTYLE) } as u32 & WS_EX_CLIENTEDGE != 0 =>
         unsafe {
             SetWindowSubclass(h, Some(edge_proc), SUB_EDGE, 0);

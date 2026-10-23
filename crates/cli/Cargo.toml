@@ -1,6 +1,6 @@
 [package]
-name = "rapidfind"
-description = "Command line for rapidfind: instant file search and folder sizes on Windows"
+name = "quickseek"
+description = "Command line for Quickseek: instant file search and folder sizes on Windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29.0"
 env_logger = "0.11.11"
 log = "0.4.34"
-rapidfind-core = { path = "../core" }
-rapidfind-mcp = { path = "../mcp" }
+quickseek-core = { path = "../core" }
+quickseek-mcp = { path = "../mcp" }
 serde_json = "1.0.154"
 windows-service = "0.8.1"

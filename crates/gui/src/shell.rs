@@ -553,7 +553,7 @@ pub fn pick_save_file(hwnd: HWND, default_name: &str) -> Option<String> {
 // ---- start on login ---------------------------------------------------------------
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_VALUE: &str = "rapidfind";
+const RUN_VALUE: &str = "quickseek";
 
 pub fn start_on_login() -> bool {
     let (k, v) = (wide(RUN_KEY), wide(RUN_VALUE));

@@ -9,8 +9,8 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Ossian Hanning"]
-repository = "https://github.com/ossianhanning/rapidfind"
-homepage = "https://github.com/ossianhanning/rapidfind"
+repository = "https://github.com/ossianhanning/quickseek"
+homepage = "https://github.com/ossianhanning/quickseek"
 
 [profile.release]
 opt-level = 3

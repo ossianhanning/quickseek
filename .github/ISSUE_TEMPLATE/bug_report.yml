@@ -14,9 +14,9 @@ body:
     attributes:
       label: Which part
       options:
-        - Search window (rapidfind-gui)
+        - Search window (quickseek-gui)
         - Folder sizes or growth
-        - Command line (rapidfind)
+        - Command line (quickseek)
         - Service / index
         - MCP server / AI assistant
         - Installer / winget
@@ -25,8 +25,8 @@ body:
   - type: textarea
     id: status
     attributes:
-      label: rapidfind status
-      description: The output of `rapidfind status` (versions, drives and index state). Remove anything you'd rather not share.
+      label: quickseek status
+      description: The output of `quickseek status` (versions, drives and index state). Remove anything you'd rather not share.
       render: text
   - type: input
     id: windows
@@ -37,5 +37,5 @@ body:
     id: log
     attributes:
       label: Log
-      description: For service problems, the end of `%ProgramData%\rapidfind\service.log` (open it as administrator). It holds paths, so check it first.
+      description: For service problems, the end of `%ProgramData%\quickseek\service.log` (open it as administrator). It holds paths, so check it first.
       render: text

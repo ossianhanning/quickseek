@@ -1,9 +1,9 @@
-//! End-to-end GUI tests: the real rapidfind-gui.exe driven through UI
+//! End-to-end GUI tests: the real quickseek-gui.exe driven through UI
 //! Automation, talking to a mock service (synthetic index) on a private pipe.
 //!
 //! These open windows and briefly take focus (some steps click or press
 //! keys), so don't type while they run. Run with:
-//! `cargo test -p rapidfind-gui --test ui -- --test-threads=1`
+//! `cargo test -p quickseek-gui --test ui -- --test-threads=1`
 
 mod common;
 
@@ -11,9 +11,9 @@ use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rapidfind_core::engine::Engine;
-use rapidfind_core::query::SearchFlags;
-use rapidfind_core::search::{SearchOptions, SortKey};
+use quickseek_core::engine::Engine;
+use quickseek_core::query::SearchFlags;
+use quickseek_core::search::{SearchOptions, SortKey};
 use uiautomation::controls::ControlType;
 use uiautomation::patterns::{
     UIExpandCollapsePattern, UIInvokePattern, UISelectionItemPattern, UIValuePattern,
@@ -103,20 +103,20 @@ impl Gui {
         // One pipe per launch: an earlier test's mock service keeps running.
         static LAUNCHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let pipe = format!(r"\\.\pipe\rapidfind-uitest-{}-{n}", std::process::id());
+        let pipe = format!(r"\\.\pipe\quickseek-uitest-{}-{n}", std::process::id());
         common::serve(&pipe, engine.clone());
         let settings =
-            std::env::temp_dir().join(format!("rapidfind-uitest-{}", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-uitest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings);
-        let child = Command::new(env!("CARGO_BIN_EXE_rapidfind-gui"))
+        let child = Command::new(env!("CARGO_BIN_EXE_quickseek-gui"))
             .arg("--test")
-            .env("RAPIDFIND_PIPE", &pipe)
-            .env("RAPIDFIND_GUI_DIR", &settings)
+            .env("QUICKSEEK_PIPE", &pipe)
+            .env("QUICKSEEK_GUI_DIR", &settings)
             .spawn()
-            .expect("launching rapidfind-gui");
+            .expect("launching quickseek-gui");
         let pid = child.id();
         let hwnd = eventually("main window", Duration::from_secs(15), || {
-            find_window(pid, "rapidfind.main")
+            find_window(pid, "quickseek.main")
         });
         let ua = UIAutomation::new().unwrap();
         let win = ua
@@ -587,7 +587,7 @@ fn gui_end_to_end() {
     g.command(CMD_OPTIONS);
     let pid = g.child.id();
     let opt_hwnd = eventually("options window", Duration::from_secs(5), || {
-        find_window(pid, "rapidfind.options")
+        find_window(pid, "quickseek.options")
     });
     let opt =
         g.ua.element_from_handle(windows::Win32::Foundation::HWND(opt_hwnd).into())
@@ -655,7 +655,7 @@ fn gui_end_to_end() {
     // single folder opens through to it.
     g.set_query("");
     g.command(CMD_TREE);
-    use rapidfind_core::tree::{NodeRef, Tree, TreeSort};
+    use quickseek_core::tree::{NodeRef, Tree, TreeSort};
     let mut t = Tree::build(&engine, "", none).unwrap();
     let at = |t: &mut Tree, p: &str| {
         t.children(
@@ -739,7 +739,7 @@ fn gui_end_to_end() {
 fn gui_growth_compare() {
     let engine = Arc::new(Engine::from_indexes(vec![common::sample_index('C', 2_000)]));
     let hist =
-        std::env::temp_dir().join(format!("rapidfind-uitest-history-{}", std::process::id()));
+        std::env::temp_dir().join(format!("quickseek-uitest-history-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&hist);
     engine.enable_history(hist.clone());
     common::seed_history(&engine);
@@ -786,7 +786,7 @@ fn gui_delete_in_background() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_KEYDOWN, WM_NULL,
     };
-    let dir = std::env::temp_dir().join(format!("rapidfind-uitest-delete-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("quickseek-uitest-delete-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     for sub in 0..30 {
         let d = dir.join("big").join(format!("part{sub:02}"));
@@ -798,9 +798,9 @@ fn gui_delete_in_background() {
     std::fs::create_dir_all(dir.join("keep")).unwrap();
     std::fs::write(dir.join("keep").join("small.txt"), "stays").unwrap();
     let root = dir.to_string_lossy().to_string();
-    let engine = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(
+    let engine = Arc::new(Engine::from_indexes(vec![quickseek_core::folder::build(
         &root,
-        rapidfind_core::fold::FoldMode::Lower,
+        quickseek_core::fold::FoldMode::Lower,
     )]));
     let g = Gui::launch(engine.clone());
     g.command(CMD_TREE);
@@ -866,7 +866,7 @@ fn gui_delete_in_background() {
 /// pane shows the text with the match highlighted (and pictures as thumbnails).
 #[test]
 fn gui_content_search_and_preview() {
-    let dir = std::env::temp_dir().join(format!("rapidfind-uitest-content-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("quickseek-uitest-content-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(
@@ -903,7 +903,7 @@ fn gui_content_search_and_preview() {
     std::fs::write(dir.join("pic.bmp"), bmp).unwrap();
 
     let root = dir.to_string_lossy().to_string();
-    let folder = rapidfind_core::folder::build(&root, rapidfind_core::fold::FoldMode::Lower);
+    let folder = quickseek_core::folder::build(&root, quickseek_core::fold::FoldMode::Lower);
     let engine = Arc::new(Engine::from_indexes(vec![
         common::sample_index('C', 2_000),
         folder,
@@ -1126,7 +1126,7 @@ fn gui_theme_switch() {
     const CMD_THEME_LIGHT: usize = 421;
     const CMD_THEME_DARK: usize = 422;
     let engine = Arc::new(Engine::from_indexes(vec![common::sample_index('C', 2_000)]));
-    let hist = std::env::temp_dir().join(format!("rapidfind-uitest-theme-{}", std::process::id()));
+    let hist = std::env::temp_dir().join(format!("quickseek-uitest-theme-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&hist);
     engine.enable_history(hist.clone());
     common::seed_history(&engine);
@@ -1159,7 +1159,7 @@ fn gui_theme_switch() {
     g.command(CMD_OPTIONS);
     let pid = g.child.id();
     let opt = eventually("options window", Duration::from_secs(5), || {
-        find_window(pid, "rapidfind.options")
+        find_window(pid, "quickseek.options")
     });
     std::thread::sleep(Duration::from_millis(800));
     check(opt, true, "options, dark");
@@ -1189,7 +1189,7 @@ fn gui_theme_switch() {
     check(g.hwnd, system_dark, "main window, system");
     let saved = std::fs::read_to_string(
         std::env::temp_dir()
-            .join(format!("rapidfind-uitest-{}", std::process::id()))
+            .join(format!("quickseek-uitest-{}", std::process::id()))
             .join("gui.json"),
     )
     .unwrap_or_default();

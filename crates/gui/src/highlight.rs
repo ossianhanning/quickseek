@@ -1,6 +1,6 @@
 //! Which parts of a displayed name/path match the search terms.
 
-use rapidfind_core::fold::fold_into;
+use quickseek_core::fold::fold_into;
 
 /// Byte ranges `[start, end)` of `text` that match any of the (folded)
 /// `terms`, merged and sorted. Matching is done on the folded text and mapped

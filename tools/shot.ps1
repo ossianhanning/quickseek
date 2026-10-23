@@ -1,5 +1,5 @@
 # Captures a window (by class name) to a PNG, DPI-aware, even if covered.
-param([string]$ClassName = "rapidfind.main", [string]$Out = "$PSScriptRoot\..\target\shot.png")
+param([string]$ClassName = "quickseek.main", [string]$Out = "$PSScriptRoot\..\target\shot.png")
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;

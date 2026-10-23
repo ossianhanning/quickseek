@@ -1,4 +1,4 @@
-//! Bakes the build's identity into `RAPIDFIND_BUILD` ("0.1.0+4388850",
+//! Bakes the build's identity into `QUICKSEEK_BUILD` ("0.1.0+4388850",
 //! ".dirty" for uncommitted changes), so the service and its clients can say
 //! exactly which build they are.
 
@@ -21,7 +21,7 @@ fn main() {
         }
         None => version,
     };
-    println!("cargo:rustc-env=RAPIDFIND_BUILD={build}");
+    println!("cargo:rustc-env=QUICKSEEK_BUILD={build}");
     // Rebuild when HEAD moves or the index changes (commits, staging).
     for p in ["HEAD", "index"] {
         if let Some(path) = git(&["rev-parse", "--git-path", p]) {

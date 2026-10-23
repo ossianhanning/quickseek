@@ -1,6 +1,6 @@
-//! A fake rapidfind service over a synthetic index, for trying the GUI
-//! without the real service: `cargo run -p rapidfind-gui --example mock_service`
-//! then start the GUI with `RAPIDFIND_PIPE=\\.\pipe\rapidfind-mock`.
+//! A fake quickseek service over a synthetic index, for trying the GUI
+//! without the real service: `cargo run -p quickseek-gui --example mock_service`
+//! then start the GUI with `QUICKSEEK_PIPE=\\.\pipe\quickseek-mock`.
 //! With `--live`, a new file appears every two seconds; `--folder <dir>` also
 //! serves a real folder (to try content search and the preview pane).
 
@@ -10,7 +10,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rapidfind_core::engine::Engine;
+use quickseek_core::engine::Engine;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -19,7 +19,7 @@ fn main() {
         .position(|a| a == "--pipe")
         .and_then(|i| args.get(i + 1))
         .cloned()
-        .unwrap_or_else(|| r"\\.\pipe\rapidfind-mock".into());
+        .unwrap_or_else(|| r"\\.\pipe\quickseek-mock".into());
     let filler = args
         .iter()
         .position(|a| a == "--files")
@@ -35,13 +35,13 @@ fn main() {
         .position(|a| a == "--folder")
         .and_then(|i| args.get(i + 1))
     {
-        ixs.push(rapidfind_core::folder::build(
+        ixs.push(quickseek_core::folder::build(
             dir,
-            rapidfind_core::fold::FoldMode::Lower,
+            quickseek_core::fold::FoldMode::Lower,
         ));
     }
     let engine = Arc::new(Engine::from_indexes(ixs));
-    let history = std::env::temp_dir().join("rapidfind-mock-history");
+    let history = std::env::temp_dir().join("quickseek-mock-history");
     let _ = std::fs::remove_dir_all(&history);
     engine.enable_history(history);
     common::seed_history(&engine);

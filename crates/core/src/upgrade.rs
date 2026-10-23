@@ -1,5 +1,5 @@
-//! Replacing rapidfind's programs while copies of them run. The installer
-//! and `rapidfind service update` put new files in place (moving running ones
+//! Replacing Quickseek's programs while copies of them run. The installer
+//! and `quickseek service update` put new files in place (moving running ones
 //! aside), then end the MCP servers still running the old code (AI apps start
 //! a new one, from the new file, on their next call) and delete the moved-aside
 //! copies that are no longer in use.
@@ -20,15 +20,15 @@ use windows_sys::Win32::System::Threading::{
 use crate::ntfs::win::wide;
 
 /// The programs an install folder holds (besides the installer).
-pub const PROGRAMS: [&str; 3] = ["rapidfind.exe", "rapidfind-gui.exe", MCP_EXE];
-pub const MCP_EXE: &str = "rapidfind-mcp.exe";
-/// Set by the installer for the `rapidfind service ...` it runs: don't copy
+pub const PROGRAMS: [&str; 3] = ["quickseek.exe", "quickseek-gui.exe", MCP_EXE];
+pub const MCP_EXE: &str = "quickseek-mcp.exe";
+/// Set by the installer for the `quickseek service ...` it runs: don't copy
 /// programs into the install folder (it already has).
-pub const NO_SYNC_ENV: &str = "RAPIDFIND_NO_SYNC";
+pub const NO_SYNC_ENV: &str = "QUICKSEEK_NO_SYNC";
 /// The installer's Apps & Features entry (HKLM).
-pub const ARP_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\rapidfind";
+pub const ARP_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\quickseek";
 
-/// Where rapidfind-setup.exe installed rapidfind, if it did.
+/// Where quickseek-setup.exe installed Quickseek, if it did.
 pub fn install_dir() -> Option<std::path::PathBuf> {
     use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
     let (k, v) = (wide(ARP_KEY), wide("InstallLocation"));
@@ -52,7 +52,7 @@ pub fn install_dir() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(String::from_utf16_lossy(
         &buf[..len],
     )))
-    .filter(|p| p.join("rapidfind.exe").exists())
+    .filter(|p| p.join("quickseek.exe").exists())
 }
 
 pub fn same_dir(a: &Path, b: &Path) -> bool {
@@ -170,7 +170,7 @@ mod tests {
     /// A running "MCP server" (a copy of ping.exe) is moved aside, ended and cleaned up.
     #[test]
     fn replaces_a_running_program_and_retires_it() {
-        let d = std::env::temp_dir().join(format!("rapidfind-upgrade-test-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("quickseek-upgrade-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join(MCP_EXE);
@@ -192,7 +192,7 @@ mod tests {
         );
         assert_eq!(remove_leftovers(&d), 0, "still running");
         assert_eq!(
-            kill_in(&d.with_file_name("rapidfind-upgrade"), &[MCP_EXE]),
+            kill_in(&d.with_file_name("quickseek-upgrade"), &[MCP_EXE]),
             0,
             "only programs in that folder"
         );
@@ -208,8 +208,8 @@ mod tests {
 
     #[test]
     fn leftover_names() {
-        assert!(is_leftover("rapidfind-mcp.old-1234"));
-        assert!(!is_leftover("rapidfind-mcp.exe"));
+        assert!(is_leftover("quickseek-mcp.old-1234"));
+        assert!(!is_leftover("quickseek-mcp.exe"));
         assert!(!is_leftover("notes.old-copy"));
         assert!(!is_leftover(".old-12"));
     }

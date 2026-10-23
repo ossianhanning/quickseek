@@ -3,13 +3,13 @@
 
 mod common;
 
-use rapidfind_core::engine::Engine;
-use rapidfind_core::tree::Tree;
+use quickseek_core::engine::Engine;
+use quickseek_core::tree::Tree;
 
 const GB: u64 = 1 << 30;
 
 /// (path, size, online-only, files) of every folder, sorted.
-fn rows(v: &rapidfind_core::history::SnapVolume) -> Vec<(String, u64, u64, u64)> {
+fn rows(v: &quickseek_core::history::SnapVolume) -> Vec<(String, u64, u64, u64)> {
     let mut full: Vec<String> = Vec::new();
     let mut out = Vec::new();
     for f in &v.folders {
@@ -41,7 +41,7 @@ fn demo_pc_is_consistent() {
     // The snapshot the demo makes for now matches the tree's own.
     let mut t = Tree::build(&engine, "", Default::default()).unwrap();
     let real = t
-        .snapshot(&engine, "", rapidfind_core::history::MIN_FOLDER, 1_000_000)
+        .snapshot(&engine, "", quickseek_core::history::MIN_FOLDER, 1_000_000)
         .unwrap();
     let ours = pc.snapshot(now, "");
     for (a, b) in real.volumes.iter().zip(&ours.volumes) {
@@ -71,7 +71,7 @@ fn demo_pc_is_consistent() {
     let times = pc.snapshot_times();
     assert!((30..=60).contains(&times.len()), "{}", times.len());
     let c_then = pc.snapshot(now - 30 * 86_400, "").volumes[0].clone();
-    let m = rapidfind_core::history::Snapshot {
+    let m = quickseek_core::history::Snapshot {
         volumes: vec![c_then],
         ..pc.snapshot(now, "")
     }

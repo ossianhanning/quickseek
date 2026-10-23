@@ -12,8 +12,8 @@ use std::ops::Range;
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
-use rapidfind_core::content::{self, ContentQuery, Encoding};
-use rapidfind_core::ipc::Row;
+use quickseek_core::content::{self, ContentQuery, Encoding};
+use quickseek_core::ipc::Row;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER, CLSIDFromString, COINIT_APARTMENTTHREADED,
     CoCreateInstance, CoInitializeEx, CoUninitialize, STGM_READ, STGM_SHARE_DENY_NONE,
@@ -33,7 +33,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::w::{self as w_, send, wide};
 
-pub const CLASS: &str = "rapidfind.preview";
+pub const CLASS: &str = "quickseek.preview";
 /// Automation ids: the pane and its text view.
 pub const ID_PREVIEW: i32 = 106;
 pub const ID_PREVIEW_TEXT: i32 = 107;
@@ -427,7 +427,7 @@ fn is_picture_or_video(name: &str) -> bool {
         .map(|(_, e)| e.to_ascii_lowercase())
         .unwrap_or_default();
     let has = |list: &str| list.split(';').any(|e| e == ext);
-    !ext.is_empty() && (has(rapidfind_core::query::PICTURE) || has(rapidfind_core::query::VIDEO))
+    !ext.is_empty() && (has(quickseek_core::query::PICTURE) || has(quickseek_core::query::VIDEO))
 }
 
 /// Runs on a background thread.
@@ -602,7 +602,7 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rapidfind_core::query::SearchFlags;
+    use quickseek_core::query::SearchFlags;
 
     #[test]
     fn hit_offsets_are_utf16_after_crlf() {

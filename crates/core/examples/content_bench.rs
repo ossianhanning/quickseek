@@ -2,18 +2,18 @@
 //! needed): walks a folder into an index, then runs a query with
 //! `content:` terms through the same scan the GUI and CLI use.
 //!
-//! `cargo run --release -p rapidfind-core --example content_bench -- S:\dev "*.rs content:unsafe" [runs]`
+//! `cargo run --release -p quickseek-core --example content_bench -- S:\dev "*.rs content:unsafe" [runs]`
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use rapidfind_core::content::{self, ContentOptions};
-use rapidfind_core::engine::Engine;
-use rapidfind_core::fmt;
-use rapidfind_core::fold::FoldMode;
-use rapidfind_core::ipc::{Backend, Local};
-use rapidfind_core::query::SearchFlags;
-use rapidfind_core::search::SortKey;
+use quickseek_core::content::{self, ContentOptions};
+use quickseek_core::engine::Engine;
+use quickseek_core::fmt;
+use quickseek_core::fold::FoldMode;
+use quickseek_core::ipc::{Backend, Local};
+use quickseek_core::query::SearchFlags;
+use quickseek_core::search::SortKey;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -23,7 +23,7 @@ fn main() {
     };
     let runs: usize = args.get(3).and_then(|r| r.parse().ok()).unwrap_or(3);
     let t = Instant::now();
-    let ix = rapidfind_core::folder::build(root, FoldMode::Lower);
+    let ix = quickseek_core::folder::build(root, FoldMode::Lower);
     println!(
         "indexed {} entries under {root} in {:.1} s",
         ix.len_live(),

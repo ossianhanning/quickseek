@@ -1,4 +1,4 @@
-# rapidfind vs Everything on this PC: query latency, memory, index size and
+# Quickseek vs Everything on this PC: query latency, memory, index size and
 # (elevated only) a cold index build. Prints numbers only, no file names.
 #
 #   tools\bench\bench.ps1                     queries, memory, index size
@@ -6,20 +6,20 @@
 #   tools\bench\bench.ps1 -ColdBuild all      also time cold builds (run elevated)
 #   tools\bench\bench.ps1 -ColdBuild C        ... of C: alone
 #
-# Cold builds: rapidfind scans the volumes (in parallel, as its service
+# Cold builds: quickseek scans the volumes (in parallel, as its service
 # does), and a separate Everything instance with its own database reindexes.
 # "all" means the local volumes Everything's settings include, so both build
 # the same drives; Everything also rebuilds with a copy of its settings that
 # includes only C:, the like-for-like single-volume number.
 #
 # Query latency is what a client sees: a round trip to each tool's own
-# process over its own IPC (rapidfind's pipe, Everything's WM_COPYDATA
+# process over its own IPC (quickseek's pipe, Everything's WM_COPYDATA
 # query), sorted by name, first 100 results. One warm-up run, then the
-# median of -Runs, and the 10th-90th percentile spread. rapidfind needs its service running; Everything is
+# median of -Runs, and the 10th-90th percentile spread. Quickseek needs its service running; Everything is
 # started (tray, no window) if it isn't, and loads its existing database.
 #
 # Every line also goes to -Log as it happens (default target\tmp\bench-<time>.txt).
-# It waits for rapidfind to finish any background rescan first, every step
+# It waits for Quickseek to finish any background rescan first, every step
 # has a time limit, and it only closes the Everything instances it started.
 param(
   [int]$Runs = 41,
@@ -32,7 +32,7 @@ param(
 # Never "Stop": Windows PowerShell turns a native program's stderr into errors.
 $ErrorActionPreference = "Continue"
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
-$rapidfind = Join-Path $root "target\release\rapidfind.exe"
+$quickseek = Join-Path $root "target\release\quickseek.exe"
 $bench = Join-Path $root "target\release\examples\ipc_bench.exe"
 if (-not $Log) {
   New-Item -ItemType Directory -Force (Join-Path $root "target\tmp") | Out-Null
@@ -72,7 +72,7 @@ function Run-Bench([string[]]$argv, [int]$timeoutSec) {
 
 if (-not (Test-Path $bench)) {
   Say "building ipc_bench"
-  $r = Run-Step "cargo" "cargo" @("build", "--release", "-p", "rapidfind-core", "--example", "ipc_bench", "--manifest-path", (Join-Path $root "Cargo.toml")) 900
+  $r = Run-Step "cargo" "cargo" @("build", "--release", "-p", "quickseek-core", "--example", "ipc_bench", "--manifest-path", (Join-Path $root "Cargo.toml")) 900
   if ($r.Code -ne 0) { Say "building ipc_bench failed"; exit 1 }
 }
 
@@ -164,24 +164,24 @@ try {
   $disks = (Get-PhysicalDisk | ForEach-Object { "$($_.MediaType) $($_.BusType) $([math]::Round($_.Size / 1GB))GB" }) -join "; "
   Say "machine: $cpu, $ram GB RAM, $($os.Caption) $($os.Version), disks: $disks"
 
-  # ---- rapidfind: wait until every volume is ready (no rescan running) -----------------
+  # ---- Quickseek: wait until every volume is ready (no rescan running) -----------------
   $deadline = (Get-Date).AddMinutes($WaitMinutes)
   $lastSaid = $null
   do {
-    $status = @((Run-Step "rapidfind status" $rapidfind @("status") 30).Out)
+    $status = @((Run-Step "quickseek status" $quickseek @("status") 30).Out)
     $busy = @($status | Where-Object { $_ -match '\d+ entries\s+(\S.*)$' -and $Matches[1] -notmatch '^ready' })
     $up = @($status | Where-Object { $_ -match 'pipe .*: ready' }).Count -gt 0
     if ($up -and $busy.Count -eq 0) { break }
     if (-not $lastSaid -or ((Get-Date) - $lastSaid).TotalSeconds -ge 60) {
-      Say "waiting for rapidfind: $(if ($up) { ($busy | ForEach-Object { ($_ -replace '\s+', ' ').Trim() }) -join '; ' } else { 'service not answering' })"
+      Say "waiting for Quickseek: $(if ($up) { ($busy | ForEach-Object { ($_ -replace '\s+', ' ').Trim() }) -join '; ' } else { 'service not answering' })"
       $lastSaid = Get-Date
     }
     Start-Sleep 5
   } while ((Get-Date) -lt $deadline)
-  if ((Get-Date) -ge $deadline) { Say "rapidfind wasn't ready after $WaitMinutes minutes; stopping"; exit 1 }
+  if ((Get-Date) -ge $deadline) { Say "Quickseek wasn't ready after $WaitMinutes minutes; stopping"; exit 1 }
   $rfBuild = ($status | Select-String "service ([0-9.]+\+[0-9a-f]+)").Matches[0].Groups[1].Value
   $entries = ($status | Select-String "(\d+) entries" -AllMatches | ForEach-Object { $_.Matches } | ForEach-Object { [long]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-  Say "rapidfind: service $rfBuild, $entries entries, every volume ready"
+  Say "Quickseek: service $rfBuild, $entries entries, every volume ready"
 
   # ---- Everything ----------------------------------------------------------------------
   $ev = New-Object EverythingIpc
@@ -204,7 +204,7 @@ try {
   $rf = @{}
   Run-Bench (@("--runs", "$Runs") + $Queries) 900 | ForEach-Object { $o = $_ | ConvertFrom-Json; $rf[$o.query] = $o }
   # Everything's own exclude list (its settings), so hit counts can be compared
-  # on the same files: rapidfind's hits outside those folders. Counts only.
+  # on the same files: Quickseek's hits outside those folders. Counts only.
   $evIni = Join-Path $env:APPDATA "Everything\Everything.ini"
   $excl = @()
   if (Test-Path $evIni) {
@@ -218,7 +218,7 @@ try {
       $o = Run-Bench @("--runs", "1", "$q $not") 120 | ConvertFrom-Json
       $rfOut[$q] = $o.total
     }
-    Say "Everything excludes $($excl.Count) folder(s) in its settings; 'rapidfind hits outside them' counts rapidfind's hits elsewhere"
+    Say "Everything excludes $($excl.Count) folder(s) in its settings; 'Quickseek hits outside them' counts Quickseek's hits elsewhere"
   }
   $rows = foreach ($q in $Queries) {
     $med = $null; $evSpread = $null
@@ -230,11 +230,11 @@ try {
     } catch { Say "  Everything: no answer to $q ($($_.Exception.Message))" }
     [pscustomobject]@{
       Query = $q
-      "rapidfind ms" = if ($rf[$q]) { [math]::Round($rf[$q].median_ms, 1) } else { $null }
+      "Quickseek ms" = if ($rf[$q]) { [math]::Round($rf[$q].median_ms, 1) } else { $null }
       "p10-p90" = if ($rf[$q]) { Spread $rf[$q].p10_ms $rf[$q].p90_ms } else { $null }
       "Everything ms" = $med
       "p10-p90 " = $evSpread
-      "rapidfind hits" = $rf[$q].total
+      "Quickseek hits" = $rf[$q].total
       "outside its excludes" = if ($excl) { $rfOut[$q] } else { $rf[$q].total }
       "Everything hits" = $ev.TotalItems
     }
@@ -246,16 +246,16 @@ try {
   Start-Sleep 5
   # Everything can run a small helper process next to the one holding the database.
   $evp = Get-Process Everything -ErrorAction SilentlyContinue | Sort-Object WorkingSet64 -Descending | Select-Object -First 1
-  $rfp = Get-Process rapidfind -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq 0 } | Select-Object -First 1
-  Say "memory (working set / private): rapidfind service $(Mb $rfp.WorkingSet64) / $(Mb $rfp.PrivateMemorySize64) MB, Everything $(Mb $evp.WorkingSet64) / $(Mb $evp.PrivateMemorySize64) MB"
+  $rfp = Get-Process quickseek -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq 0 } | Select-Object -First 1
+  Say "memory (working set / private): quickseek service $(Mb $rfp.WorkingSet64) / $(Mb $rfp.PrivateMemorySize64) MB, Everything $(Mb $evp.WorkingSet64) / $(Mb $evp.PrivateMemorySize64) MB"
   $evDb = Get-Item (Join-Path $env:LOCALAPPDATA "Everything\Everything.db"), (Join-Path $env:APPDATA "Everything\Everything.db") -ErrorAction SilentlyContinue | Select-Object -First 1
-  $rfDb = (Get-ChildItem "$env:ProgramData\rapidfind\index" -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+  $rfDb = (Get-ChildItem "$env:ProgramData\quickseek\index" -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
   if (-not $rfDb) {
     # The service's folder is admin-only; the index knows its own size.
-    $rfDb = ((Run-Step "rapidfind search" $rapidfind @("search", "-n", "0", "-l", "`"$env:ProgramData\rapidfind\index\ *.db`"") 60).Out |
+    $rfDb = ((Run-Step "quickseek search" $quickseek @("search", "-n", "0", "-l", "`"$env:ProgramData\quickseek\index\ *.db`"") 60).Out |
       ForEach-Object { if ("$_" -match "^\s*([\d.]+) (B|KB|MB|GB)\s") { [double]$Matches[1] * @{ B = 1; KB = 1KB; MB = 1MB; GB = 1GB }[$Matches[2]] } } | Measure-Object -Sum).Sum
   }
-  Say "index on disk: rapidfind $(Mb $rfDb) MB, Everything $(Mb $evDb.Length) MB"
+  Say "index on disk: Quickseek $(Mb $rfDb) MB, Everything $(Mb $evDb.Length) MB"
 
   # ---- cold build (elevated) -----------------------------------------------------------
   if ($ColdBuild) {
@@ -276,11 +276,11 @@ try {
       # In its own process from the MFT, ignoring any saved index (rewrites the
       # per-user local index, not the service's). Volumes build in parallel.
       $label = ($vols | ForEach-Object { "${_}:" }) -join " "
-      Say "cold build of ${label}: rapidfind scanning..."
+      Say "cold build of ${label}: quickseek scanning..."
       $argv = @("scan", "--local", "--force") + @($vols | ForEach-Object { "-v"; $_ })
-      $r = Run-Step "rapidfind scan" $rapidfind $argv 900
+      $r = Run-Step "quickseek scan" $quickseek $argv 900
       $r.Err | Where-Object { $_ -match "entries|saved in|done in" } | ForEach-Object { Say ("  " + ($_ -replace '\s*\(index saved to .*\)', '')) }
-      Say "cold build of ${label}: rapidfind $($r.Seconds) s (exit code $($r.Code))"
+      Say "cold build of ${label}: Quickseek $($r.Seconds) s (exit code $($r.Code))"
 
       # Everything: a separate instance, its own database, -reindex, with a
       # copy of its settings (as they are, then with only C: included) passed

@@ -4,27 +4,27 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rapidfind_core::upgrade;
-use rapidfind_mcp::register as reg;
+use quickseek_core::upgrade;
+use quickseek_mcp::register as reg;
 
 use crate::sys;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub use rapidfind_core::upgrade::ARP_KEY;
-pub const SETUP_EXE: &str = "rapidfind-setup.exe";
+pub use quickseek_core::upgrade::ARP_KEY;
+pub const SETUP_EXE: &str = "quickseek-setup.exe";
 
 static PAYLOAD: [(&str, &[u8]); 3] = [
     (
-        "rapidfind.exe",
-        include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind.exe.zst")),
+        "quickseek.exe",
+        include_bytes!(concat!(env!("OUT_DIR"), "/quickseek.exe.zst")),
     ),
     (
-        "rapidfind-gui.exe",
-        include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind-gui.exe.zst")),
+        "quickseek-gui.exe",
+        include_bytes!(concat!(env!("OUT_DIR"), "/quickseek-gui.exe.zst")),
     ),
     (
-        "rapidfind-mcp.exe",
-        include_bytes!(concat!(env!("OUT_DIR"), "/rapidfind-mcp.exe.zst")),
+        "quickseek-mcp.exe",
+        include_bytes!(concat!(env!("OUT_DIR"), "/quickseek-mcp.exe.zst")),
     ),
 ];
 
@@ -49,7 +49,7 @@ pub struct Options {
     /// Install or update the indexing service.
     pub service: bool,
     pub shortcut: bool,
-    /// Add the folder to the machine PATH (for the `rapidfind` command).
+    /// Add the folder to the machine PATH (for the `quickseek` command).
     pub path: bool,
     /// Start the GUI (in the tray) when this user logs in.
     pub startup: bool,
@@ -64,7 +64,7 @@ pub fn default_dir() -> PathBuf {
         .or_else(|| std::env::var_os("ProgramFiles"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"))
-        .join("rapidfind")
+        .join("Quickseek")
 }
 
 impl Options {
@@ -83,7 +83,7 @@ impl Options {
 
 /// Runs the installed CLI (for the service steps), returning its output.
 fn cli(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let exe = dir.join("rapidfind.exe");
+    let exe = dir.join("quickseek.exe");
     // We put every program in place ourselves (maybe in a new --dir): the CLI
     // mustn't copy itself into the previous install's folder.
     let out = sys::hidden(Command::new(&exe).args(args).env(upgrade::NO_SYNC_ENV, "1"))
@@ -99,14 +99,14 @@ fn cli(dir: &Path, args: &[&str]) -> Result<String, String> {
     if out.status.success() {
         Ok(text)
     } else {
-        Err(format!("rapidfind {}: {text}", args.join(" ")))
+        Err(format!("quickseek {}: {text}", args.join(" ")))
     }
 }
 
 /// Installs (or updates) everything `o` asks for. `log` gets one line per step.
 pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     if !has_payload() {
-        return Err("this rapidfind-setup.exe was built without the program files; build it with tools\\build-release.ps1".into());
+        return Err("this quickseek-setup.exe was built without the program files; build it with tools\\build-release.ps1".into());
     }
     std::fs::create_dir_all(&o.dir).map_err(|e| format!("creating {}: {e}", o.dir.display()))?;
     log(&format!("Copying files to {}", o.dir.display()));
@@ -125,7 +125,7 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
         upgrade::replace_file(&setup, &std::fs::read(&me).map_err(|e| e.to_string())?)?;
     }
     let service = if o.service {
-        log("Installing the rapidfind service");
+        log("Installing the Quickseek service");
         cli(&o.dir, &["service", "install-or-update"]).map(|_| ())
     } else {
         Ok(())
@@ -136,16 +136,16 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     let (ended, _) = upgrade::retire_old_programs(&o.dir);
     if ended > 0 {
         log(&format!(
-            "Restarted {ended} running rapidfind MCP server{}",
+            "Restarted {ended} running Quickseek MCP server{}",
             if ended == 1 { "" } else { "s" }
         ));
     }
     service?;
     if o.path {
-        log("Adding rapidfind to PATH");
+        log("Adding Quickseek to PATH");
         sys::path_add(&o.dir)?;
     }
-    let gui = o.dir.join("rapidfind-gui.exe");
+    let gui = o.dir.join("quickseek-gui.exe");
     if o.shortcut {
         log("Adding a Start menu shortcut");
         sys::shortcut(
@@ -170,7 +170,7 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     if o.arp {
         sys::write_arp(&o.dir, dir_size_kb(&o.dir))?;
     }
-    log(&format!("rapidfind {VERSION} is installed"));
+    log(&format!("quickseek {VERSION} is installed"));
     Ok(())
 }
 
@@ -197,7 +197,7 @@ pub struct Removal {
     pub dir: PathBuf,
     pub service: bool,
     pub system: bool,
-    /// Also delete the index and settings in %ProgramData%\rapidfind.
+    /// Also delete the index and settings in %ProgramData%\quickseek.
     pub purge: bool,
 }
 
@@ -216,14 +216,14 @@ pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
             }
         }
     }
-    upgrade::kill_in(&r.dir, &["rapidfind-gui.exe", upgrade::MCP_EXE]);
-    if r.service && r.dir.join("rapidfind.exe").exists() {
-        log("Removing the rapidfind service");
+    upgrade::kill_in(&r.dir, &["quickseek-gui.exe", upgrade::MCP_EXE]);
+    if r.service && r.dir.join("quickseek.exe").exists() {
+        log("Removing the Quickseek service");
         if let Err(e) = cli(&r.dir, &["service", "uninstall"]) {
             log(&format!("  {e}"));
         }
-        let data = sys::program_data().join("rapidfind");
-        let _ = std::fs::remove_file(data.join("rapidfind.exe"));
+        let data = sys::program_data().join("quickseek");
+        let _ = std::fs::remove_file(data.join("quickseek.exe"));
         if r.purge {
             log("Deleting the index and settings");
             let _ = std::fs::remove_dir_all(&data);
@@ -256,7 +256,7 @@ pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
             let _ = std::fs::remove_dir(&r.dir);
         }
     }
-    log("rapidfind is uninstalled");
+    log("Quickseek is uninstalled");
     Ok(())
 }
 
@@ -268,6 +268,6 @@ mod tests {
     fn options_default_to_program_files() {
         let o = Options::defaults();
         assert!(o.service && o.shortcut && o.path && o.arp);
-        assert!(o.dir.ends_with("rapidfind"));
+        assert!(o.dir.ends_with("Quickseek"));
     }
 }

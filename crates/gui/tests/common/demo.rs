@@ -7,13 +7,13 @@
 //!
 //! Nothing here comes from a real machine: names are generated or written
 //! by hand, sizes are budgets spread over the files. Served by
-//! `cargo run --release -p rapidfind-gui --example demo_service`.
+//! `cargo run --release -p quickseek-gui --example demo_service`.
 
 use std::collections::HashMap;
 
-use rapidfind_core::history::{MIN_FOLDER, SnapFile, SnapFolder, SnapVolume, Snapshot};
-use rapidfind_core::index::Index;
-use rapidfind_core::ntfs::{Meta, Scan, ScanName};
+use quickseek_core::history::{MIN_FOLDER, SnapFile, SnapFolder, SnapVolume, Snapshot};
+use quickseek_core::index::Index;
+use quickseek_core::ntfs::{Meta, Scan, ScanName};
 
 const KB: u64 = 1 << 10;
 const MB: u64 = 1 << 20;
@@ -446,7 +446,7 @@ pub struct DemoPc {
 }
 
 impl DemoPc {
-    /// (root, capacity, free) for [`rapidfind_core::tree::override_disk_space`].
+    /// (root, capacity, free) for [`quickseek_core::tree::override_disk_space`].
     pub fn drives(&self) -> Vec<(String, u64, u64)> {
         self.vols
             .iter()
@@ -461,7 +461,7 @@ impl DemoPc {
     /// Snapshot times: daily for a month, then weekly back to 8 weeks.
     pub fn snapshot_times(&self) -> Vec<(i64, String)> {
         // Daily snapshots run a while after midnight local; ~03:10 is plausible.
-        let midnight = rapidfind_core::history::local_midnight(self.now);
+        let midnight = quickseek_core::history::local_midnight(self.now);
         let mut t: Vec<(i64, String)> = (1..=31)
             .chain([35, 42, 49, 56])
             .map(|d| (midnight - d * 86_400 + 3 * 3600 + 600, String::new()))
@@ -481,7 +481,7 @@ impl DemoPc {
         }
     }
 
-    pub fn seed_history(&self, h: &rapidfind_core::history::History) {
+    pub fn seed_history(&self, h: &quickseek_core::history::History) {
         for (t, name) in self.snapshot_times() {
             h.save(&self.snapshot(t, &name))
                 .expect("saving a demo snapshot");
@@ -750,7 +750,7 @@ fn programs(c: &mut Vol) {
         ("Program Files\\Docker\\Docker", 2.6, 700),
         ("Program Files\\obs-studio", 0.6, 1200),
         ("Program Files\\Mozilla Firefox", 0.32, 160),
-        ("Program Files\\rapidfind", 0.024, 6),
+        ("Program Files\\Quickseek", 0.024, 6),
         (
             "Program Files\\Microsoft Visual Studio\\2022\\Community",
             5.8,

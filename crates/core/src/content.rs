@@ -890,7 +890,7 @@ impl Scan {
         }) {
             Ok(Response::Page(p)) => p,
             Ok(Response::Error(e)) if e.contains("request kind") => {
-                return Err("the rapidfind service is older than this program; content search needs `rapidfind service update` (elevated)".into());
+                return Err("the Quickseek service is older than this program; content search needs `quickseek service update` (elevated)".into());
             }
             Ok(Response::Error(e)) => return Err(e),
             Ok(_) => return Err("unexpected response".into()),
@@ -1225,7 +1225,7 @@ mod tests {
     fn scan_drops_rejects_and_stops_on_cancel() {
         use crate::ipc::{Backend, Local};
         let dir =
-            std::env::temp_dir().join(format!("rapidfind-content-scan-{}", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-content-scan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..600 {

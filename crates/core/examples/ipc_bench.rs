@@ -1,7 +1,7 @@
-//! Query latency as a client sees it: round trips to the rapidfind service
+//! Query latency as a client sees it: round trips to the Quickseek service
 //! over its pipe (no admin needed), for tools/bench/bench.ps1.
 //!
-//! `cargo run --release -p rapidfind-core --example ipc_bench -- --runs 15 "*.pdf" "ext:dll"`
+//! `cargo run --release -p quickseek-core --example ipc_bench -- --runs 15 "*.pdf" "ext:dll"`
 //!
 //! Prints one JSON line per query: total matches; the median, 10th and
 //! 90th percentile, minimum and maximum of the client-measured round trip;
@@ -10,9 +10,9 @@
 
 use std::time::Instant;
 
-use rapidfind_core::ipc::{Backend, Client, Remote};
-use rapidfind_core::query::SearchFlags;
-use rapidfind_core::search::SortKey;
+use quickseek_core::ipc::{Backend, Client, Remote};
+use quickseek_core::query::SearchFlags;
+use quickseek_core::search::SortKey;
 
 /// The `p`-th percentile of sorted `v` (nearest rank).
 fn percentile(v: &[f64], p: f64) -> f64 {
@@ -36,7 +36,7 @@ fn main() {
         runs = args[i + 1].parse().expect("--runs <n>");
         args.drain(i..=i + 1);
     }
-    let mut c = Remote(Client::connect().expect("the rapidfind service isn't running"));
+    let mut c = Remote(Client::connect().expect("the Quickseek service isn't running"));
     for q in &args {
         let (mut wall, mut server) = (Vec::new(), Vec::new());
         let mut total = 0;

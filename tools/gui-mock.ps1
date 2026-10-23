@@ -6,15 +6,15 @@
 #   tools\gui-mock.ps1 -Command 403,411 -PaneTab 2   (compare with a week ago, growth pane's Map tab)
 param([string]$Query = "", [int]$OptionsTab = -1, [int[]]$Command = @(), [int]$PaneTab = -1, [switch]$RestartMock, [switch]$Live, [string]$Out = "$PSScriptRoot\..\target\shot.png")
 $t = "$PSScriptRoot\..\target"
-Get-Process rapidfind-gui -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*\debug\*" } | ForEach-Object { $_ | Stop-Process -Force; $_.WaitForExit(5000) | Out-Null }
+Get-Process quickseek-gui -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*\debug\*" } | ForEach-Object { $_ | Stop-Process -Force; $_.WaitForExit(5000) | Out-Null }
 if ($RestartMock) { Get-Process mock_service -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1 }
 if (-not (Get-Process mock_service -ErrorAction SilentlyContinue)) {
-  Start-Process "$t\debug\examples\mock_service.exe" -ArgumentList $(if ($Live) { "--live" } else { "--pipe \\.\pipe\rapidfind-mock" }) -WindowStyle Hidden | Out-Null
-  for ($i = 0; $i -lt 100 -and -not (Test-Path '\\.\pipe\rapidfind-mock'); $i++) { Start-Sleep -Milliseconds 200 }
+  Start-Process "$t\debug\examples\mock_service.exe" -ArgumentList $(if ($Live) { "--live" } else { "--pipe \\.\pipe\quickseek-mock" }) -WindowStyle Hidden | Out-Null
+  for ($i = 0; $i -lt 100 -and -not (Test-Path '\\.\pipe\quickseek-mock'); $i++) { Start-Sleep -Milliseconds 200 }
 }
-$env:RAPIDFIND_PIPE = '\\.\pipe\rapidfind-mock'
-$env:RAPIDFIND_GUI_DIR = "$t\gui-test-settings"
-$gui = Start-Process "$t\debug\rapidfind-gui.exe" -ArgumentList "--test" -PassThru
+$env:QUICKSEEK_PIPE = '\\.\pipe\quickseek-mock'
+$env:QUICKSEEK_GUI_DIR = "$t\gui-test-settings"
+$gui = Start-Process "$t\debug\quickseek-gui.exe" -ArgumentList "--test" -PassThru
 Add-Type @"
 using System; using System.Runtime.InteropServices;
 public static class RfMock {
@@ -30,7 +30,7 @@ public static class RfMock {
 }
 "@
 $h = [IntPtr]::Zero
-for ($i = 0; $i -lt 75 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $h = [RfMock]::FindWindow("rapidfind.main", [IntPtr]::Zero) }
+for ($i = 0; $i -lt 75 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $h = [RfMock]::FindWindow("quickseek.main", [IntPtr]::Zero) }
 if ($h -eq [IntPtr]::Zero) { "window not found (gui exited: $($gui.HasExited), code $($gui.ExitCode))"; exit 1 }
 Start-Sleep 2
 foreach ($c in $Command) { [RfMock]::PostMessage($h, 0x111, [IntPtr]$c, [IntPtr]::Zero) | Out-Null; Start-Sleep 1 }
@@ -47,10 +47,10 @@ if ($PaneTab -ge 0) {
 if ($OptionsTab -ge 0) {
   [RfMock]::PostMessage($h, 0x111, [IntPtr]500, [IntPtr]::Zero) | Out-Null   # Tools > Options
   Start-Sleep 2
-  $o = [RfMock]::FindWindow("rapidfind.options", [IntPtr]::Zero)
+  $o = [RfMock]::FindWindow("quickseek.options", [IntPtr]::Zero)
   [RfMock]::PostMessage($o, 0x111, [IntPtr](980 + $OptionsTab), [IntPtr]::Zero) | Out-Null   # select page
   Start-Sleep -Milliseconds 500
-  & "$PSScriptRoot\shot.ps1" -ClassName "rapidfind.options" -Out $Out
+  & "$PSScriptRoot\shot.ps1" -ClassName "quickseek.options" -Out $Out
 } else {
   & "$PSScriptRoot\shot.ps1" -Out $Out
 }

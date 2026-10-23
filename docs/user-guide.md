@@ -1,5 +1,5 @@
-# rapidfind user guide
-Everything about using rapidfind: the window, the query language, what gets indexed, the command
+# Quickseek user guide
+Everything about using Quickseek: the window, the query language, what gets indexed, the command
 line, the service and the MCP server. The [README](../README.md) has the overview.
 ## Contents
 - [Installing](#installing)
@@ -8,57 +8,57 @@ line, the service and the MCP server. The [README](../README.md) has the overvie
 - [Query syntax](#query-syntax)
 - [What gets indexed](#what-gets-indexed)
 - [Command line](#command-line)
-- [MCP server](#mcp-server-rapidfind-mcp)
+- [MCP server](#mcp-server-quickseek-mcp)
 - [Updating](#updating)
 - [Service security](#service-security)
 ## Installing
-Run **`rapidfind-setup-<version>-x64.exe`** (from `tools\build-release.ps1`,
-or once published `winget install OssianHanning.rapidfind`). It installs to
-`C:\Program Files\rapidfind`: the background service, a Start menu entry, the
-`rapidfind` command on PATH, optionally starting with Windows, and optionally
+Run **`quickseek-setup-<version>-x64.exe`** (from `tools\build-release.ps1`,
+or once published `winget install OssianHanning.Quickseek`). It installs to
+`C:\Program Files\Quickseek`: the background service, a Start menu entry, the
+`quickseek` command on PATH, optionally starting with Windows, and optionally
 connects your AI assistants (see the MCP section). Uninstall from Apps &
-Features; your index and settings in `%ProgramData%\rapidfind` are kept
-(`rapidfind-setup.exe --uninstall --purge` removes them too).
+Features; your index and settings in `%ProgramData%\quickseek` are kept
+(`quickseek-setup.exe --uninstall --purge` removes them too).
 
 Silent switches (winget passes `--silent`): `--dir <folder>`, `--no-service`,
 `--no-shortcut`, `--no-path`, `--no-startup`, `--no-mcp` (don't connect AI
 assistants; detected ones are connected by default, except when installing as
 SYSTEM), `--mcp-clients cursor,claude-code`, `--log <file>`. Through winget:
-`winget install OssianHanning.rapidfind` (add `--custom "--no-mcp"` to skip the assistants).
+`winget install OssianHanning.Quickseek` (add `--custom "--no-mcp"` to skip the assistants).
 
 Reading the MFT needs administrator rights, so the index normally lives in a
 background service. The GUI and CLI talk to it as a normal user over
-`\\.\pipe\rapidfind`. Without the installer:
+`\\.\pipe\quickseek`. Without the installer:
 
 ```
-rapidfind service install     # once, elevated: copies the exe to %ProgramData%\rapidfind, registers + starts it
-rapidfind-gui                 # then, as a normal user
+quickseek service install     # once, elevated: copies the exe to %ProgramData%\quickseek, registers + starts it
+quickseek-gui                 # then, as a normal user
 ```
 
-Without the service, `rapidfind-gui` and `rapidfind` index in-process when
+Without the service, `quickseek-gui` and `quickseek` index in-process when
 run elevated (or with `--local`). Their indexes then live in
-`%LOCALAPPDATA%\rapidfind`.
+`%LOCALAPPDATA%\quickseek`.
 
 ## Command line
 
 ```
-rapidfind                      # terminal search-as-you-type
-rapidfind search -l -s size -d "ext:mp4 size:>1gb"
-rapidfind search --case --path "Users\me"
-rapidfind search -n 0 "D:\code\ *.rs content:unsafe"   # files containing text (read as you)
-rapidfind status               # service, pipe, volumes (with folder/share states), index files
-rapidfind du C:\Users -d 2       # biggest folders/files, 2 levels (no path: all drives)
-rapidfind du -q "*.mp4|*.mkv"    # only count videos
-rapidfind history growth C:\Users --days 7   # what grew or shrank in the last week
-rapidfind history list | save "before cleanup"
-rapidfind folders add \\nas\photos --rescan-minutes 60
-rapidfind folders list | remove <path>
-rapidfind config show | set config.json | exclude-folder node_modules | exclude-files "*.tmp"
-rapidfind scan                 # build/refresh a local index (admin)
-rapidfind bench "*.dll"        # (admin)
-rapidfind selftest -v C        # verify against the real filesystem + live updates (admin)
-rapidfind watch -v C           # dump USN journal records as they happen (admin)
-rapidfind service update | stop | start | uninstall
+quickseek                      # terminal search-as-you-type
+quickseek search -l -s size -d "ext:mp4 size:>1gb"
+quickseek search --case --path "Users\me"
+quickseek search -n 0 "D:\code\ *.rs content:unsafe"   # files containing text (read as you)
+quickseek status               # service, pipe, volumes (with folder/share states), index files
+quickseek du C:\Users -d 2       # biggest folders/files, 2 levels (no path: all drives)
+quickseek du -q "*.mp4|*.mkv"    # only count videos
+quickseek history growth C:\Users --days 7   # what grew or shrank in the last week
+quickseek history list | save "before cleanup"
+quickseek folders add \\nas\photos --rescan-minutes 60
+quickseek folders list | remove <path>
+quickseek config show | set config.json | exclude-folder node_modules | exclude-files "*.tmp"
+quickseek scan                 # build/refresh a local index (admin)
+quickseek bench "*.dll"        # (admin)
+quickseek selftest -v C        # verify against the real filesystem + live updates (admin)
+quickseek watch -v C           # dump USN journal records as they happen (admin)
+quickseek service update | stop | start | uninstall
 ```
 
 ## The window
@@ -88,8 +88,8 @@ demand as a save point. A snapshot holds every folder of 10 MB or more
 (at most 60,000 per drive; the cutoff rises past that) with its size, file
 count and online-only bytes, every file of 10 MB or more (such as the page
 file), plus each drive's capacity and free space. It is stored as varint
-columns in zstd: on a test PC 29,372 folders take 313 KB and 0.26 s. Snapshots live in `%ProgramData%\rapidfind\history` (or
-`%LOCALAPPDATA%\rapidfind\history` without the service) and are thinned out
+columns in zstd: on a test PC 29,372 folders take 313 KB and 0.26 s. Snapshots live in `%ProgramData%\quickseek\history` (or
+`%LOCALAPPDATA%\quickseek\history` without the service) and are thinned out
 as they age: all from the last two days, then one a day for 31 days, one a
 week for 26 weeks and one a month for 24 months, about 80 files or 25 MB in
 all. Save points are kept for a year.
@@ -121,7 +121,7 @@ how much a big file changed: such files are listed as not compared.
 | `empty:` | folders without children |
 | `attrib:HS` | attributes (R H S D A C E O L T P I) |
 | `dupe:`, `sizedupe:` | names (or file sizes) that occur more than once |
-| `runcount:>0` | opened from rapidfind |
+| `runcount:>0` | opened from Quickseek |
 | `file:` `folder:` `audio:` `video:` `pic:` `doc:` `exe:` `zip:` | type filters |
 | `content:foo`, `content:"two words"` | the file contains the text (case-insensitive). Read by the client as you, never by the service |
 | `case:content:Foo` `ww:content:foo` | case-sensitive / whole word (the Search menu's Match Case, Whole Word and Regex apply too) |
@@ -169,7 +169,7 @@ diacritics" (Search → Match Diacritics off) to make `Angstrom` find
 - **Excludes** (Options → Exclude, or `config.json`) are applied as flags,
   not by re-indexing, so changing them takes effect immediately.
 
-### Index options (Options → Index, or `rapidfind config index-created|fast-sort`)
+### Index options (Options → Index, or `quickseek config index-created|fast-sort`)
 
 Names, parents, sizes, dates modified and attributes are always kept. The
 rest is optional:
@@ -196,37 +196,37 @@ their own settings:
 | Index date created on shares | on | 8 B/file in memory, no extra traffic (it comes with the listing). Separate from the local switch because turning it on later re-walks every share. |
 | Rescan newly added shares every | 60 min | A periodic walk catches change notifications lost over SMB. |
 
-Configuration is `config.json` next to the index: `%ProgramData%\rapidfind`
-for the service, `%LOCALAPPDATA%\rapidfind` in-process. GUI preferences are
-in `%APPDATA%\rapidfind\gui.json`.
+Configuration is `config.json` next to the index: `%ProgramData%\quickseek`
+for the service, `%LOCALAPPDATA%\quickseek` in-process. GUI preferences are
+in `%APPDATA%\quickseek\gui.json`.
 
 
-## MCP server (rapidfind-mcp)
-`rapidfind-mcp.exe` is a [Model Context Protocol](https://modelcontextprotocol.io)
+## MCP server (quickseek-mcp)
+`quickseek-mcp.exe` is a [Model Context Protocol](https://modelcontextprotocol.io)
 server over stdio. It talks to the service like the GUI does, so it needs no
 elevation, and anything it deletes, it deletes with the rights of the user who
 started it. Registering it is per user and needs no admin, three ways:
 
 - **GUI:** Tools → Connect AI Assistants… (a checkbox per client).
-- **CLI:** `rapidfind mcp install` (every detected client, or `--client cursor`),
-  `rapidfind mcp status`, `rapidfind mcp uninstall`.
+- **CLI:** `quickseek mcp install` (every detected client, or `--client cursor`),
+  `quickseek mcp status`, `quickseek mcp uninstall`.
 - **Installer:** the "Connect AI assistants" option, on by default, also for winget (`--no-mcp` skips it).
 
 Supported clients: Claude Code (through `claude mcp add --scope user`), Claude
 Desktop, Cursor, VS Code and VS Code Insiders (agent mode), Windsurf,
 Antigravity (`~/.gemini/config/mcp_config.json`) and Codex
-(`[mcp_servers.rapidfind]` in `~/.codex/config.toml`). Their configs are
+(`[mcp_servers.quickseek]` in `~/.codex/config.toml`). Their configs are
 merged, not replaced. Other servers and the key order are kept (Codex's TOML
-keeps its comments and layout too), a `.rapidfind-backup` copy is written
+keeps its comments and layout too), a `.quickseek-backup` copy is written
 first, and a JSON file with comments is left alone (you get the entry to add by
-hand). Claude Code and Codex also get the rapidfind skill (`~/.claude/skills`,
-`~/.agents/skills`), which `rapidfind-mcp` keeps up to date after updates. When `rapidfind-mcp.exe` isn't
+hand). Claude Code and Codex also get the Quickseek skill (`~/.claude/skills`,
+`~/.agents/skills`), which `quickseek-mcp` keeps up to date after updates. When `quickseek-mcp.exe` isn't
 in a stable place like Program Files, it's copied to
-`%LOCALAPPDATA%\Programs\rapidfind` first, so a rebuild or `cargo clean`
+`%LOCALAPPDATA%\Programs\quickseek` first, so a rebuild or `cargo clean`
 doesn't break the clients. Restart Claude Desktop afterwards; Claude Code picks
 it up in new sessions.
 
-For Claude Desktop there's also **`rapidfind-<version>.mcpb`**, a Desktop
+For Claude Desktop there's also **`quickseek-<version>.mcpb`**, a Desktop
 Extension built by `tools\build-release.ps1` (or `tools\build-mcpb.ps1`):
 double-click it to install.
 
@@ -245,29 +245,29 @@ On a test PC with 6.8M files, `cleanup_candidates` answers in 1.6 s,
 
 ## Updating
 
-- Running the new `rapidfind-setup.exe` replaces the programs in the install
+- Running the new `quickseek-setup.exe` replaces the programs in the install
   folder (moving running ones aside), updates the service's copy and restarts
-  it, then ends `rapidfind-mcp` processes still running the old code. AI apps
+  it, then ends `quickseek-mcp` processes still running the old code. AI apps
   start the new one on their next call.
-- `rapidfind service install` / `update` from anywhere else (a development
-  build in `target\release`) also copies `rapidfind.exe`, `rapidfind-gui.exe`
-  and `rapidfind-mcp.exe` from next to it into the install folder, so the
+- `quickseek service install` / `update` from anywhere else (a development
+  build in `target\release`) also copies `quickseek.exe`, `quickseek-gui.exe`
+  and `quickseek-mcp.exe` from next to it into the install folder, so the
   service and its clients stay the same build.
 - Clients and the service agree on a protocol version when they connect; the
   service also serves the previous one, so a GUI or MCP server one release
   behind keeps working. When they share none, the MCP server answers with a
   clear error and, if its file was replaced since it started, exits so the
-  app restarts it. `rapidfind status` shows both builds; `service.log` logs
+  app restarts it. `quickseek status` shows both builds; `service.log` logs
   the service's build at startup and clients of other builds as they connect.
 - If the index can't be saved (the disk holding `%ProgramData%` is full), the
-  volume's status says so (GUI status bar, `rapidfind status`, the MCP
+  volume's status says so (GUI status bar, `quickseek status`, the MCP
   server's `disk_overview` and errors). Searches keep working, and saves wait
   until there's room again.
 
 ## Service security
 
 - The binary the service runs, its index, config and logs live in
-  `%ProgramData%\rapidfind`, created with a protected DACL (SYSTEM +
+  `%ProgramData%\quickseek`, created with a protected DACL (SYSTEM +
   Administrators only). Users can't replace what runs as SYSTEM or read the
   index files.
 - Pipe DACL: SYSTEM, Administrators and the owner get full access. Interactive

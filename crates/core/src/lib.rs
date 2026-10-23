@@ -1,4 +1,4 @@
-//! rapidfind core: an Everything-style instant filename index for NTFS.
+//! Quickseek core: an Everything-style instant filename index for NTFS.
 //!
 //! * [`ntfs`] — raw $MFT scan, FSCTL_ENUM_USN_DATA fallback, USN journal.
 //! * [`index`] — compact in-memory index with folded-name arena.

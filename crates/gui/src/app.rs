@@ -8,14 +8,14 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use rapidfind_core::content::{self, ContentOptions, ContentQuery, Scan, Stats};
-use rapidfind_core::fmt;
-use rapidfind_core::fold::FoldMode;
-use rapidfind_core::history::SnapInfo;
-use rapidfind_core::ipc::{Backend, Page, Row, StatusInfo};
-use rapidfind_core::query::{FILTERS, Query, SearchFlags};
-use rapidfind_core::search::SortKey;
-use rapidfind_core::tree::{TreeLevel, TreeSort};
+use quickseek_core::content::{self, ContentOptions, ContentQuery, Scan, Stats};
+use quickseek_core::fmt;
+use quickseek_core::fold::FoldMode;
+use quickseek_core::history::SnapInfo;
+use quickseek_core::ipc::{Backend, Page, Row, StatusInfo};
+use quickseek_core::query::{FILTERS, Query, SearchFlags};
+use quickseek_core::search::SortKey;
+use quickseek_core::tree::{TreeLevel, TreeSort};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Controls::*;
@@ -38,7 +38,7 @@ use crate::theme;
 use crate::tree as tv;
 use crate::w::{self, px, send, wide};
 
-pub const CLASS: &str = "rapidfind.main";
+pub const CLASS: &str = "quickseek.main";
 pub const ID_SEARCH: i32 = 100;
 pub const ID_FILTER: i32 = 101;
 pub const ID_LIST: i32 = 102;
@@ -456,9 +456,9 @@ impl App {
         });
         let text = w::get_text(self.edit.get());
         let title = if text.is_empty() {
-            "rapidfind".to_string()
+            "quickseek".to_string()
         } else {
-            format!("{text} - rapidfind")
+            format!("{text} - Quickseek")
         };
         w::set_text(self.hwnd.get(), &title);
     }
@@ -478,7 +478,7 @@ impl App {
                     &text,
                     self.flags(),
                     FoldMode::Lower,
-                    &rapidfind_core::date::DateEnv::system(),
+                    &quickseek_core::date::DateEnv::system(),
                 )
                 .map(|q| {
                     if self.flags().case {
@@ -514,7 +514,7 @@ impl App {
             Err(e) => {
                 *self.results.borrow_mut() = Results::default();
                 send(list, LVM_SETITEMCOUNT, 0, 0);
-                self.set_status_left(&if e == rapidfind_core::ipc::LOADING {
+                self.set_status_left(&if e == quickseek_core::ipc::LOADING {
                     "Index is still loading…".to_string()
                 } else {
                     e
@@ -588,7 +588,7 @@ impl App {
                 );
                 unsafe { InvalidateRect(list, null(), 0) };
             }
-            Some(Err(e)) if e == rapidfind_core::ipc::STALE => {
+            Some(Err(e)) if e == quickseek_core::ipc::STALE => {
                 self.search(true); // the index was compacted: start over
                 return;
             }
@@ -720,9 +720,9 @@ impl App {
         w::set_text(
             self.hwnd.get(),
             &if text.is_empty() {
-                "Folder sizes - rapidfind".to_string()
+                "Folder sizes - Quickseek".to_string()
             } else {
-                format!("{text} - folder sizes - rapidfind")
+                format!("{text} - folder sizes - Quickseek")
             },
         );
     }
@@ -799,7 +799,7 @@ impl App {
             Err(e) => {
                 self.tree.borrow_mut().nodes.clear();
                 send(list, LVM_SETITEMCOUNT, 0, 0);
-                self.set_status_left(&if e == rapidfind_core::ipc::LOADING {
+                self.set_status_left(&if e == quickseek_core::ipc::LOADING {
                     "Index is still loading…".to_string()
                 } else {
                     e
@@ -1167,7 +1167,7 @@ impl App {
         }
         if let Some(p) = paths.iter().find(|p| is_root(p)) {
             self.set_status_left(&format!(
-                "{p} is a whole drive or share: rapidfind doesn't delete those."
+                "{p} is a whole drive or share: Quickseek doesn't delete those."
             ));
             return;
         }
@@ -1705,7 +1705,7 @@ impl App {
     }
 
     /// Children of a node: from the tree if it's open, else asked for.
-    fn growth_children(&self, n: &tv::Node, sort: TreeSort) -> Vec<rapidfind_core::tree::TreeRow> {
+    fn growth_children(&self, n: &tv::Node, sort: TreeSort) -> Vec<quickseek_core::tree::TreeRow> {
         {
             let m = self.tree.borrow();
             if let Some(i) = m.find(&n.path())
@@ -1738,7 +1738,7 @@ impl App {
         let (title, scope_path, kids, capacity, root_path): (
             String,
             Option<String>,
-            Vec<rapidfind_core::tree::TreeRow>,
+            Vec<quickseek_core::tree::TreeRow>,
             u64,
             Option<String>,
         ) = match &scope {
@@ -1802,7 +1802,7 @@ impl App {
         self.ensure_series(&paths);
         let strip = {
             let g = self.growth.borrow();
-            let now = rapidfind_core::history::now_unix();
+            let now = quickseek_core::history::now_unix();
             let mut times: Vec<i64> = g.snaps.iter().map(|s| s.time).collect();
             times.push(now);
             let at = |v: u64| if v == u64::MAX { 0 } else { v };
@@ -1894,7 +1894,7 @@ impl App {
             d.days = {
                 let g = self.growth.borrow();
                 let mut times: Vec<i64> = g.snaps.iter().map(|s| s.time).collect();
-                times.push(rapidfind_core::history::now_unix());
+                times.push(quickseek_core::history::now_unix());
                 let mut vals = g
                     .series
                     .get(&crate::growth::key(&n.path()))
@@ -1926,10 +1926,10 @@ impl App {
         &self,
         n: &tv::Node,
         max: usize,
-    ) -> Vec<(crate::growth::MapItem, rapidfind_core::tree::TreeRow)> {
+    ) -> Vec<(crate::growth::MapItem, quickseek_core::tree::TreeRow)> {
         use crate::growth::MapItem;
         let rows = self.growth_children(n, TreeSort::Size);
-        let mut out: Vec<(MapItem, rapidfind_core::tree::TreeRow)> = rows
+        let mut out: Vec<(MapItem, quickseek_core::tree::TreeRow)> = rows
             .into_iter()
             .map(|r| {
                 (
@@ -1966,7 +1966,7 @@ impl App {
             };
             out.push((
                 MapItem { name, ..rest },
-                rapidfind_core::tree::TreeRow::default(),
+                quickseek_core::tree::TreeRow::default(),
             ));
         }
         out
@@ -2202,7 +2202,7 @@ impl App {
         for start in missing {
             match c.be.fetch(start as u64, BLOCK as u32) {
                 Ok(p) => self.results.borrow_mut().insert(start, p.rows),
-                Err(e) if e == rapidfind_core::ipc::STALE => {
+                Err(e) if e == quickseek_core::ipc::STALE => {
                     drop(c);
                     self.search(true);
                     return;
@@ -2379,7 +2379,7 @@ impl App {
                 w::message_box(
                     hwnd,
                     SYNTAX_HELP,
-                    "rapidfind search syntax",
+                    "quickseek search syntax",
                     MB_OK | MB_ICONINFORMATION,
                 );
             }
@@ -2387,10 +2387,10 @@ impl App {
                 w::message_box(
                     hwnd,
                     &format!(
-                        "rapidfind {}\nInstant filename search for NTFS, ReFS, folders and network shares.",
+                        "Quickseek {}\nInstant filename search for NTFS, ReFS, folders and network shares.",
                         env!("CARGO_PKG_VERSION")
                     ),
-                    "About rapidfind",
+                    "About Quickseek",
                     MB_OK | MB_ICONINFORMATION,
                 );
             }
@@ -2431,7 +2431,7 @@ impl App {
             CMD_SAVE_POINT => {
                 let name = format!(
                     "Save point {}",
-                    crate::growth::day(rapidfind_core::history::now_unix(), true)
+                    crate::growth::day(quickseek_core::history::now_unix(), true)
                 );
                 let res = self
                     .conn
@@ -2574,7 +2574,7 @@ impl App {
     }
 
     fn export(&self) {
-        let Some(path) = shell::pick_save_file(self.hwnd.get(), "rapidfind results.csv") else {
+        let Some(path) = shell::pick_save_file(self.hwnd.get(), "Quickseek results.csv") else {
             return;
         };
         let total = self.results.borrow().total;
@@ -2605,7 +2605,7 @@ impl App {
             w::message_box(
                 self.hwnd.get(),
                 &format!("Export failed: {e}"),
-                "rapidfind",
+                "quickseek",
                 MB_OK | MB_ICONERROR,
             );
         }
@@ -2735,7 +2735,7 @@ impl App {
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_APP_TRAY;
         nid.hIcon = self.tray_icon.get();
-        let tip = wide("rapidfind");
+        let tip = wide("Quickseek");
         nid.szTip[..tip.len()].copy_from_slice(&tip);
         unsafe { Shell_NotifyIconW(NIM_ADD, &nid) };
     }
@@ -2750,7 +2750,7 @@ impl App {
 
     fn tray_menu(&self) {
         let menu = unsafe { CreatePopupMenu() };
-        w::menu_item(menu, CMD_SHOW, "Show rapidfind");
+        w::menu_item(menu, CMD_SHOW, "Show Quickseek");
         w::menu_item(menu, CMD_OPTIONS, "Options…");
         w::menu_sep(menu);
         w::menu_item(menu, CMD_EXIT, "Exit");
@@ -3079,7 +3079,7 @@ dc: (created)  rc: (recently changed)
 parent:C:\\dir\tdirect children    depth:2
 empty:\tempty folders     attrib:HS\tattributes
 dupe:  sizedupe:\tduplicate names / sizes
-runcount:>0\topened from rapidfind
+runcount:>0\topened from quickseek
 file:  folder:  audio:  video:  pic:  doc:  exe:  zip:
 
 content:text	the file contains text (read as you; Esc stops)
@@ -3426,7 +3426,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         let (x, y, cw, ch) = settings
             .window
             .unwrap_or((CW_USEDEFAULT, CW_USEDEFAULT, 1180, 720));
-        let title = wide("rapidfind");
+        let title = wide("Quickseek");
         let hwnd = CreateWindowExW(
             0,
             class.as_ptr(),

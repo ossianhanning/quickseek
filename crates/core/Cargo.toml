@@ -1,6 +1,6 @@
 [package]
-name = "rapidfind-core"
-description = "rapidfind engine: NTFS/ReFS indexes from the MFT, live USN updates, search, folder sizes and history"
+name = "quickseek-core"
+description = "Quickseek engine: NTFS/ReFS indexes from the MFT, live USN updates, search, folder sizes and history"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

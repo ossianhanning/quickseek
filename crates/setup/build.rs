@@ -1,16 +1,16 @@
 // Embeds the binaries to install (zstd-compressed) from the folder in
-// RAPIDFIND_SETUP_PAYLOAD (tools\build-release.ps1 sets it to the release
+// QUICKSEEK_SETUP_PAYLOAD (tools\build-release.ps1 sets it to the release
 // output). Without it the installer builds with an empty payload and says so
 // when run. Also embeds a manifest asking for administrator rights (the
 // service and Program Files need them) and Common Controls v6.
 
-const FILES: [&str; 3] = ["rapidfind.exe", "rapidfind-gui.exe", "rapidfind-mcp.exe"];
+const FILES: [&str; 3] = ["quickseek.exe", "quickseek-gui.exe", "quickseek-mcp.exe"];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=RAPIDFIND_SETUP_PAYLOAD");
+    println!("cargo:rerun-if-env-changed=QUICKSEEK_SETUP_PAYLOAD");
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let payload = std::env::var_os("RAPIDFIND_SETUP_PAYLOAD").map(std::path::PathBuf::from);
+    let payload = std::env::var_os("QUICKSEEK_SETUP_PAYLOAD").map(std::path::PathBuf::from);
     for f in FILES {
         let data = match &payload {
             Some(dir) => {
@@ -55,11 +55,11 @@ BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "CompanyName", "Ossian Hanning"
-      VALUE "FileDescription", "rapidfind setup"
+      VALUE "FileDescription", "Quickseek Setup"
       VALUE "FileVersion", "{v}"
-      VALUE "InternalName", "rapidfind-setup"
-      VALUE "OriginalFilename", "rapidfind-setup.exe"
-      VALUE "ProductName", "rapidfind"
+      VALUE "InternalName", "quickseek-setup"
+      VALUE "OriginalFilename", "quickseek-setup.exe"
+      VALUE "ProductName", "Quickseek"
       VALUE "ProductVersion", "{v}"
     END
   END

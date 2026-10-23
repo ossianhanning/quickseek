@@ -1,23 +1,23 @@
 # Development
-Building, testing and releasing rapidfind.
+Building, testing and releasing Quickseek.
 
 ## Building
 
 Windows 10 or 11 with Rust (MSVC); `rust-toolchain.toml` pins the version CI uses, and rustup installs it on first build. `cargo build --release` builds the CLI and service
-(`rapidfind.exe`), the window (`rapidfind-gui.exe`) and the MCP server (`rapidfind-mcp.exe`) into
+(`quickseek.exe`), the window (`quickseek-gui.exe`) and the MCP server (`quickseek-mcp.exe`) into
 `target\release`. The installer embeds those binaries, so it's built by `tools\build-release.ps1`
 (see below) rather than by `cargo build`. To run a development build against the real index, install
-the service from it once, elevated: `target\release\rapidfind.exe service install`.
+the service from it once, elevated: `target\release\quickseek.exe service install`.
 
 ## Testing
 ```
-cargo test --workspace --exclude rapidfind-gui          # core + CLI unit tests
-cargo test -p rapidfind-gui --bins                      # GUI logic (highlighting, paging cache, settings)
-cargo test -p rapidfind-gui --test ui -- --test-threads=1
+cargo test --workspace --exclude quickseek-gui          # core + CLI unit tests
+cargo test -p quickseek-gui --bins                      # GUI logic (highlighting, paging cache, settings)
+cargo test -p quickseek-gui --test ui -- --test-threads=1
 ```
 
 The last command is the GUI end-to-end test. It starts the real
-`rapidfind-gui.exe` against a mock service (synthetic index, private pipe)
+`quickseek-gui.exe` against a mock service (synthetic index, private pipe)
 and drives it through UI Automation and MSAA:
 
 - typing a query filters results, with correct Name/Path/Size/Type cells
@@ -37,15 +37,15 @@ It opens a window and clicks, so don't type while it runs.
 
 Also:
 
-- `$env:RAPIDFIND_TEST_UNC='\\localhost\S\some\dir'; cargo test -p rapidfind-core --release unc_share -- --ignored` indexes and watches a real SMB share.
-- `cargo run -p rapidfind-gui --example mock_service -- --live` serves a synthetic index. Start the GUI with `RAPIDFIND_PIPE=\\.\pipe\rapidfind-mock` to try it without the service.
-- `rapidfind selftest` (elevated) checks the real index against the filesystem and exercises live updates.
+- `$env:QUICKSEEK_TEST_UNC='\\localhost\S\some\dir'; cargo test -p quickseek-core --release unc_share -- --ignored` indexes and watches a real SMB share.
+- `cargo run -p quickseek-gui --example mock_service -- --live` serves a synthetic index. Start the GUI with `QUICKSEEK_PIPE=\\.\pipe\quickseek-mock` to try it without the service.
+- `quickseek selftest` (elevated) checks the real index against the filesystem and exercises live updates.
 
 ## The demo PC
 
-`cargo run --release -p rapidfind-gui --example demo_service` serves a made-up Windows PC (a user `alex`,
-three drives, about 290,000 files and six weeks of folder-size history) on `\\.\pipe\rapidfind-demo`.
-Point the GUI, the CLI or `rapidfind-mcp` at it with `RAPIDFIND_PIPE=\\.\pipe\rapidfind-demo`. The data is
+`cargo run --release -p quickseek-gui --example demo_service` serves a made-up Windows PC (a user `alex`,
+three drives, about 290,000 files and six weeks of folder-size history) on `\\.\pipe\quickseek-demo`.
+Point the GUI, the CLI or `quickseek-mcp` at it with `QUICKSEEK_PIPE=\\.\pipe\quickseek-demo`. The data is
 built in [`crates/gui/tests/common/demo.rs`](../crates/gui/tests/common/demo.rs); a test keeps its history
 consistent with what the real tree computes.
 
@@ -56,7 +56,7 @@ The README images come from it, never from a real machine:
   (`theme-light-dark.png`); `python tools\frames-to-anim.py` (and `--dark`) makes the animations and
   `python tools\optimize-images.py` shrinks the PNGs. The README shows each light or dark image with
   `<picture>` and `prefers-color-scheme`, matching the reader's GitHub theme.
-- `python tools\mcp-images.py` asks `rapidfind-mcp` on the demo PC "where did my space go" and renders the
+- `python tools\mcp-images.py` asks `quickseek-mcp` on the demo PC "where did my space go" and renders the
   chat illustration and the chart with headless Edge.
 
 `name.png` is the high-resolution image (the display's scale for GUI shots, 2x for the MCP images) and

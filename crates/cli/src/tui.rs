@@ -7,11 +7,11 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, ClearType};
 use crossterm::{cursor, execute, queue};
-use rapidfind_core::fmt;
-use rapidfind_core::search::SortKey;
+use quickseek_core::fmt;
+use quickseek_core::search::SortKey;
 
-use rapidfind_core::ipc::Backend;
-use rapidfind_core::query::SearchFlags;
+use quickseek_core::ipc::Backend;
+use quickseek_core::query::SearchFlags;
 
 struct Row {
     name: String,

@@ -1,5 +1,5 @@
-"""README images of an AI assistant using rapidfind's MCP server, from real
-rapidfind-mcp output on the demo PC (start `demo_service` first, see
+"""README images of an AI assistant using Quickseek's MCP server, from real
+quickseek-mcp output on the demo PC (start `demo_service` first, see
 tools/demo-shots.ps1). Renders a neutral chat-style page and the drawn
 `present` charts with headless Edge at 1x and 2x into docs/images:
 
@@ -20,8 +20,8 @@ from datetime import datetime
 from PIL import Image, ImageChops
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-MCP = os.path.join(ROOT, "target", "release", "rapidfind-mcp.exe")
-PIPE = "\\\\.\\pipe\\rapidfind-demo"
+MCP = os.path.join(ROOT, "target", "release", "quickseek-mcp.exe")
+PIPE = "\\\\.\\pipe\\quickseek-demo"
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 OUT = os.path.join(ROOT, "docs", "images")
 BS = "\\"
@@ -33,7 +33,7 @@ def mcp(*calls):
     lines = [json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "readme", "version": "1"}}})]
     for i, (name, args) in enumerate(calls):
         lines.append(json.dumps({"jsonrpc": "2.0", "id": i + 1, "method": "tools/call", "params": {"name": name, "arguments": args}}))
-    env = dict(os.environ, RAPIDFIND_PIPE=PIPE)
+    env = dict(os.environ, QUICKSEEK_PIPE=PIPE)
     out = subprocess.run([MCP], input="\n".join(lines) + "\n", capture_output=True, text=True, env=env, check=True).stdout
     res = {}
     for line in out.splitlines():
@@ -192,7 +192,7 @@ def main():
         f"Want me to list what <code>cleanup_candidates</code> finds?</p>"
     )
     chat = (
-        '<div class="bar">AI assistant · rapidfind MCP server</div>'
+        '<div class="bar">AI assistant · Quickseek MCP server</div>'
         '<div class="user"><div>Where did my disk space go this month?</div></div>'
         '<div class="ai">'
         '<span class="tool"><b>disk_overview</b>()</span>'

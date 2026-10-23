@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::theme;
 use crate::w::{self, px, wide};
 
-const CLASS: &str = "rapidfind_msgbox";
+const CLASS: &str = "quickseek_msgbox";
 
 thread_local! {
     static ICON: Cell<HICON> = const { Cell::new(null_mut()) };

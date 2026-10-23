@@ -1,6 +1,6 @@
 //! The MCP tools: finding files, disk usage, cleanup candidates, deleting.
 //!
-//! Everything goes through a [`Backend`] (the rapidfind service over its
+//! Everything goes through a [`Backend`] (the Quickseek service over its
 //! pipe, or an in-process engine in tests), so the index answers instantly
 //! and the filesystem is only touched to delete, and to read file contents
 //! for `search_files`' `content` (here, with the rights of the user who
@@ -9,15 +9,15 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use rapidfind_core::content::{self, ContentOptions, ContentQuery};
-use rapidfind_core::fmt;
-use rapidfind_core::ipc::{self, Backend, Row, StatusInfo};
-use rapidfind_core::query::SearchFlags;
-use rapidfind_core::search::SortKey;
-use rapidfind_core::tree::{NodeRef, TreeLevel, TreeRow, TreeSort};
+use quickseek_core::content::{self, ContentOptions, ContentQuery};
+use quickseek_core::fmt;
+use quickseek_core::ipc::{self, Backend, Row, StatusInfo};
+use quickseek_core::query::SearchFlags;
+use quickseek_core::search::SortKey;
+use quickseek_core::tree::{NodeRef, TreeLevel, TreeRow, TreeSort};
 use serde_json::{Value, json};
 
-const SYNTAX: &str = "rapidfind query syntax (like Everything): space = AND, `a|b` = OR, `!a` = NOT, `<a b>|c` grouping, \"quoted phrases\". \
+const SYNTAX: &str = "Quickseek query syntax (like Everything): space = AND, `a|b` = OR, `!a` = NOT, `<a b>|c` grouping, \"quoted phrases\". \
 Wildcards: `*.mp4` matches whole names; in a path, `*` spans any number of folders and `\\*\\` also matches zero folders \
 (`users\\*\\*.pdf`, `C:\\Projects\\*\\node_modules`). A term with `\\` matches the full path. \
 Filters: `ext:jpg;png`, `size:>100mb`, `size:1gb..5gb`, `dm:today`, `dm:>=2026-01-01`, `dm:<last90days`, `dc:` (created, if indexed), \
@@ -39,7 +39,7 @@ pub fn list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Query in rapidfind syntax, e.g. `*.mkv size:>1gb` or `users\\*\\Downloads\\*.iso`." },
+                    "query": { "type": "string", "description": "Query in Quickseek syntax, e.g. `*.mkv size:>1gb` or `users\\*\\Downloads\\*.iso`." },
                     "name": { "type": "string", "description": "Name contains this (or matches it, with * and ? wildcards)." },
                     "path": { "type": "string", "description": "Only inside this folder (any depth), e.g. `C:\\Users\\me`." },
                     "extensions": { "type": "array", "items": { "type": "string" }, "description": "File extensions without dots, e.g. [\"mp4\", \"mkv\"]." },
@@ -774,7 +774,7 @@ impl Growth {
 
 fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
     let list = be.history()?;
-    let snap = |s: &rapidfind_core::history::SnapInfo| {
+    let snap = |s: &quickseek_core::history::SnapInfo| {
         let mut o = json!({ "id": s.id, "time": unix_time(s.time), "folders": s.folders });
         if s.is_save_point() {
             o["save_point"] = json!(if s.name.is_empty() {
@@ -793,7 +793,7 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
             "no snapshots yet: the service takes one a day, the first soon after it starts".into(),
         );
     }
-    let now = rapidfind_core::history::now_unix();
+    let now = quickseek_core::history::now_unix();
     let base = match s(a, "since") {
         Some(w) => match list
             .iter()
@@ -875,7 +875,7 @@ fn folder_growth(be: &mut dyn Backend, a: &Value) -> Result<Value, String> {
 /// null where a snapshot doesn't have the folder. Null with under 2 snapshots (at different times).
 fn timeline(
     be: &mut dyn Backend,
-    snaps: &[rapidfind_core::history::SnapInfo],
+    snaps: &[quickseek_core::history::SnapInfo],
     base: &str,
     path: Option<(&String, u64)>,
     children: &Value,
@@ -951,7 +951,7 @@ pub fn index_warnings(st: &StatusInfo) -> Vec<String> {
 }
 
 fn disk_overview(be: &mut dyn Backend) -> Result<Value, String> {
-    let status = be.status().ok_or("the rapidfind service isn't answering")?;
+    let status = be.status().ok_or("the Quickseek service isn't answering")?;
     let roots = be.tree("", SearchFlags::default(), TreeSort::Name, false);
     be.tree_close();
     let roots = roots.unwrap_or_default();
@@ -1484,7 +1484,7 @@ mod tests {
     #[test]
     fn content_search() {
         let dir =
-            std::env::temp_dir().join(format!("rapidfind-mcp-content-{}", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-mcp-content-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.txt"), "hello needle world").unwrap();
@@ -1492,12 +1492,12 @@ mod tests {
         let mut w16 = vec![0xFF, 0xFE];
         w16.extend("utf-16 Needle".encode_utf16().flat_map(u16::to_le_bytes));
         std::fs::write(dir.join("sub").join("c.log"), w16).unwrap();
-        let ix = rapidfind_core::folder::build(
+        let ix = quickseek_core::folder::build(
             &dir.to_string_lossy(),
-            rapidfind_core::fold::FoldMode::Lower,
+            quickseek_core::fold::FoldMode::Lower,
         );
-        let mut be = rapidfind_core::ipc::Local::new(Arc::new(
-            rapidfind_core::engine::Engine::from_indexes(vec![ix]),
+        let mut be = quickseek_core::ipc::Local::new(Arc::new(
+            quickseek_core::engine::Engine::from_indexes(vec![ix]),
         ));
         let paths = |v: &Value| {
             v["results"]
@@ -1548,10 +1548,10 @@ mod tests {
 
     #[test]
     fn growth_since_a_snapshot() {
-        use rapidfind_core::engine::Engine;
-        use rapidfind_core::tree::Tree;
+        use quickseek_core::engine::Engine;
+        use quickseek_core::tree::Tree;
         let root =
-            std::env::temp_dir().join(format!("rapidfind-mcp-growth-{}", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-mcp-growth-{}", std::process::id()));
         let (dir, hist) = (root.join("data"), root.join("history"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(dir.join("grows")).unwrap();
@@ -1562,15 +1562,15 @@ mod tests {
         std::fs::write(dir.join("shrinks").join("big.bin"), vec![1u8; 9000]).unwrap();
         std::fs::write(dir.join("shrinks").join("keep.bin"), vec![1u8; 100]).unwrap();
         let engine = |d: &std::path::Path| {
-            let e = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(
+            let e = Arc::new(Engine::from_indexes(vec![quickseek_core::folder::build(
                 &d.to_string_lossy(),
-                rapidfind_core::fold::FoldMode::Lower,
+                quickseek_core::fold::FoldMode::Lower,
             )]));
             e.enable_history(hist.clone());
             e
         };
         let eng = engine(&dir);
-        let mut be = rapidfind_core::ipc::Local::new(eng.clone());
+        let mut be = quickseek_core::ipc::Local::new(eng.clone());
         assert!(
             call(&mut be, "folder_growth", &json!({}))
                 .unwrap_err()
@@ -1583,7 +1583,7 @@ mod tests {
         std::fs::write(dir.join("grows").join("c.bin"), vec![1u8; 4000]).unwrap();
         std::fs::remove_file(dir.join("shrinks").join("big.bin")).unwrap();
         let eng = engine(&dir);
-        let mut be = rapidfind_core::ipc::Local::new(eng.clone());
+        let mut be = quickseek_core::ipc::Local::new(eng.clone());
         let v = call(&mut be, "folder_growth", &json!({ "list_snapshots": true })).unwrap();
         assert_eq!(v["snapshots"][0]["save_point"], json!("before"), "{v}");
         let p = dir.to_string_lossy().to_string();
@@ -1680,11 +1680,11 @@ mod tests {
     /// (not as all-new growth), and the rows still add up.
     #[test]
     fn growth_of_files_a_snapshot_did_or_did_not_keep() {
-        use rapidfind_core::engine::Engine;
-        use rapidfind_core::tree::Tree;
+        use quickseek_core::engine::Engine;
+        use quickseek_core::tree::Tree;
         for kept in [true, false] {
             let root = std::env::temp_dir().join(format!(
-                "rapidfind-mcp-growth-files-{kept}-{}",
+                "quickseek-mcp-growth-files-{kept}-{}",
                 std::process::id()
             ));
             let (dir, hist) = (root.join("data"), root.join("history"));
@@ -1695,9 +1695,9 @@ mod tests {
             }
             std::fs::write(dir.join("page.sys"), vec![1u8; 3000]).unwrap();
             let engine = || {
-                let e = Arc::new(Engine::from_indexes(vec![rapidfind_core::folder::build(
+                let e = Arc::new(Engine::from_indexes(vec![quickseek_core::folder::build(
                     &dir.to_string_lossy(),
-                    rapidfind_core::fold::FoldMode::Lower,
+                    quickseek_core::fold::FoldMode::Lower,
                 )]));
                 e.enable_history(hist.clone());
                 e
@@ -1716,7 +1716,7 @@ mod tests {
             for d in ["a", "b", "c"] {
                 std::fs::write(dir.join(d).join("y.bin"), vec![1u8; 10]).unwrap();
             }
-            let mut be = rapidfind_core::ipc::Local::new(engine());
+            let mut be = quickseek_core::ipc::Local::new(engine());
             let p = dir.to_string_lossy().to_string();
             let v = call(
                 &mut be,

@@ -15,7 +15,7 @@
    (below). The first submission of a new package gets a manual review there, usually within a
    few days.
 
-`tools\build-release.ps1 -Repo https://github.com/ossianhanning/rapidfind` does the same packaging
+`tools\build-release.ps1 -Repo https://github.com/ossianhanning/quickseek` does the same packaging
 locally, unsigned, into `target\dist`, and validates the manifests with `winget validate`.
 
 ## Before the first public release
@@ -33,7 +33,7 @@ Both of these need the repository to be public.
   → `winget`, add yourself as a required reviewer so each submission waits for a click.
 - Or submit by hand: download the manifests artifact from the release run, then
   `wingetcreate submit --token <token> <folder>` (or a pull request with the folder copied to
-  `manifests/o/OssianHanning/rapidfind/<version>` in winget-pkgs).
+  `manifests/o/OssianHanning/Quickseek/<version>` in winget-pkgs).
 - Check locally with `winget validate --manifest <folder>` and
   `winget install --manifest <folder>` (the latter needs `winget settings --enable LocalManifestFiles`
   once, elevated).
@@ -53,11 +53,11 @@ asks for, and how to apply:
 2. **Apply** at [signpath.org/apply](https://signpath.org/apply) with the repository URL, a
    description and the CODE_SIGNING.md link. They review it, which can take some weeks.
 3. **Once accepted**, in the SignPath web app:
-   - create the project with the slug `rapidfind` and link it to this GitHub repository as a
+   - create the project with the slug `quickseek` and link it to this GitHub repository as a
      trusted build system (GitHub Actions);
-   - add two artifact configurations: `programs` (a zip with `rapidfind.exe`, `rapidfind-gui.exe`
-     and `rapidfind-mcp.exe`, each signed with Authenticode) and `installer` (a zip with
-     `rapidfind-setup.exe`, signed);
+   - add two artifact configurations: `programs` (a zip with `quickseek.exe`, `quickseek-gui.exe`
+     and `quickseek-mcp.exe`, each signed with Authenticode) and `installer` (a zip with
+     `quickseek-setup.exe`, signed);
    - use the signing policy `release-signing`, with yourself as approver;
    - create an API token for a CI user that may submit to that policy.
 4. **In this repository**: add the secret `SIGNPATH_API_TOKEN` and the variable
@@ -66,5 +66,5 @@ asks for, and how to apply:
 5. Add the SignPath line to the README if they ask for it ("Free code signing provided by
    SignPath.io, certificate by SignPath Foundation"); CODE_SIGNING.md already has it.
 
-The slugs above (`rapidfind`, `release-signing`, `programs`, `installer`) are what the workflow
+The slugs above (`quickseek`, `release-signing`, `programs`, `installer`) are what the workflow
 uses; if SignPath gives you others, change them in `release.yml`.

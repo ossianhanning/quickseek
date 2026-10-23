@@ -1,12 +1,12 @@
 //! Folder-size tree mode: a flattened, expandable tree in an owner-data
 //! list view, with a +/− box per folder and a bar showing each entry's share
-//! of its parent. The service computes sizes (see `rapidfind_core::tree`);
+//! of its parent. The service computes sizes (see `quickseek_core::tree`);
 //! this module keeps the visible rows and draws them.
 
 use std::ptr::null;
 
-use rapidfind_core::fmt;
-use rapidfind_core::tree::{NodeRef, TreeRow, TreeSort};
+use quickseek_core::fmt;
+use quickseek_core::tree::{NodeRef, TreeRow, TreeSort};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Controls::*;

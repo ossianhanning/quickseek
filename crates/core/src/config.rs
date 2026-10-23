@@ -68,7 +68,7 @@ pub struct Config {
     /// Keyed by drive letter, e.g. `"C"`.
     pub volumes: BTreeMap<String, VolumeConfig>,
     pub folders: Vec<FolderConfig>,
-    /// Size used when rapidfind has to create a USN journal.
+    /// Size used when Quickseek has to create a USN journal.
     pub journal_max_size_kb: u64,
     pub journal_allocation_delta_kb: u64,
     /// Store date created (8 bytes per file). Needed for `dc:` and sorting

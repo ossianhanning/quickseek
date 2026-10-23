@@ -1,8 +1,8 @@
-//! Registering `rapidfind-mcp` with AI clients, per user and without admin:
+//! Registering `quickseek-mcp` with AI clients, per user and without admin:
 //! Claude Code (through its own `claude mcp` command), Claude Desktop,
 //! Cursor, VS Code (stable and Insiders), Windsurf and Antigravity (by merging
 //! their JSON config files) and Codex (its TOML config). Claude Code and
-//! Codex also get the rapidfind skill.
+//! Codex also get the Quickseek skill.
 //!
 //! Config files are edited carefully: key order is preserved, a backup is
 //! written next to the file first, other servers are left alone, a file that
@@ -15,8 +15,8 @@ use std::process::Command;
 use serde_json::{Map, Value, json};
 
 /// The name the server is registered under.
-pub const NAME: &str = "rapidfind";
-pub const EXE: &str = "rapidfind-mcp.exe";
+pub const NAME: &str = "quickseek";
+pub const EXE: &str = "quickseek-mcp.exe";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Client {
@@ -141,18 +141,18 @@ pub struct Status {
     pub registered: Option<String>,
     /// A problem reading its config (e.g. comments in VS Code's file).
     pub problem: Option<String>,
-    /// Claude Code and Codex: the rapidfind skill is installed.
+    /// Claude Code and Codex: the Quickseek skill is installed.
     pub skill: bool,
 }
 
 // ---- where the exe lives ------------------------------------------------------
 
-/// Per-user install folder (no admin): `%LOCALAPPDATA%\Programs\rapidfind`.
+/// Per-user install folder (no admin): `%LOCALAPPDATA%\Programs\quickseek`.
 pub fn user_dir() -> PathBuf {
     env_path("LOCALAPPDATA")
         .unwrap_or_else(std::env::temp_dir)
         .join("Programs")
-        .join("rapidfind")
+        .join("quickseek")
 }
 
 /// A folder that won't be rebuilt or cleaned under the client's feet:
@@ -172,7 +172,7 @@ pub fn is_stable_dir(dir: &Path) -> bool {
         )
 }
 
-/// The `rapidfind-mcp.exe` to register: `src` itself when it already lives in
+/// The `quickseek-mcp.exe` to register: `src` itself when it already lives in
 /// a stable folder, else a copy in [`user_dir`] (refreshed if it changed).
 pub fn stable_exe(src: &Path) -> Result<PathBuf, String> {
     if src.parent().is_some_and(is_stable_dir) {
@@ -205,7 +205,7 @@ pub fn plain_path(p: PathBuf) -> PathBuf {
     }
 }
 
-/// `rapidfind-mcp.exe` next to the running program, if it's there.
+/// `quickseek-mcp.exe` next to the running program, if it's there.
 pub fn sibling_exe() -> Option<PathBuf> {
     let p = std::env::current_exe().ok()?.parent()?.join(EXE);
     p.exists().then_some(p)
@@ -306,7 +306,7 @@ fn write_json(path: &Path, m: &Map<String, Value>) -> Result<(), String> {
     write_text(path, &(serde_json::to_string_pretty(m).unwrap() + "\n"))
 }
 
-/// `path` with `.ext` added to its file name (`config.toml.rapidfind-backup`).
+/// `path` with `.ext` added to its file name (`config.toml.quickseek-backup`).
 fn beside(path: &Path, ext: &str) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(ext);
@@ -319,10 +319,10 @@ fn write_text(path: &Path, text: &str) -> Result<(), String> {
         std::fs::create_dir_all(d).map_err(|e| format!("creating {}: {e}", d.display()))?;
     }
     if path.exists() {
-        std::fs::copy(path, beside(path, ".rapidfind-backup"))
+        std::fs::copy(path, beside(path, ".quickseek-backup"))
             .map_err(|e| format!("backing up {}: {e}", path.display()))?;
     }
-    let tmp = beside(path, ".rapidfind-tmp");
+    let tmp = beside(path, ".quickseek-tmp");
     std::fs::write(&tmp, text).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("replacing {}: {e}", path.display()))
 }
@@ -354,7 +354,7 @@ fn toml_registered(doc: &toml_edit::DocumentMut) -> Option<String> {
         .map(String::from)
 }
 
-/// Adds (or updates) `[mcp_servers.rapidfind]` in a Codex `config.toml`.
+/// Adds (or updates) `[mcp_servers.quickseek]` in a Codex `config.toml`.
 /// Everything else in the file stays as it was, comments included; keys a
 /// user added to our table (an `env`, timeouts) are kept.
 pub fn add_to_toml(path: &Path, exe: &Path) -> Result<(), String> {
@@ -387,7 +387,7 @@ pub fn add_to_toml(path: &Path, exe: &Path) -> Result<(), String> {
     write_text(path, &doc.to_string())
 }
 
-/// Removes `[mcp_servers.rapidfind]` from a Codex `config.toml` (the rest stays).
+/// Removes `[mcp_servers.quickseek]` from a Codex `config.toml` (the rest stays).
 pub fn remove_from_toml(path: &Path) -> Result<bool, String> {
     let Some(mut doc) = read_toml(path)? else {
         return Ok(false);
@@ -457,7 +457,7 @@ fn claude_code_registered() -> Option<String> {
 
 // ---- the Claude Code skill ------------------------------------------------------------
 
-/// Clients that get the rapidfind skill (`SKILL.md`, loaded by itself when a
+/// Clients that get the Quickseek skill (`SKILL.md`, loaded by itself when a
 /// request is about disk space or finding files).
 pub const SKILL_CLIENTS: [Client; 2] = [Client::ClaudeCode, Client::Codex];
 
@@ -482,8 +482,8 @@ pub fn skill_path(c: Client) -> Option<PathBuf> {
 pub fn skill_text(c: Client) -> String {
     match c {
         Client::Codex => crate::guide::SKILL_MD.replace(
-            "Its MCP tools (`mcp__rapidfind__*`)",
-            "Its MCP tools (the `rapidfind` server's)",
+            "Its MCP tools (`mcp__quickseek__*`)",
+            "Its MCP tools (the `quickseek` server's)",
         ),
         _ => crate::guide::SKILL_MD.to_string(),
     }
@@ -533,7 +533,7 @@ fn refresh_skill_at(p: &Path, text: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Removes `c`'s rapidfind skill (only if it's ours).
+/// Removes `c`'s Quickseek skill (only if it's ours).
 pub fn remove_skill(c: Client) -> Result<bool, String> {
     let Some(p) = skill_path(c) else {
         return Ok(false);
@@ -632,7 +632,7 @@ pub fn unregister(c: Client) -> Result<bool, String> {
 pub fn restart_hint(c: Client) -> &'static str {
     match c {
         Client::ClaudeCode => {
-            "new Claude Code sessions have it, with the rapidfind skill (`/mcp` lists the server)"
+            "new Claude Code sessions have it, with the Quickseek skill (`/mcp` lists the server)"
         }
         Client::ClaudeDesktop => "quit Claude Desktop (tray icon → Quit) and start it again",
         Client::Cursor => "Cursor picks it up in Settings → MCP (toggle it on if needed)",
@@ -641,7 +641,7 @@ pub fn restart_hint(c: Client) -> &'static str {
         }
         Client::Windsurf => "refresh MCP servers in Windsurf's Cascade panel",
         Client::Codex => {
-            "new Codex sessions have it, with the rapidfind skill (`/mcp` lists the server)"
+            "new Codex sessions have it, with the Quickseek skill (`/mcp` lists the server)"
         }
         Client::Antigravity => {
             "refresh MCP servers in Antigravity (Agent panel → MCP servers), or restart it"
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn refreshes_only_our_outdated_skill() {
-        let d = std::env::temp_dir().join(format!("rapidfind-skill-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("quickseek-skill-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("SKILL.md");
         let text = crate::guide::SKILL_MD;
@@ -665,7 +665,7 @@ mod tests {
         );
         std::fs::write(
             &p,
-            "---\nname: rapidfind\ndescription: old\n---\n3. Summarise in plain words\n",
+            "---\nname: quickseek\ndescription: old\n---\n3. Summarise in plain words\n",
         )
         .unwrap();
         assert!(refresh_skill_at(&p, text).unwrap());
@@ -674,12 +674,12 @@ mod tests {
         std::fs::write(&p, "---\nname: someone-elses\n---\n").unwrap();
         assert!(!refresh_skill_at(&p, text).unwrap(), "not ours");
         let codex = skill_text(Client::Codex);
-        assert!(codex.starts_with("---\nname: rapidfind\n") && !codex.contains("mcp__rapidfind__"));
+        assert!(codex.starts_with("---\nname: quickseek\n") && !codex.contains("mcp__quickseek__"));
         std::fs::remove_dir_all(&d).ok();
     }
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rapidfind-reg-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("quickseek-reg-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -690,13 +690,13 @@ mod tests {
         let d = tmp("merge");
         let p = d.join("mcp.json");
         std::fs::write(&p, "{\n  \"zeta\": 1,\n  \"mcpServers\": { \"unity\": { \"url\": \"http://x\" } },\n  \"alpha\": true\n}").unwrap();
-        let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\rapidfind\rapidfind-mcp.exe");
+        let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\quickseek\quickseek-mcp.exe");
         add_to_file(&p, false, exe).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         let v: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["mcpServers"]["unity"]["url"], "http://x");
         assert_eq!(
-            v["mcpServers"]["rapidfind"]["command"],
+            v["mcpServers"]["quickseek"]["command"],
             exe.to_string_lossy().as_ref()
         );
         assert!(
@@ -704,13 +704,13 @@ mod tests {
                 && text.find("mcpServers").unwrap() < text.find("alpha").unwrap(),
             "key order kept: {text}"
         );
-        assert!(d.join("mcp.json.rapidfind-backup").exists());
+        assert!(d.join("mcp.json.quickseek-backup").exists());
         // Re-registering replaces, removing leaves the rest.
-        add_to_file(&p, false, Path::new(r"D:\other\rapidfind-mcp.exe")).unwrap();
+        add_to_file(&p, false, Path::new(r"D:\other\quickseek-mcp.exe")).unwrap();
         assert!(remove_from_file(&p, false).unwrap());
         assert!(!remove_from_file(&p, false).unwrap());
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        assert!(v["mcpServers"].get("rapidfind").is_none() && v["mcpServers"]["unity"].is_object());
+        assert!(v["mcpServers"].get("quickseek").is_none() && v["mcpServers"]["unity"].is_object());
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -722,11 +722,11 @@ mod tests {
         let p = d.join("config.toml");
         let original = "# my Codex settings\nmodel = \"gpt-5\" # pinned\n\n[mcp_servers.blender]\ncommand = \"uvx\"\nargs = [\"blender-mcp\"]\n\n# debugger\n[mcp_servers.x64dbg]\ncommand = 'C:\\tools\\x64dbg-mcp.exe'\n\n[profiles.fast]\nmodel = \"o4-mini\"\n";
         std::fs::write(&p, original).unwrap();
-        let exe = Path::new(r"C:\Program Files\rapidfind\rapidfind-mcp.exe");
+        let exe = Path::new(r"C:\Program Files\Quickseek\quickseek-mcp.exe");
         add_to_toml(&p, exe).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         // Our table goes after the other servers; nothing else changes.
-        let block = "[mcp_servers.rapidfind]\ncommand = 'C:\\Program Files\\rapidfind\\rapidfind-mcp.exe'\nargs = []\n\n";
+        let block = "[mcp_servers.quickseek]\ncommand = 'C:\\Program Files\\Quickseek\\quickseek-mcp.exe'\nargs = []\n\n";
         assert!(
             text.contains(&format!("x64dbg-mcp.exe'\n\n{block}[profiles.fast]")),
             "{text}"
@@ -742,21 +742,21 @@ mod tests {
             Some(exe.to_str().unwrap())
         );
         assert_eq!(
-            std::fs::read_to_string(d.join("config.toml.rapidfind-backup")).unwrap(),
+            std::fs::read_to_string(d.join("config.toml.quickseek-backup")).unwrap(),
             original
         );
         // An existing table is updated in place; keys someone added stay.
         let edited = text.replace("args = []\n", "args = []\nstartup_timeout_sec = 20\n");
         std::fs::write(&p, &edited).unwrap();
-        add_to_toml(&p, Path::new(r"D:\rf\rapidfind-mcp.exe")).unwrap();
+        add_to_toml(&p, Path::new(r"D:\rf\quickseek-mcp.exe")).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(
             text.contains(
-                "command = 'D:\\rf\\rapidfind-mcp.exe'\nargs = []\nstartup_timeout_sec = 20\n"
+                "command = 'D:\\rf\\quickseek-mcp.exe'\nargs = []\nstartup_timeout_sec = 20\n"
             ),
             "{text}"
         );
-        assert_eq!(text.matches("[mcp_servers.rapidfind]").count(), 1);
+        assert_eq!(text.matches("[mcp_servers.quickseek]").count(), 1);
         // Removing gives back the original.
         assert!(remove_from_toml(&p).unwrap());
         assert_eq!(
@@ -770,7 +770,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&fresh)
                 .unwrap()
-                .starts_with("[mcp_servers.rapidfind]\n")
+                .starts_with("[mcp_servers.quickseek]\n")
         );
         let bad = d.join("bad.toml");
         std::fs::write(&bad, "this is = = not toml").unwrap();
@@ -805,18 +805,18 @@ mod tests {
         assert!(
             skill_path(Client::Codex)
                 .unwrap()
-                .ends_with(r".agents\skills\rapidfind\SKILL.md")
+                .ends_with(r".agents\skills\quickseek\SKILL.md")
         );
         assert_eq!(skill_path(Client::Cursor), None);
         // Antigravity's file can be empty (it creates it so).
         let d = tmp("agy");
         let p = d.join("mcp_config.json");
         std::fs::write(&p, "").unwrap();
-        add_to_file(&p, false, Path::new(r"C:\x\rapidfind-mcp.exe")).unwrap();
+        add_to_file(&p, false, Path::new(r"C:\x\quickseek-mcp.exe")).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(
-            v["mcpServers"]["rapidfind"]["command"],
-            r"C:\x\rapidfind-mcp.exe"
+            v["mcpServers"]["quickseek"]["command"],
+            r"C:\x\quickseek-mcp.exe"
         );
         std::fs::remove_dir_all(&d).ok();
     }
@@ -825,9 +825,9 @@ mod tests {
     fn vscode_format_new_files_and_refusals() {
         let d = tmp("vscode");
         let p = d.join("sub").join("mcp.json");
-        add_to_file(&p, true, Path::new(r"C:\x\rapidfind-mcp.exe")).unwrap();
+        add_to_file(&p, true, Path::new(r"C:\x\quickseek-mcp.exe")).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        assert_eq!(v["servers"]["rapidfind"]["type"], "stdio");
+        assert_eq!(v["servers"]["quickseek"]["type"], "stdio");
         // Comments (JSONC) and non-objects are left untouched.
         let c = d.join("commented.json");
         let original = "{ // my servers\n \"servers\": {} }";
@@ -849,11 +849,11 @@ mod tests {
         assert!(is_stable_dir(&user_dir()));
         // What --exe gives after canonicalize: still Program Files, as a plain path.
         let pf = plain_path(PathBuf::from(
-            r"\\?\C:\Program Files\rapidfind\rapidfind-mcp.exe",
+            r"\\?\C:\Program Files\Quickseek\quickseek-mcp.exe",
         ));
         assert_eq!(
             pf,
-            PathBuf::from(r"C:\Program Files\rapidfind\rapidfind-mcp.exe")
+            PathBuf::from(r"C:\Program Files\Quickseek\quickseek-mcp.exe")
         );
         if env_path("ProgramFiles").is_some_and(|p| p == Path::new(r"C:\Program Files")) {
             assert_eq!(
@@ -862,13 +862,13 @@ mod tests {
                 "registered where it is"
             );
         }
-        let unc = PathBuf::from(r"\\?\UNC\nas\tools\rapidfind-mcp.exe");
+        let unc = PathBuf::from(r"\\?\UNC\nas\tools\quickseek-mcp.exe");
         assert_eq!(plain_path(unc.clone()), unc);
         assert!(!is_stable_dir(Path::new(
-            r"S:\dev\rapidfind\target\release"
+            r"S:\dev\quickseek\target\release"
         )));
         if let Some(pf) = env_path("ProgramFiles") {
-            assert!(is_stable_dir(&pf.join("rapidfind")));
+            assert!(is_stable_dir(&pf.join("quickseek")));
         }
         for c in ALL {
             assert_eq!(Client::from_id(c.id()), Some(c));

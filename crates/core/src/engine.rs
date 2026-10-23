@@ -1353,7 +1353,7 @@ fn watch_folder(
         }
         needs_walk |= v.rewalk.swap(false, Ordering::Relaxed);
         if start_watch && !needs_walk {
-            if network && tok.is_none() && std::env::var_os("RAPIDFIND_SERVICE").is_some() {
+            if network && tok.is_none() && std::env::var_os("QUICKSEEK_SERVICE").is_some() {
                 nap(&v, &stop, Duration::from_secs(2)); // no credentials yet
                 continue;
             }
@@ -1371,7 +1371,7 @@ fn watch_folder(
                 && last_scan.elapsed() > Duration::from_secs(cfg.rescan_minutes as u64 * 60))
         {
             if !root.is_dir() {
-                let running_as_service = std::env::var_os("RAPIDFIND_SERVICE").is_some();
+                let running_as_service = std::env::var_os("QUICKSEEK_SERVICE").is_some();
                 v.set_state(if network && tok.is_none() && running_as_service {
                     "waiting for credentials"
                 } else {
@@ -1441,7 +1441,7 @@ mod tests {
     /// after a disk-full failure, saves wait for room; the next good save clears it.
     #[test]
     fn failed_saves_show_in_status() {
-        let d = std::env::temp_dir().join(format!("rapidfind-engine-save-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("quickseek-engine-save-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("C.db")).unwrap(); // a folder where the file goes: rename fails
         let e = Engine::from_indexes(vec![sample()]);
@@ -1484,7 +1484,7 @@ mod tests {
                 && !is_disk_full(&std::io::Error::from_raw_os_error(5))
         );
         assert_eq!(
-            drive_of(Path::new(r"C:\ProgramData\rapidfind\index\C.db")),
+            drive_of(Path::new(r"C:\ProgramData\quickseek\index\C.db")),
             "C:"
         );
         std::fs::remove_dir_all(&d).ok();
@@ -1586,7 +1586,7 @@ mod tests {
     #[test]
     fn folder_volumes_load_and_follow_changes() {
         let d =
-            std::env::temp_dir().join(format!("rapidfind-engine-folder-{}", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-engine-folder-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("one.txt"), b"1").unwrap();
@@ -1661,7 +1661,7 @@ mod tests {
     #[test]
     fn unreachable_folder_stays_listed_as_offline() {
         let d =
-            std::env::temp_dir().join(format!("rapidfind-engine-offline-{}", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-engine-offline-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let cfg_path = d.join("config.json");
@@ -1696,7 +1696,7 @@ mod tests {
 
 /// Real SMB: indexes a folder through the loopback share and watches it.
 /// Machine-specific, so ignored by default:
-/// `RAPIDFIND_TEST_UNC=\\localhost\S\some\dir cargo test unc_share -- --ignored`
+/// `QUICKSEEK_TEST_UNC=\\localhost\S\some\dir cargo test unc_share -- --ignored`
 #[cfg(test)]
 mod unc_tests {
     use super::*;
@@ -1704,10 +1704,10 @@ mod unc_tests {
     #[test]
     #[ignore]
     fn unc_share_walk_and_watch() {
-        let Ok(unc) = std::env::var("RAPIDFIND_TEST_UNC") else {
+        let Ok(unc) = std::env::var("QUICKSEEK_TEST_UNC") else {
             return;
         };
-        let tmp = std::env::temp_dir().join(format!("rapidfind-unc-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("quickseek-unc-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let cfg_path = tmp.join("config.json");
         Config {
@@ -1732,7 +1732,7 @@ mod unc_tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         println!("walked {:?} in {} ms", e.status(), t.elapsed().as_millis());
-        let probe = format!("rapidfind-unc-probe-{}.txt", std::process::id());
+        let probe = format!("quickseek-unc-probe-{}.txt", std::process::id());
         let path = std::path::PathBuf::from(format!("{}\\{probe}", folder::root_name(&unc)));
         std::fs::write(&path, b"x").unwrap();
         let t = Instant::now();
@@ -1769,12 +1769,12 @@ mod unc_tests {
     #[test]
     #[ignore]
     fn unc_share_cache_options() {
-        let Ok(unc) = std::env::var("RAPIDFIND_TEST_UNC") else {
+        let Ok(unc) = std::env::var("QUICKSEEK_TEST_UNC") else {
             return;
         };
         let key = folder::root_name(&unc);
         let db = persist::folder_db_path(&key);
-        let tmp = std::env::temp_dir().join(format!("rapidfind-unc-opts-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("quickseek-unc-opts-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let cfg_path = tmp.join("config.json");
         let base = Config {
@@ -1786,7 +1786,7 @@ mod unc_tests {
             }],
             ..Default::default()
         };
-        let probe = format!("rapidfind-opts-probe-{}.txt", std::process::id());
+        let probe = format!("quickseek-opts-probe-{}.txt", std::process::id());
         std::fs::write(format!("{key}\\{probe}"), b"x").unwrap();
 
         // 1. Cache off: walked, searchable, nothing written.
@@ -1861,7 +1861,7 @@ mod unc_tests {
                 .total,
             1
         );
-        let probe2 = format!("rapidfind-opts-probe2-{}.txt", std::process::id());
+        let probe2 = format!("quickseek-opts-probe2-{}.txt", std::process::id());
         std::fs::write(format!("{key}\\{probe2}"), b"y").unwrap();
         let t = Instant::now();
         while e

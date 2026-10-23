@@ -1,6 +1,6 @@
 [package]
-name = "rapidfind-setup"
-description = "Installer for rapidfind (service, GUI, CLI, MCP server)"
+name = "quickseek-setup"
+description = "Installer for Quickseek (service, GUI, CLI, MCP server)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,16 +12,16 @@ build = "build.rs"
 # need admin, which would stop the test binaries: name the library neutrally
 # and keep the tests there.
 [lib]
-name = "rapidfind_pkg"
+name = "quickseek_pkg"
 
 [[bin]]
-name = "rapidfind-setup"
+name = "quickseek-setup"
 path = "src/main.rs"
 test = false
 
 [dependencies]
-rapidfind-core = { path = "../core" }
-rapidfind-mcp = { path = "../mcp" }
+quickseek-core = { path = "../core" }
+quickseek-mcp = { path = "../mcp" }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Shell"] }
 zstd = "0.14.3"

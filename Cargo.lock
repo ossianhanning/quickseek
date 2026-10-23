@@ -680,22 +680,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "quote"
-version = "1.0.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
-dependencies = [
- "proc-macro2",
-]
-
-[[package]]
-name = "r-efi"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "rapidfind"
+name = "quickseek"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -703,14 +688,14 @@ dependencies = [
  "crossterm",
  "env_logger",
  "log",
- "rapidfind-core",
- "rapidfind-mcp",
+ "quickseek-core",
+ "quickseek-mcp",
  "serde_json",
  "windows-service",
 ]
 
 [[package]]
-name = "rapidfind-core"
+name = "quickseek-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -729,7 +714,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rapidfind-gui"
+name = "quickseek-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -737,8 +722,8 @@ dependencies = [
  "log",
  "memchr",
  "parking_lot",
- "rapidfind-core",
- "rapidfind-mcp",
+ "quickseek-core",
+ "quickseek-mcp",
  "serde",
  "serde_json",
  "uiautomation",
@@ -748,11 +733,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "rapidfind-mcp"
+name = "quickseek-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "rapidfind-core",
+ "quickseek-core",
  "serde",
  "serde_json",
  "toml_edit",
@@ -760,16 +745,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "rapidfind-setup"
+name = "quickseek-setup"
 version = "0.1.0"
 dependencies = [
  "embed-resource",
- "rapidfind-core",
- "rapidfind-mcp",
+ "quickseek-core",
+ "quickseek-mcp",
  "windows",
  "windows-sys",
  "zstd",
 ]
+
+[[package]]
+name = "quote"
+version = "1.0.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "r-efi"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rayon"

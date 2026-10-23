@@ -8,18 +8,18 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use rapidfind_core::config::FolderConfig;
-use rapidfind_core::engine::{self, Engine};
-use rapidfind_core::ipc::{self, Backend};
-use rapidfind_core::ntfs::journal::Journal;
-use rapidfind_core::ntfs::win;
-use rapidfind_core::query::{Query, SearchFlags};
-use rapidfind_core::search::{SearchOptions, SortKey, search};
-use rapidfind_core::{content, fmt, persist};
+use quickseek_core::config::FolderConfig;
+use quickseek_core::engine::{self, Engine};
+use quickseek_core::ipc::{self, Backend};
+use quickseek_core::ntfs::journal::Journal;
+use quickseek_core::ntfs::win;
+use quickseek_core::query::{Query, SearchFlags};
+use quickseek_core::search::{SearchOptions, SortKey, search};
+use quickseek_core::{content, fmt, persist};
 
 #[derive(Parser)]
 #[command(
-    name = "rapidfind",
+    name = "quickseek",
     version,
     about = "Instant filename search for NTFS volumes"
 )]
@@ -148,7 +148,7 @@ enum Cmd {
         #[command(subcommand)]
         action: HistoryCmd,
     },
-    /// Connect rapidfind-mcp to AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf). No admin needed.
+    /// Connect quickseek-mcp to AI assistants (Claude Code/Desktop, Cursor, VS Code, Windsurf). No admin needed.
     Mcp {
         #[command(subcommand)]
         action: McpCmd,
@@ -176,13 +176,13 @@ enum HistoryCmd {
 #[derive(Subcommand)]
 enum McpCmd {
     /// Register with every detected client (or only `--client ...`). Copies
-    /// rapidfind-mcp.exe to %LOCALAPPDATA%\Programs\rapidfind first unless it
+    /// quickseek-mcp.exe to %LOCALAPPDATA%\Programs\quickseek first unless it
     /// already lives in a stable folder.
     Install {
         /// claude-code, claude-desktop, cursor, vscode, vscode-insiders, windsurf
         #[arg(short, long)]
         client: Vec<String>,
-        /// rapidfind-mcp.exe to register (default: the one next to this program).
+        /// quickseek-mcp.exe to register (default: the one next to this program).
         #[arg(long)]
         exe: Option<std::path::PathBuf>,
     },
@@ -191,13 +191,13 @@ enum McpCmd {
         #[arg(short, long)]
         client: Vec<String>,
     },
-    /// Which clients are installed and where rapidfind is registered.
+    /// Which clients are installed and where Quickseek is registered.
     Status,
 }
 
 #[derive(Subcommand)]
 enum ServiceCmd {
-    /// Copy this binary to %ProgramData%\rapidfind, register and start the service (admin).
+    /// Copy this binary to %ProgramData%\quickseek, register and start the service (admin).
     /// Run from outside the install folder (a development build), it also
     /// updates the programs there, so they all stay the same build.
     Install,
@@ -280,8 +280,8 @@ fn open_backend(cli: &Cli, verbose: bool) -> anyhow::Result<Box<dyn Backend>> {
     }
     if !win::is_elevated() {
         bail!(concat!(
-            "the rapidfind service isn't running, and indexing in-process needs administrator rights.\n",
-            "Either install the service once from an elevated terminal (`rapidfind service install`),\n",
+            "the Quickseek service isn't running, and indexing in-process needs administrator rights.\n",
+            "Either install the service once from an elevated terminal (`quickseek service install`),\n",
             "or re-run this command elevated."
         ));
     }
@@ -308,7 +308,7 @@ fn require_admin() -> anyhow::Result<()> {
 /// config file (no admin needed).
 fn edit_config(
     cli: &Cli,
-    f: impl FnOnce(&mut rapidfind_core::config::Config) -> anyhow::Result<()>,
+    f: impl FnOnce(&mut quickseek_core::config::Config) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     if !cli.local
         && let Ok(c) = ipc::Client::connect()
@@ -319,7 +319,7 @@ fn edit_config(
         return be.set_config(&cfg).map_err(anyhow::Error::msg);
     }
     let path = persist::db_dir().join("config.json");
-    let mut cfg = rapidfind_core::config::Config::load(&path);
+    let mut cfg = quickseek_core::config::Config::load(&path);
     f(&mut cfg)?;
     cfg.save(&path)?;
     eprintln!(
@@ -329,13 +329,13 @@ fn edit_config(
     Ok(())
 }
 
-fn show_config(cli: &Cli) -> anyhow::Result<rapidfind_core::config::Config> {
+fn show_config(cli: &Cli) -> anyhow::Result<quickseek_core::config::Config> {
     if !cli.local
         && let Ok(c) = ipc::Client::connect()
     {
         return ipc::Remote(c).get_config().map_err(anyhow::Error::msg);
     }
-    Ok(rapidfind_core::config::Config::load(
+    Ok(quickseek_core::config::Config::load(
         &persist::db_dir().join("config.json"),
     ))
 }
@@ -375,7 +375,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(None) => println!("service: not installed"),
                 Err(e) => println!("service: unknown ({e})"),
             }
-            println!("this program: rapidfind {}", ipc::BUILD);
+            println!("this program: quickseek {}", ipc::BUILD);
             match ipc::Client::connect().and_then(|mut c| {
                 Ok((
                     c.call(&ipc::Request::Status)?,
@@ -402,7 +402,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 Ok(_) => println!("pipe {}: unexpected answer", ipc::PIPE_NAME),
                 Err(e) if ipc::is_version_mismatch(&e) => println!(
-                    "pipe {}: {e}; reinstall rapidfind so they match",
+                    "pipe {}: {e}; reinstall Quickseek so they match",
                     ipc::PIPE_NAME
                 ),
                 Err(e) => println!("pipe {}: not available ({e})", ipc::PIPE_NAME),
@@ -601,7 +601,7 @@ fn main() -> anyhow::Result<()> {
             depth,
             limit,
         } => {
-            use rapidfind_core::tree::{NodeRef, TreeRow, TreeSort};
+            use quickseek_core::tree::{NodeRef, TreeRow, TreeSort};
             let mut be = open_backend(&cli, false)?;
             let t = Instant::now();
             let roots = be
@@ -756,7 +756,7 @@ fn main() -> anyhow::Result<()> {
                 no_watch,
             } => {
                 let unc = win::universal_path(path);
-                let path = rapidfind_core::folder::root_name(&unc);
+                let path = quickseek_core::folder::root_name(&unc);
                 if !std::path::Path::new(&format!("{path}\\")).is_dir() {
                     eprintln!(
                         "warning: {path} isn't reachable right now; it will be indexed when it is"
@@ -775,7 +775,7 @@ fn main() -> anyhow::Result<()> {
                 println!("added {path}");
             }
             FolderCmd::Remove { path } => {
-                let path = rapidfind_core::folder::root_name(&win::universal_path(path));
+                let path = quickseek_core::folder::root_name(&win::universal_path(path));
                 edit_config(&cli, |c| {
                     let before = c.folders.len();
                     c.folders.retain(|f| !f.path.eq_ignore_ascii_case(&path));
@@ -792,7 +792,7 @@ fn main() -> anyhow::Result<()> {
             ConfigCmd::Set { file } => {
                 let text = std::fs::read_to_string(file)
                     .with_context(|| format!("reading {}", file.display()))?;
-                let new: rapidfind_core::config::Config = serde_json::from_str(&text)?;
+                let new: quickseek_core::config::Config = serde_json::from_str(&text)?;
                 edit_config(&cli, |c| {
                     *c = new;
                     Ok(())
@@ -829,8 +829,8 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn mcp_clients(ids: &[String]) -> anyhow::Result<Vec<rapidfind_mcp::register::Client>> {
-    use rapidfind_mcp::register::{ALL, Client};
+fn mcp_clients(ids: &[String]) -> anyhow::Result<Vec<quickseek_mcp::register::Client>> {
+    use quickseek_mcp::register::{ALL, Client};
     if ids.is_empty() {
         return Ok(ALL.into_iter().filter(|c| c.detected()).collect());
     }
@@ -848,14 +848,14 @@ fn mcp_clients(ids: &[String]) -> anyhow::Result<Vec<rapidfind_mcp::register::Cl
 }
 
 fn mcp(action: &McpCmd) -> anyhow::Result<()> {
-    use rapidfind_mcp::register as reg;
+    use quickseek_mcp::register as reg;
     match action {
         McpCmd::Status => {
             for s in reg::status_all() {
                 let state = match (&s.registered, &s.problem) {
                     (Some(cmd), _) => format!(
                         "registered: {cmd}{}",
-                        if s.skill { " (+ rapidfind skill)" } else { "" }
+                        if s.skill { " (+ Quickseek skill)" } else { "" }
                     ),
                     (None, Some(p)) => format!("can't tell: {p}"),
                     (None, None) if s.detected => "not registered".into(),
@@ -871,7 +871,7 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
                         .with_context(|| format!("{}", e.display()))?,
                 ),
                 None => reg::sibling_exe()
-                    .context("rapidfind-mcp.exe isn't next to this program; pass --exe")?,
+                    .context("quickseek-mcp.exe isn't next to this program; pass --exe")?,
             };
             let exe = reg::stable_exe(&src).map_err(anyhow::Error::msg)?;
             let clients = mcp_clients(client)?;
@@ -897,7 +897,7 @@ fn mcp(action: &McpCmd) -> anyhow::Result<()> {
         }
         McpCmd::Uninstall { client } => {
             let clients = if client.is_empty() {
-                rapidfind_mcp::register::ALL.to_vec()
+                quickseek_mcp::register::ALL.to_vec()
             } else {
                 mcp_clients(client)?
             };
@@ -923,7 +923,7 @@ fn signed_size(d: i64) -> String {
 }
 
 fn history_cmd(be: &mut dyn Backend, action: &HistoryCmd) -> anyhow::Result<()> {
-    use rapidfind_core::tree::{NodeRef, TreeSort};
+    use quickseek_core::tree::{NodeRef, TreeSort};
     let when = |t: i64| fmt::time((t + 11_644_473_600) * 10_000_000);
     match action {
         HistoryCmd::List => {
@@ -954,7 +954,7 @@ fn history_cmd(be: &mut dyn Backend, action: &HistoryCmd) -> anyhow::Result<()> 
         }
         HistoryCmd::Growth { path, days, limit } => {
             let list = be.history().map_err(anyhow::Error::msg)?;
-            let target = rapidfind_core::history::now_unix() - *days as i64 * 86_400;
+            let target = quickseek_core::history::now_unix() - *days as i64 * 86_400;
             let base = list
                 .iter()
                 .min_by_key(|s| (s.time - target).abs())

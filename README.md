@@ -1,4 +1,4 @@
-# rapidfind
+# Quickseek
 
 **Find any file on your Windows PC as you type, see where your disk space went, and let your AI
 assistant answer both.**
@@ -6,7 +6,7 @@ assistant answer both.**
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-as-you-type-dark.webp">
-    <img src="docs/images/search-as-you-type.webp" width="840" alt="Typing iceland*\*.mp4 in rapidfind: 290 video clips across two drives listed in 2 ms">
+    <img src="docs/images/search-as-you-type.webp" width="840" alt="Typing iceland*\*.mp4 in Quickseek: 290 video clips across two drives listed in 2 ms">
   </picture>
 </p>
 
@@ -21,13 +21,13 @@ assistant answer both.**
 ## Install
 
 ```powershell
-winget install OssianHanning.rapidfind
+winget install OssianHanning.Quickseek
 ```
 
-Or download `rapidfind-setup-<version>-x64.exe` from [Releases](../../releases) and run it. It installs
-to `C:\Program Files\rapidfind`: a background service that keeps the index (so searching needs no
+Or download `quickseek-setup-<version>-x64.exe` from [Releases](../../releases) and run it. It installs
+to `C:\Program Files\Quickseek`: a background service that keeps the index (so searching needs no
 admin rights), the window with a Start menu entry and a global hotkey (`Ctrl+Alt+Space`), the
-`rapidfind` command, and it connects the AI assistants it finds. Windows 10 or 11, 64-bit.
+`quickseek` command, and it connects the AI assistants it finds. Windows 10 or 11, 64-bit.
 
 ## A quick tour
 
@@ -63,7 +63,7 @@ every list, chart and dialog follows it.
 
 <img src="docs/images/theme-light-dark.png" width="840" alt="The search window in the light theme on the left and the dark theme on the right">
 
-**Ask your AI assistant.** "Where did my disk space go this month?" The assistant asks rapidfind
+**Ask your AI assistant.** "Where did my disk space go this month?" The assistant asks Quickseek
 and gets the answer with a ready-made chart, which it can draw if it renders charts.
 
 <img src="docs/images/mcp-chat.png" width="640" alt="An AI assistant answering where disk space went, with a chart of what grew and shrank">
@@ -80,14 +80,14 @@ All images come from a made-up demo PC ([how](docs/development.md#the-demo-pc)),
 
 ## AI assistants
 
-`rapidfind-mcp` works with any MCP client. These are connected automatically by the installer, from
-the window (Tools → Connect AI Assistants) or with `rapidfind mcp install`:
+`quickseek-mcp` works with any MCP client. These are connected automatically by the installer, from
+the window (Tools → Connect AI Assistants) or with `quickseek mcp install`:
 
 | Client | How |
 |---|---|
-| Claude Code | `claude mcp add`, plus a rapidfind skill |
+| Claude Code | `claude mcp add`, plus a Quickseek skill |
 | Claude Desktop | its config file, or the `.mcpb` extension from Releases |
-| Codex | `~/.codex/config.toml` (comments kept), plus a rapidfind skill |
+| Codex | `~/.codex/config.toml` (comments kept), plus a Quickseek skill |
 | Cursor | `~/.cursor/mcp.json` |
 | VS Code (and Insiders) | the user `mcp.json` (agent mode) |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
@@ -95,17 +95,17 @@ the window (Tools → Connect AI Assistants) or with `rapidfind mcp install`:
 
 Tools: `search_files`, `folder_sizes`, `folder_growth`, `disk_overview`, `cleanup_candidates`,
 `delete_paths` (Recycle Bin by default, refuses system folders) and `empty_recycle_bin`. See
-[the MCP section](docs/user-guide.md#mcp-server-rapidfind-mcp) of the user guide.
+[the MCP section](docs/user-guide.md#mcp-server-quickseek-mcp) of the user guide.
 
 ## Privacy
 
-- **Everything stays on your PC.** rapidfind has no telemetry, no update check and no cloud. It
+- **Everything stays on your PC.** Quickseek has no telemetry, no update check and no cloud. It
   makes no network connections, except to the network shares you add yourself.
 - The index holds names, sizes and dates, not file contents. Content search reads files on demand,
   as you, and never in the service.
 - **An AI assistant sees what it asks for.** When you connect one, the file names and sizes it gets
-  from rapidfind go wherever that assistant sends its conversation (often its vendor's cloud).
-  rapidfind tells the assistant to show what would go and ask before deleting (most clients also
+  from Quickseek go wherever that assistant sends its conversation (often its vendor's cloud).
+  Quickseek tells the assistant to show what would go and ask before deleting (most clients also
   confirm each tool call), and deletions go to the Recycle Bin unless you ask otherwise.
 - Any user signed in to the PC can search every indexed file name, as with Everything's service.
   See [service security](docs/user-guide.md#service-security).
@@ -115,7 +115,7 @@ Tools: `search_files`, `folder_sizes`, `folder_growth`, `disk_overview`, `cleanu
 [Everything](https://www.voidtools.com/) is the classic instant file search for Windows, and an
 inspiration. Measured on one PC with about 7 million files ([details](docs/benchmarks.md)):
 
-| | rapidfind | Everything |
+| | Quickseek | Everything |
 |---|---|---|
 | Typical searches (substring, `*.pdf`, `ext:dll`, `size:>1gb`, `dm:today`) | 0.2–4 ms | 6–18 ms |
 | Path wildcards (`*\system32\*.dll`) | 6 ms | 184 ms |
@@ -129,19 +129,19 @@ inspiration. Measured on one PC with about 7 million files ([details](docs/bench
 
 ## Details
 
-**Command line.** `rapidfind` alone is a terminal search-as-you-type; there's more:
+**Command line.** `quickseek` alone is a terminal search-as-you-type; there's more:
 
 ```powershell
-rapidfind search -l -s size -d "ext:mp4 size:>1gb"   # biggest videos
-rapidfind du C:\Users -d 2                           # biggest folders, two levels
-rapidfind history growth C:\Users --days 7           # what grew this week
-rapidfind status                                     # service, drives, index
+quickseek search -l -s size -d "ext:mp4 size:>1gb"   # biggest videos
+quickseek du C:\Users -d 2                           # biggest folders, two levels
+quickseek history growth C:\Users --days 7           # what grew this week
+quickseek status                                     # service, drives, index
 ```
 
 All commands and options are in the [user guide](docs/user-guide.md#command-line).
 
-**Uninstall.** Apps & Features, or `winget uninstall OssianHanning.rapidfind`. Your index and
-settings in `%ProgramData%\rapidfind` stay, for a later reinstall; `rapidfind-setup.exe --uninstall
+**Uninstall.** Apps & Features, or `winget uninstall OssianHanning.Quickseek`. Your index and
+settings in `%ProgramData%\quickseek` stay, for a later reinstall; `quickseek-setup.exe --uninstall
 --purge` removes them too.
 
 **Build from source.** Rust stable (MSVC) on Windows: `cargo build --release`. See

@@ -5,8 +5,8 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 ## What is signed
 
-Every release's Windows binaries: `rapidfind.exe` (CLI and service), `rapidfind-gui.exe`,
-`rapidfind-mcp.exe` and the installer `rapidfind-setup-<version>-x64.exe`, which embeds the other
+Every release's Windows binaries: `quickseek.exe` (CLI and service), `quickseek-gui.exe`,
+`quickseek-mcp.exe` and the installer `quickseek-setup-<version>-x64.exe`, which embeds the other
 three after they're signed. Nothing else is signed with this certificate.
 
 ## How releases are built
@@ -32,6 +32,6 @@ reviewed before they're merged.
 
 ## Privacy
 
-rapidfind makes no network connections of its own: no telemetry, no update checks, nothing sent
+Quickseek makes no network connections of its own: no telemetry, no update checks, nothing sent
 anywhere. It only reaches network shares that the user adds to the index. See the
 [privacy section](README.md#privacy) of the README.

@@ -1,4 +1,4 @@
-//! The setup window: options, Install/Update, progress, and launching rapidfind.
+//! The setup window: options, Install/Update, progress, and launching Quickseek.
 
 use std::cell::RefCell;
 use std::ptr::{null, null_mut};
@@ -18,9 +18,9 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use rapidfind_pkg::install::{self, Options, VERSION};
-use rapidfind_pkg::sys::{self, wide};
-use rapidfind_pkg::{Args, log_line};
+use quickseek_pkg::install::{self, Options, VERSION};
+use quickseek_pkg::sys::{self, wide};
+use quickseek_pkg::{Args, log_line};
 
 const ID_DIR: i32 = 10;
 const ID_SERVICE: i32 = 11;
@@ -44,7 +44,7 @@ thread_local! {
 }
 
 pub fn message(text: &str, error: bool) {
-    let (t, c) = (wide(text), wide("rapidfind setup"));
+    let (t, c) = (wide(text), wide("quickseek setup"));
     unsafe {
         MessageBoxW(
             null_mut(),
@@ -88,7 +88,7 @@ fn go(h: HWND) {
         let dir = ST
             .with(|s| s.borrow().as_ref().map(|s| s.opts.dir.clone()))
             .unwrap();
-        sys::launch_unelevated(&dir.join("rapidfind-gui.exe"));
+        sys::launch_unelevated(&dir.join("quickseek-gui.exe"));
         unsafe { DestroyWindow(h) };
         return;
     }
@@ -130,14 +130,14 @@ fn go(h: HWND) {
         Ok(()) => {
             let launch = ST.with(|s| s.borrow().as_ref().is_some_and(|s| s.launch));
             log(if launch {
-                "Open rapidfind with the button below, or from the Start menu."
+                "Open Quickseek with the button below, or from the Start menu."
             } else {
                 "Done."
             });
             if !o.mcp.is_empty() {
-                log("Restart the AI assistants you connected so they load rapidfind.");
+                log("Restart the AI assistants you connected so they load Quickseek.");
             }
-            set_text(item(h, ID_GO), "Open rapidfind");
+            set_text(item(h, ID_GO), "Open Quickseek");
             ST.with(|s| {
                 let mut b = s.borrow_mut();
                 let st = b.as_mut().unwrap();
@@ -222,7 +222,7 @@ fn font(h: HWND) -> HFONT {
 pub fn run(a: Args) -> i32 {
     if !install::has_payload() {
         message(
-            "This rapidfind-setup.exe was built without the program files. Build it with tools\\build-release.ps1.",
+            "This quickseek-setup.exe was built without the program files. Build it with tools\\build-release.ps1.",
             true,
         );
         return 1;
@@ -235,7 +235,7 @@ pub fn run(a: Args) -> i32 {
         };
         InitCommonControlsEx(&icc);
         let hinst = GetModuleHandleW(null());
-        let class = wide("rapidfind.setup");
+        let class = wide("quickseek.setup");
         let icon = app_icon();
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -253,7 +253,7 @@ pub fn run(a: Args) -> i32 {
         };
         RegisterClassExW(&wc);
         let installed = sys::installed_version();
-        let title = wide(&format!("rapidfind {VERSION} setup"));
+        let title = wide(&format!("quickseek {VERSION} setup"));
         let h = CreateWindowExW(
             0,
             class.as_ptr(),
@@ -309,13 +309,13 @@ pub fn run(a: Args) -> i32 {
         };
         let intro = match &installed {
             Some(v) if v == VERSION => format!(
-                "rapidfind {VERSION} is installed. Running setup again repairs it with the options below."
+                "quickseek {VERSION} is installed. Running setup again repairs it with the options below."
             ),
             Some(v) => format!(
-                "rapidfind {v} is installed; this updates it to {VERSION}. Your index and settings are kept."
+                "quickseek {v} is installed; this updates it to {VERSION}. Your index and settings are kept."
             ),
             None => format!(
-                "rapidfind {VERSION}: instant file search and folder sizes for all your drives."
+                "quickseek {VERSION}: instant file search and folder sizes for all your drives."
             ),
         };
         add("Static", &intro, 0, 0, -1, 20, 16, 550, 40);
@@ -339,10 +339,10 @@ pub fn run(a: Args) -> i32 {
                 a.opts.service,
             ),
             (ID_SHORTCUT, "Start menu shortcut", a.opts.shortcut),
-            (ID_PATH, "Add the rapidfind command to PATH", a.opts.path),
+            (ID_PATH, "Add the Quickseek command to PATH", a.opts.path),
             (
                 ID_STARTUP,
-                "Start rapidfind in the notification area when I sign in",
+                "Start Quickseek in the notification area when I sign in",
                 a.opts.startup,
             ),
         ];
@@ -370,7 +370,7 @@ pub fn run(a: Args) -> i32 {
             "Connect AI assistants (none found: Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex, Antigravity)".to_string()
         } else {
             format!(
-                "Connect AI assistants to rapidfind's MCP server: {}",
+                "Connect AI assistants to Quickseek's MCP server: {}",
                 detected.join(", ")
             )
         };
@@ -457,16 +457,16 @@ pub fn run(a: Args) -> i32 {
 pub fn uninstall(a: &Args) -> i32 {
     let dir = &a.opts.dir;
     let q = wide(&format!(
-        "Uninstall rapidfind from {}?\n\nThe service, shortcut and AI assistant connections are removed. Your index and settings in {} are kept{}.",
+        "Uninstall Quickseek from {}?\n\nThe service, shortcut and AI assistant connections are removed. Your index and settings in {} are kept{}.",
         dir.display(),
-        sys::program_data().join("rapidfind").display(),
+        sys::program_data().join("quickseek").display(),
         if a.purge {
             " (no: --purge deletes them too)"
         } else {
             ""
         }
     ));
-    let c = wide("rapidfind setup");
+    let c = wide("quickseek setup");
     if unsafe {
         MessageBoxW(
             null_mut(),

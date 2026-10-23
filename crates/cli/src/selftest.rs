@@ -3,10 +3,10 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure};
-use rapidfind_core::engine::{Engine, scan_volume};
-use rapidfind_core::ntfs::{usn, win};
-use rapidfind_core::query::Query;
-use rapidfind_core::search::SearchOptions;
+use quickseek_core::engine::{Engine, scan_volume};
+use quickseek_core::ntfs::{usn, win};
+use quickseek_core::query::Query;
+use quickseek_core::search::SearchOptions;
 
 fn find(eng: &Engine, q: &str) -> Vec<String> {
     let q = Query::parse(q).unwrap();
@@ -57,7 +57,7 @@ pub fn run(letter: char) -> anyhow::Result<()> {
     let t = Instant::now();
     let h = win::open_volume(letter, 0)?;
     let en = usn::scan_enum(&h)?;
-    let enum_ix = rapidfind_core::index::Index::from_scan(letter, &en);
+    let enum_ix = quickseek_core::index::Index::from_scan(letter, &en);
     println!(
         "    enum: {} live entries in {} ms",
         enum_ix.len_live(),

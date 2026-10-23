@@ -112,11 +112,11 @@ fn set_dword(root: HKEY, key: &str, value: &str, data: u32) -> Result<(), String
     }
 }
 
-/// Where a previous install put rapidfind (from its Apps & Features entry).
+/// Where a previous install put Quickseek (from its Apps & Features entry).
 pub fn installed_dir() -> Option<PathBuf> {
     get_string(HKEY_LOCAL_MACHINE, ARP_KEY, "InstallLocation")
         .map(PathBuf::from)
-        .filter(|p| p.join("rapidfind.exe").exists())
+        .filter(|p| p.join("quickseek.exe").exists())
 }
 
 pub fn installed_version() -> Option<String> {
@@ -127,7 +127,7 @@ pub fn write_arp(dir: &Path, size_kb: u32) -> Result<(), String> {
     let setup = dir.join(SETUP_EXE).to_string_lossy().into_owned();
     let k = ARP_KEY;
     let m = HKEY_LOCAL_MACHINE;
-    set_string(m, k, "DisplayName", "rapidfind", REG_SZ)?;
+    set_string(m, k, "DisplayName", "quickseek", REG_SZ)?;
     set_string(m, k, "DisplayVersion", VERSION, REG_SZ)?;
     set_string(m, k, "Publisher", "Ossian Hanning", REG_SZ)?;
     set_string(m, k, "InstallLocation", &dir.to_string_lossy(), REG_SZ)?;
@@ -135,7 +135,7 @@ pub fn write_arp(dir: &Path, size_kb: u32) -> Result<(), String> {
         m,
         k,
         "DisplayIcon",
-        &dir.join("rapidfind-gui.exe").to_string_lossy(),
+        &dir.join("quickseek-gui.exe").to_string_lossy(),
         REG_SZ,
     )?;
     set_string(
@@ -170,12 +170,12 @@ pub fn set_run_at_login(gui: Option<&Path>) -> Result<(), String> {
         Some(g) => set_string(
             HKEY_CURRENT_USER,
             RUN_KEY,
-            "rapidfind",
+            "quickseek",
             &format!("\"{}\" --background", g.display()),
             REG_SZ,
         ),
         None => {
-            let (k, v) = (wide(RUN_KEY), wide("rapidfind"));
+            let (k, v) = (wide(RUN_KEY), wide("quickseek"));
             unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr()) };
             Ok(())
         }
@@ -236,7 +236,7 @@ pub fn path_remove(dir: &Path) -> Result<(), String> {
 
 /// All users' Start menu entry.
 pub fn start_menu_link() -> PathBuf {
-    program_data().join(r"Microsoft\Windows\Start Menu\Programs\rapidfind.lnk")
+    program_data().join(r"Microsoft\Windows\Start Menu\Programs\quickseek.lnk")
 }
 
 pub fn shortcut(link: &Path, target: &Path, _args: &str, description: &str) -> Result<(), String> {
@@ -291,21 +291,21 @@ mod tests {
     #[test]
     fn path_list_edits() {
         assert_eq!(
-            edit_path_list(r"C:\a;C:\b", r"C:\Program Files\rapidfind", true),
-            r"C:\a;C:\b;C:\Program Files\rapidfind"
+            edit_path_list(r"C:\a;C:\b", r"C:\Program Files\Quickseek", true),
+            r"C:\a;C:\b;C:\Program Files\Quickseek"
         );
         assert_eq!(
             edit_path_list(
-                r"C:\a;c:\program files\RAPIDFIND\;C:\b;",
-                r"C:\Program Files\rapidfind",
+                r"C:\a;c:\program files\QUICKSEEK\;C:\b;",
+                r"C:\Program Files\Quickseek",
                 true
             ),
-            r"C:\a;C:\b;C:\Program Files\rapidfind"
+            r"C:\a;C:\b;C:\Program Files\Quickseek"
         );
         assert_eq!(
             edit_path_list(
-                r"C:\a;C:\Program Files\rapidfind;C:\b",
-                r"C:\Program Files\rapidfind",
+                r"C:\a;C:\Program Files\Quickseek;C:\b",
+                r"C:\Program Files\Quickseek",
                 false
             ),
             r"C:\a;C:\b"

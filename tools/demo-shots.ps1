@@ -19,12 +19,12 @@ New-Item -ItemType Directory -Force $out | Out-Null
 if (-not $NoBuild) {
   Push-Location $root
   $ErrorActionPreference = "Continue"
-  & cargo build --release -p rapidfind-gui --bin rapidfind-gui --example demo_service 2>&1 | Where-Object { "$_" -match "^(error|warning)" }
+  & cargo build --release -p quickseek-gui --bin quickseek-gui --example demo_service 2>&1 | Where-Object { "$_" -match "^(error|warning)" }
   $ErrorActionPreference = "Stop"
   Pop-Location
 }
 
-$pipe = '\\.\pipe\rapidfind-demo'
+$pipe = '\\.\pipe\quickseek-demo'
 if (-not (Test-Path $pipe)) {
   Start-Process "$rel\examples\demo_service.exe" -WindowStyle Hidden | Out-Null
   for ($i = 0; $i -lt 150 -and -not (Test-Path $pipe); $i++) { Start-Sleep -Milliseconds 200 }
@@ -100,9 +100,9 @@ function Shot($name, [hashtable]$settings, [scriptblock]$steps) {
   foreach ($k in $settings.Keys) { $s[$k] = $settings[$k] }
   # No BOM: the GUI reads plain UTF-8 JSON.
   [IO.File]::WriteAllText((Join-Path $dir "gui.json"), ($s | ConvertTo-Json))
-  $env:RAPIDFIND_PIPE = $pipe
-  $env:RAPIDFIND_GUI_DIR = $dir
-  $gui = Start-Process "$rel\rapidfind-gui.exe" -ArgumentList "--test" -PassThru
+  $env:QUICKSEEK_PIPE = $pipe
+  $env:QUICKSEEK_GUI_DIR = $dir
+  $gui = Start-Process "$rel\quickseek-gui.exe" -ArgumentList "--test" -PassThru
   $h = [IntPtr]::Zero
   for ($i = 0; $i -lt 75 -and $h -eq [IntPtr]::Zero; $i++) {
     Start-Sleep -Milliseconds 200

@@ -1,27 +1,27 @@
-//! rapidfind-setup: installs rapidfind (service, GUI, CLI, MCP server) into
+//! quickseek-setup: installs Quickseek (service, GUI, CLI, MCP server) into
 //! Program Files, or updates/uninstalls it. Runs elevated (the service needs it).
 //!
 //! ```text
-//! rapidfind-setup.exe                       window with options
-//! rapidfind-setup.exe --silent [--no-mcp]  install with defaults (winget uses this)
+//! quickseek-setup.exe                       window with options
+//! quickseek-setup.exe --silent [--no-mcp]  install with defaults (winget uses this)
 //!     --dir <folder> --no-service --no-shortcut --no-path --no-startup --no-launch
 //!     --mcp-clients claude-code,cursor      connect only these AI clients
-//!     --log <file>                          (default %TEMP%\rapidfind-setup.log)
-//! rapidfind-setup.exe --uninstall [--silent] [--purge]
+//!     --log <file>                          (default %TEMP%\quickseek-setup.log)
+//! quickseek-setup.exe --uninstall [--silent] [--purge]
 //! ```
-//! Everything is logged to %TEMP%\rapidfind-setup.log.
+//! Everything is logged to %TEMP%\quickseek-setup.log.
 
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod ui;
 
-use rapidfind_pkg::{install, log_line, parse};
+use quickseek_pkg::{install, log_line, parse};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let parsed = parse(&args);
     log_line(&format!(
-        "--- rapidfind-setup {} {}",
+        "--- quickseek-setup {} {}",
         install::VERSION,
         args.join(" ")
     ));

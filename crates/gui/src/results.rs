@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rapidfind_core::ipc::{Page, Row};
+use quickseek_core::ipc::{Page, Row};
 
 pub const BLOCK: usize = 256;
 /// Blocks kept around; beyond this the farthest ones are dropped.

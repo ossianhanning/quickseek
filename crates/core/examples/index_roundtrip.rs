@@ -1,11 +1,11 @@
 //! Loads a saved index (any supported format), saves it in the current
 //! format, loads that back and checks every entry is the same; prints the
 //! file sizes and load times. For checking a format change on real data:
-//! `cargo run --release -p rapidfind-core --example index_roundtrip -- C.db`
+//! `cargo run --release -p quickseek-core --example index_roundtrip -- C.db`
 
 use std::time::Instant;
 
-use rapidfind_core::persist;
+use quickseek_core::persist;
 
 fn main() {
     let src = std::env::args().nth(1).expect("an index file");
@@ -13,7 +13,7 @@ fn main() {
     let t = Instant::now();
     let mut a = persist::load(src).expect("load");
     let load_a = t.elapsed();
-    let out = std::env::temp_dir().join("rapidfind-roundtrip.db");
+    let out = std::env::temp_dir().join("quickseek-roundtrip.db");
     let t = Instant::now();
     persist::save(&mut a, &out).expect("save");
     let save = t.elapsed();

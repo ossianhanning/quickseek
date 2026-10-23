@@ -1,15 +1,15 @@
 //! Windows service: runs elevated (LocalSystem), owns the index for all NTFS
 //! volumes, keeps it live from the USN journal, and answers searches over the
-//! `\\.\pipe\rapidfind` named pipe, so the CLI and UI can run unelevated.
+//! `\\.\pipe\quickseek` named pipe, so the CLI and UI can run unelevated.
 //!
 //! Install layout (all under a directory only SYSTEM/Administrators can write,
 //! so nobody else can swap the binary a SYSTEM service runs):
-//!   %ProgramData%\rapidfind\rapidfind.exe   copy of the installing binary
-//!   %ProgramData%\rapidfind\index\C.db ...  saved indexes
-//!   %ProgramData%\rapidfind\service.log
+//!   %ProgramData%\quickseek\quickseek.exe   copy of the installing binary
+//!   %ProgramData%\quickseek\index\C.db ...  saved indexes
+//!   %ProgramData%\quickseek\service.log
 //!
 //! The service runs its own copy rather than the one in the install folder
-//! because that folder can be anywhere (`rapidfind-setup --dir`, a build
+//! because that folder can be anywhere (`quickseek-setup --dir`, a build
 //! folder), and a folder off a drive's root inherits write access for every
 //! user, which would let anyone replace what LocalSystem runs. The installer
 //! makes the copy from the install folder's binary; installing or updating
@@ -24,8 +24,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use rapidfind_core::engine::{Engine, EngineOptions};
-use rapidfind_core::{ipc, persist, upgrade};
+use quickseek_core::engine::{Engine, EngineOptions};
+use quickseek_core::{ipc, persist, upgrade};
 use windows_service::service::{
     ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
     ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
@@ -34,19 +34,19 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
 
-pub const NAME: &str = "rapidfind";
-const DISPLAY: &str = "rapidfind file index";
-const DESCRIPTION: &str = "Indexes NTFS volumes from the MFT and USN journal and answers filename searches over \\\\.\\pipe\\rapidfind.";
+pub const NAME: &str = "quickseek";
+const DISPLAY: &str = "Quickseek file index";
+const DESCRIPTION: &str = "Indexes NTFS volumes from the MFT and USN journal and answers filename searches over \\\\.\\pipe\\quickseek.";
 
 pub fn home() -> PathBuf {
     let base = std::env::var_os("ProgramData")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-    base.join("rapidfind")
+    base.join("quickseek")
 }
 
 fn installed_exe() -> PathBuf {
-    home().join("rapidfind.exe")
+    home().join("quickseek.exe")
 }
 
 fn manager(access: ServiceManagerAccess) -> anyhow::Result<ServiceManager> {
@@ -95,7 +95,7 @@ fn retire_old_programs() {
     if let Some(dir) = upgrade::install_dir() {
         let (ended, _) = upgrade::retire_old_programs(&dir);
         if ended > 0 {
-            println!("restarted {ended} running rapidfind-mcp server(s)");
+            println!("restarted {ended} running quickseek-mcp server(s)");
         }
     }
 }
@@ -236,10 +236,10 @@ pub fn query_state() -> anyhow::Result<Option<ServiceState>> {
 
 define_windows_service!(ffi_service_main, service_main);
 
-/// Entry point for `rapidfind service run`, invoked by the SCM.
+/// Entry point for `quickseek service run`, invoked by the SCM.
 pub fn run() -> anyhow::Result<()> {
     service_dispatcher::start(NAME, ffi_service_main)
-        .context("not started by the Service Control Manager (use `rapidfind service start`)")
+        .context("not started by the Service Control Manager (use `quickseek service start`)")
 }
 
 fn init_logging() {
@@ -262,7 +262,7 @@ fn service_main(_args: Vec<OsString>) {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     log::info!(
-        "rapidfind service {} starting ({exe}, protocol v{}-v{}, pid {})",
+        "quickseek service {} starting ({exe}, protocol v{}-v{}, pid {})",
         ipc::BUILD,
         ipc::MIN_PROTOCOL,
         ipc::PROTOCOL,
@@ -306,7 +306,7 @@ fn run_service() -> anyhow::Result<()> {
     // finished loading); a background loop loads volumes and keeps up with
     // drives being attached/removed and config changes.
     // SAFETY: set before any other thread is started.
-    unsafe { std::env::set_var("RAPIDFIND_SERVICE", "1") };
+    unsafe { std::env::set_var("QUICKSEEK_SERVICE", "1") };
     let engine = Arc::new(Engine::new(EngineOptions {
         config_path: Some(home().join("config.json")),
         runs_path: Some(home().join("runs.json")),
@@ -332,7 +332,7 @@ fn run_service() -> anyhow::Result<()> {
         .spawn(move || {
             log::info!("loading indexes");
             eng.sync_volumes();
-            if let Err(err) = eng.save_all(rapidfind_core::engine::SAVE_THRESHOLD) {
+            if let Err(err) = eng.save_all(quickseek_core::engine::SAVE_THRESHOLD) {
                 log::error!("save failed: {err:#}");
             }
             log::info!("ready");

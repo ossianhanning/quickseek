@@ -1,13 +1,13 @@
-//! rapidfind-mcp: a Model Context Protocol server (stdio) over the rapidfind
+//! quickseek-mcp: a Model Context Protocol server (stdio) over the Quickseek
 //! service, for finding files and freeing disk space from an AI assistant.
 //!
 //! Register it with an MCP client as a stdio server, e.g. for Claude Code:
-//! `claude mcp add rapidfind -- C:\path\to\rapidfind-mcp.exe`.
-//! It needs the rapidfind service running (or `RAPIDFIND_PIPE`), and runs
+//! `claude mcp add quickseek -- C:\path\to\quickseek-mcp.exe`.
+//! It needs the Quickseek service running (or `QUICKSEEK_PIPE`), and runs
 //! as the user who starts it: deletes happen with that user's rights.
 //!
 //! Updates: AI apps keep a server running for as long as they run, so after
-//! rapidfind is updated an old server can be left talking to a newer service.
+//! Quickseek is updated an old server can be left talking to a newer service.
 //! The service still speaks the previous protocol version, so that usually
 //! just works; when the two share no version, the call fails with a clear
 //! error and, if this program's file has been replaced since it started, the
@@ -15,7 +15,7 @@
 //! is restarting or not running is not an update: those calls fail (or are
 //! retried once) and the server keeps running.
 
-use rapidfind_mcp::tools;
+use quickseek_mcp::tools;
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -24,12 +24,12 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
-use rapidfind_core::ipc::{self, Backend, Request, Response};
+use quickseek_core::ipc::{self, Backend, Request, Response};
 use serde_json::{Value, json};
 
 const PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
-use rapidfind_mcp::guide;
+use quickseek_mcp::guide;
 
 /// Exit code after an update was found (EX_TEMPFAIL: start me again).
 const EXIT_UPDATED: i32 = 75;
@@ -58,7 +58,7 @@ impl Link {
     fn connect(pipe: &str, timeout: Duration, fault: Arc<AtomicU8>) -> io::Result<Link> {
         let mut c = ipc::Client::connect_to(pipe)?;
         eprintln!(
-            "rapidfind-mcp: connected to the service ({}, protocol v{})",
+            "quickseek-mcp: connected to the service ({}, protocol v{})",
             c.service_build().unwrap_or("an older build"),
             c.protocol()
         );
@@ -158,7 +158,7 @@ struct Server {
 
 impl Server {
     fn new() -> Server {
-        let pipe = std::env::var("RAPIDFIND_PIPE")
+        let pipe = std::env::var("QUICKSEEK_PIPE")
             .ok()
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| ipc::PIPE_NAME.to_string());
@@ -179,7 +179,7 @@ impl Server {
                 Err(e) if ipc::is_version_mismatch(&e) => return Err(self.mismatch(&e.to_string())),
                 Err(e) => {
                     return Err(format!(
-                        "can't reach the rapidfind service ({e}). Install/start it with `rapidfind service install` from an elevated terminal."
+                        "can't reach the Quickseek service ({e}). Install/start it with `quickseek service install` from an elevated terminal."
                     ));
                 }
             }
@@ -196,7 +196,7 @@ impl Server {
                 FINE => return r,
                 MISMATCH => {
                     self.be = None;
-                    return Err(self.mismatch("the rapidfind service is a different version"));
+                    return Err(self.mismatch("the Quickseek service is a different version"));
                 }
                 TIMED_OUT => {
                     self.be = None;
@@ -215,17 +215,17 @@ impl Server {
     }
 
     /// The error for a service of another version. If this program's file
-    /// has been replaced (rapidfind was updated), also arranges to exit, so
+    /// has been replaced (quickseek was updated), also arranges to exit, so
     /// the AI app starts the new one.
     fn mismatch(&mut self, detail: &str) -> String {
         if self.exe.as_ref().is_some_and(ExeStamp::replaced) {
             eprintln!(
-                "rapidfind-mcp: {detail}; this server ({}) was updated on disk: exiting so the new one is started",
+                "quickseek-mcp: {detail}; this server ({}) was updated on disk: exiting so the new one is started",
                 ipc::BUILD
             );
             self.exit = Some(EXIT_UPDATED);
             format!(
-                "rapidfind was updated and this MCP server is still the old version ({detail}). It is restarting to load the new one: retry the call."
+                "Quickseek was updated and this MCP server is still the old version ({detail}). It is restarting to load the new one: retry the call."
             )
         } else {
             let exe = self
@@ -233,7 +233,7 @@ impl Server {
                 .as_ref()
                 .map_or_else(String::new, |x| format!(" ({})", x.path.display()));
             format!(
-                "{detail}. Update or reinstall rapidfind (rapidfind-setup.exe) so the service and this MCP server{exe} are the same version, then retry."
+                "{detail}. Update or reinstall Quickseek (quickseek-setup.exe) so the service and this MCP server{exe} are the same version, then retry."
             )
         }
     }
@@ -242,7 +242,7 @@ impl Server {
     /// status says (asked on a new connection, briefly).
     fn timed_out(&mut self) -> String {
         let mut msg = format!(
-            "the rapidfind service didn't answer within {} s",
+            "the Quickseek service didn't answer within {} s",
             self.timeout.as_secs_f32()
         );
         let status = Link::connect(&self.pipe, Duration::from_secs(3), Arc::default())
@@ -251,7 +251,7 @@ impl Server {
         match status.map(|s| tools::index_warnings(&s)) {
             Some(w) if !w.is_empty() => msg = format!("{msg}: {}", w.join("; ")),
             Some(_) => msg.push_str(" (it may be busy loading or rescanning a drive); try again shortly"),
-            None => msg.push_str(" and isn't answering status requests either; restarting it (`rapidfind service stop`, then `start`, elevated) may help"),
+            None => msg.push_str(" and isn't answering status requests either; restarting it (`quickseek service stop`, then `start`, elevated) may help"),
         }
         msg
     }
@@ -266,7 +266,7 @@ impl Server {
             "initialize" => {
                 // Connect now: it logs both versions (and any mismatch) to the app's MCP log.
                 if let Err(e) = self.backend() {
-                    eprintln!("rapidfind-mcp: {e}");
+                    eprintln!("quickseek-mcp: {e}");
                 }
                 self.exit = None; // a server that was just started is the newest there is
                 let asked = params
@@ -281,7 +281,7 @@ impl Server {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
-                    "serverInfo": { "name": "rapidfind", "title": "rapidfind file search", "version": env!("CARGO_PKG_VERSION") },
+                    "serverInfo": { "name": "quickseek", "title": "Quickseek file search", "version": env!("CARGO_PKG_VERSION") },
                     "instructions": guide::INSTRUCTIONS,
                 }))
             }
@@ -325,7 +325,7 @@ impl Server {
 fn main() {
     let mut server = Server::new();
     eprintln!(
-        "rapidfind-mcp {} (protocol v{}-v{}) from {}",
+        "quickseek-mcp {} (protocol v{}-v{}) from {}",
         ipc::BUILD,
         ipc::MIN_PROTOCOL,
         ipc::PROTOCOL,
@@ -335,13 +335,13 @@ fn main() {
             .map_or_else(String::new, |x| x.path.display().to_string())
     );
     // An update brings a new skill text; installed copies are only written when registering.
-    match rapidfind_mcp::register::refresh_skill() {
+    match quickseek_mcp::register::refresh_skill() {
         Ok(done) => {
             for p in done {
-                eprintln!("rapidfind-mcp: updated the skill {}", p.display());
+                eprintln!("quickseek-mcp: updated the skill {}", p.display());
             }
         }
-        Err(e) => eprintln!("rapidfind-mcp: couldn't update the rapidfind skill: {e}"),
+        Err(e) => eprintln!("quickseek-mcp: couldn't update the Quickseek skill: {e}"),
     }
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
@@ -377,9 +377,9 @@ fn main() {
 mod tests {
     use std::sync::Arc;
 
-    use rapidfind_core::engine::Engine;
-    use rapidfind_core::index::Index;
-    use rapidfind_core::ntfs::{Meta, Scan, ScanName};
+    use quickseek_core::engine::Engine;
+    use quickseek_core::index::Index;
+    use quickseek_core::ntfs::{Meta, Scan, ScanName};
 
     use super::*;
 
@@ -451,7 +451,7 @@ mod tests {
     }
 
     fn pipe(tag: &str) -> String {
-        format!(r"\\.\pipe\rapidfind-mcp-test-{tag}-{}", std::process::id())
+        format!(r"\\.\pipe\quickseek-mcp-test-{tag}-{}", std::process::id())
     }
 
     fn tool_error(s: &mut Server) -> String {
@@ -484,7 +484,7 @@ mod tests {
             Response::Error("malformed message: protocol version".into()).encode_for(9)
         });
         let exe =
-            std::env::temp_dir().join(format!("rapidfind-mcp-test-{}.exe", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-mcp-test-{}.exe", std::process::id()));
         std::fs::write(&exe, b"old").unwrap();
         let mut s = Server {
             exe: Some(ExeStamp::of(exe.clone())),
@@ -492,7 +492,7 @@ mod tests {
         };
         let e = first_error(&mut s);
         assert!(
-            e.contains("are different versions") && e.contains("reinstall rapidfind"),
+            e.contains("are different versions") && e.contains("reinstall Quickseek"),
             "{e}"
         );
         assert_eq!(s.exit, None, "same program file: restarting wouldn't help");
@@ -509,7 +509,7 @@ mod tests {
             exe: Some(ExeStamp::of(std::env::current_exe().unwrap())),
             ..remote(&pipe("nobody"))
         };
-        assert!(tool_error(&mut s).contains("can't reach the rapidfind service"));
+        assert!(tool_error(&mut s).contains("can't reach the Quickseek service"));
         assert_eq!(s.exit, None);
     }
 
@@ -553,7 +553,7 @@ mod tests {
         let mut s = server();
         let init = s.handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-03-26", "capabilities": {} } })).unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
-        assert_eq!(init["result"]["serverInfo"]["name"], "rapidfind");
+        assert_eq!(init["result"]["serverInfo"]["name"], "quickseek");
         assert!(
             s.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
                 .is_none()
@@ -683,7 +683,7 @@ mod tests {
         );
         assert_eq!(r["failed"], 3);
         // A real temp file: dry run keeps it, a delete recycles it.
-        let dir = std::env::temp_dir().join(format!("rapidfind-mcp-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("quickseek-mcp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("junk.bin");
         std::fs::write(&f, vec![0u8; 4096]).unwrap();

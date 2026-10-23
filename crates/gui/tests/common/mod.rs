@@ -6,10 +6,10 @@ pub mod demo;
 
 use std::sync::{Arc, OnceLock};
 
-use rapidfind_core::engine::Engine;
-use rapidfind_core::index::Index;
-use rapidfind_core::ipc;
-use rapidfind_core::ntfs::{Meta, Scan, ScanName};
+use quickseek_core::engine::Engine;
+use quickseek_core::index::Index;
+use quickseek_core::ipc;
+use quickseek_core::ntfs::{Meta, Scan, ScanName};
 
 /// FILETIME for 2026-10-01 12:00 UTC.
 pub const BASE_TIME: i64 = 134_037_072_000_000_000;
@@ -26,8 +26,8 @@ pub const KNOWN: &[(&str, &str, u64, i64)] = &[
     ("Users\\me\\Videos", "movie.mkv", 4_000_000_000, 50),
     ("Users\\me\\Downloads", "setup.exe", 50_000_000, 2),
     ("Users\\me\\Downloads", "archive.zip", 900_000_000, 5),
-    ("Users\\me\\Projects\\rapidfind", "README.md", 4_096, 0),
-    ("Users\\me\\Projects\\rapidfind\\src", "main.rs", 12_000, 0),
+    ("Users\\me\\Projects\\quickseek", "README.md", 4_096, 0),
+    ("Users\\me\\Projects\\quickseek\\src", "main.rs", 12_000, 0),
 ];
 
 struct Builder {
@@ -175,8 +175,8 @@ pub fn serve(pipe: &str, engine: Arc<Engine>) {
 /// Videos grew steadily (+3.5 GB over 30 days), Downloads was cleaned up
 /// 3 days ago (it held 2 GB more before), and a save point 10 days ago.
 pub fn seed_history(engine: &Engine) {
-    use rapidfind_core::history::Snapshot;
-    use rapidfind_core::tree::Tree;
+    use quickseek_core::history::Snapshot;
+    use quickseek_core::tree::Tree;
     let mut t = Tree::build(engine, "", Default::default()).unwrap();
     let now_snap = t.snapshot(engine, "", 0, 1_000_000).unwrap();
     let h = engine.history().expect("history enabled");

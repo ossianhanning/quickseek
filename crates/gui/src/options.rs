@@ -4,8 +4,8 @@
 use std::cell::RefCell;
 use std::ptr::{null, null_mut};
 
-use rapidfind_core::config::{Config, FolderConfig, VolumeConfig};
-use rapidfind_core::ntfs::win as ntwin;
+use quickseek_core::config::{Config, FolderConfig, VolumeConfig};
+use quickseek_core::ntfs::win as ntwin;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{COLOR_BTNFACE, HBRUSH};
 use windows_sys::Win32::UI::Controls::*;
@@ -16,7 +16,7 @@ use crate::app::App;
 use crate::shell;
 use crate::w::{self, px, send, wide};
 
-pub const CLASS: &str = "rapidfind.options";
+pub const CLASS: &str = "quickseek.options";
 
 pub const ID_TABS: i32 = 900;
 pub const ID_HOTKEY: i32 = 910;
@@ -393,7 +393,7 @@ fn apply(app: &App) -> bool {
         w::message_box(
             h,
             &format!("\"{hk}\" isn't a valid hotkey (e.g. Ctrl+Alt+Space, Win+Shift+F, F12)."),
-            "rapidfind",
+            "quickseek",
             MB_OK | MB_ICONWARNING,
         );
         return false;
@@ -406,7 +406,7 @@ fn apply(app: &App) -> bool {
         w::message_box(
             h,
             &format!("Saving the index options failed:\n{e}"),
-            "rapidfind",
+            "quickseek",
             MB_OK | MB_ICONERROR,
         );
         return false;
@@ -468,7 +468,7 @@ fn on_folder_select() {
 
 fn add_folder(path: String) {
     let unc = ntwin::universal_path(path.trim());
-    let path = rapidfind_core::folder::root_name(&unc);
+    let path = quickseek_core::folder::root_name(&unc);
     if path.is_empty() {
         return;
     }
@@ -693,7 +693,7 @@ pub fn open(app: &App) {
             w::message_box(
                 app.hwnd.get(),
                 &format!("Can't read the index options:\n{e}"),
-                "rapidfind",
+                "quickseek",
                 MB_OK | MB_ICONERROR,
             );
             return;
@@ -718,7 +718,7 @@ pub fn open(app: &App) {
         RegisterClassExW(&wc);
         let owner = app.hwnd.get();
         let s = |v| px(owner, v);
-        let title = wide("rapidfind Options");
+        let title = wide("Quickseek Options");
         let hwnd = CreateWindowExW(
             WS_EX_DLGMODALFRAME,
             class.as_ptr(),
@@ -805,7 +805,7 @@ pub fn open(app: &App) {
         // General
         add(
             "Static",
-            "Global hotkey to show/hide rapidfind (e.g. Ctrl+Alt+Space; empty = none):",
+            "Global hotkey to show/hide Quickseek (e.g. Ctrl+Alt+Space; empty = none):",
             0,
             0,
             -1,
@@ -841,7 +841,7 @@ pub fn open(app: &App) {
         );
         add(
             "Button",
-            "Start rapidfind when Windows starts",
+            "Start Quickseek when Windows starts",
             chk,
             0,
             ID_LOGIN,

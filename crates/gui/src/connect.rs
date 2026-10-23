@@ -1,10 +1,10 @@
-//! Tools → Connect AI Assistants: register `rapidfind-mcp` with Claude Code,
+//! Tools → Connect AI Assistants: register `quickseek-mcp` with Claude Code,
 //! Claude Desktop, Cursor, VS Code and Windsurf (per user, no admin).
 
 use std::cell::RefCell;
 use std::ptr::{null, null_mut};
 
-use rapidfind_mcp::register::{self as reg, ALL};
+use quickseek_mcp::register::{self as reg, ALL};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{COLOR_BTNFACE, HBRUSH};
 use windows_sys::Win32::UI::Controls::{BST_CHECKED, BST_UNCHECKED};
@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::app::App;
 use crate::w::{self, px, send, wide};
 
-pub const CLASS: &str = "rapidfind.connect";
+pub const CLASS: &str = "quickseek.connect";
 /// Checkbox of client `i` is `ID_CLIENT + i`, its status label `ID_STATE + i`.
 pub const ID_CLIENT: i32 = 1100;
 pub const ID_STATE: i32 = 1150;
@@ -39,7 +39,7 @@ fn state_text(s: &reg::Status, exe: Option<&str>) -> String {
     match (&s.registered, &s.problem) {
         (Some(cmd), _) if exe.is_some_and(|e| e.eq_ignore_ascii_case(cmd)) => {
             if s.skill {
-                "connected, with the rapidfind skill".into()
+                "connected, with the Quickseek skill".into()
             } else {
                 "connected".into()
             }
@@ -87,7 +87,7 @@ fn refresh(h: HWND) {
         &match &exe {
             Some(p) => format!("Server: {}", p.display()),
             None => format!(
-                "{} isn't next to rapidfind-gui.exe, so there's nothing to register.",
+                "{} isn't next to quickseek-gui.exe, so there's nothing to register.",
                 reg::EXE
             ),
         },
@@ -215,7 +215,7 @@ pub fn open(app: &App) {
             };
         add(
             "Static",
-            "Let AI assistants search your files and find what takes disk space, through rapidfind's MCP server. It runs as you (no admin) and only when an assistant uses it.",
+            "Let AI assistants search your files and find what takes disk space, through Quickseek's MCP server. It runs as you (no admin) and only when an assistant uses it.",
             0,
             -1,
             16,

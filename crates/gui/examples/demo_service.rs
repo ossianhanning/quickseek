@@ -1,10 +1,10 @@
-//! The demo PC (see `tests/common/demo.rs`) as a rapidfind service, for
+//! The demo PC (see `tests/common/demo.rs`) as a quickseek service, for
 //! screenshots and trying the GUI or the MCP server without your own files:
 //!
 //! ```text
-//! cargo run --release -p rapidfind-gui --example demo_service
-//! set RAPIDFIND_PIPE=\\.\pipe\rapidfind-demo
-//! rapidfind-gui        (or rapidfind-mcp, rapidfind search ...)
+//! cargo run --release -p quickseek-gui --example demo_service
+//! set QUICKSEEK_PIPE=\\.\pipe\quickseek-demo
+//! quickseek-gui        (or quickseek-mcp, quickseek search ...)
 //! ```
 //!
 //! `--pipe <name>` serves on another pipe. Drive sizes and free space are the
@@ -15,7 +15,7 @@ mod common;
 
 use std::sync::Arc;
 
-use rapidfind_core::engine::Engine;
+use quickseek_core::engine::Engine;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -24,12 +24,12 @@ fn main() {
         .position(|a| a == "--pipe")
         .and_then(|i| args.get(i + 1))
         .cloned()
-        .unwrap_or_else(|| r"\\.\pipe\rapidfind-demo".into());
+        .unwrap_or_else(|| r"\\.\pipe\quickseek-demo".into());
     let t = std::time::Instant::now();
-    let pc = common::demo::build(rapidfind_core::history::now_unix());
-    rapidfind_core::tree::override_disk_space(pc.drives());
+    let pc = common::demo::build(quickseek_core::history::now_unix());
+    quickseek_core::tree::override_disk_space(pc.drives());
     let engine = Arc::new(Engine::from_indexes(pc.indexes()));
-    let history = std::env::temp_dir().join("rapidfind-demo-history");
+    let history = std::env::temp_dir().join("quickseek-demo-history");
     let _ = std::fs::remove_dir_all(&history);
     engine.enable_history(history.clone());
     pc.seed_history(engine.history().expect("history on"));

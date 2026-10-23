@@ -6,7 +6,7 @@ pub mod sys;
 use std::io::Write;
 use std::path::PathBuf;
 
-use rapidfind_mcp::register as reg;
+use quickseek_mcp::register as reg;
 
 pub struct Args {
     pub silent: bool,
@@ -67,7 +67,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
 
 static LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Appends to `--log <file>` (default %TEMP%\rapidfind-setup.log).
+/// Appends to `--log <file>` (default %TEMP%\quickseek-setup.log).
 /// Running as the LocalSystem account (its profile lives under system32).
 pub fn running_as_system() -> bool {
     std::env::var("USERPROFILE").is_ok_and(|p| p.to_lowercase().contains(r"\\systemprofile"))
@@ -77,7 +77,7 @@ pub fn log_line(s: &str) {
     let p = LOG
         .get()
         .cloned()
-        .unwrap_or_else(|| std::env::temp_dir().join("rapidfind-setup.log"));
+        .unwrap_or_else(|| std::env::temp_dir().join("quickseek-setup.log"));
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

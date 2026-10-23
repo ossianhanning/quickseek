@@ -57,7 +57,7 @@ use crate::query::SearchFlags;
 use crate::search::{Hit, ResultSet, SearchOptions, SortKey};
 use crate::tree::{NodeRef, Tree, TreeLevel, TreeRow, TreeSort};
 
-pub const PIPE_NAME: &str = r"\\.\pipe\rapidfind";
+pub const PIPE_NAME: &str = r"\\.\pipe\quickseek";
 const MAX_FRAME: u32 = 64 << 20;
 /// Newest protocol version this build speaks.
 pub const PROTOCOL: u8 = 4;
@@ -66,7 +66,7 @@ pub const MIN_PROTOCOL: u8 = 3;
 /// First byte of a hello and of its answer (no protocol version is 0).
 const HELLO: u8 = 0;
 /// This build: version + git commit (see build.rs).
-pub const BUILD: &str = env!("RAPIDFIND_BUILD");
+pub const BUILD: &str = env!("QUICKSEEK_BUILD");
 /// Error text for a fetch from a result set the index has outgrown.
 pub const STALE: &str = "stale result set";
 pub const LOADING: &str = "index is still loading";
@@ -411,7 +411,7 @@ impl Request {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!(
-                    "the rapidfind service is too old for this (it speaks protocol v{ver}); update rapidfind"
+                    "the Quickseek service is too old for this (it speaks protocol v{ver}); update Quickseek"
                 ),
             ));
         }
@@ -844,7 +844,7 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
 // ---- versions -------------------------------------------------------------------
 
 /// The client and the service share no protocol version: one of them is
-/// from another rapidfind build and has to be updated (or restarted).
+/// from another Quickseek build and has to be updated (or restarted).
 #[derive(Debug, Clone, PartialEq)]
 pub struct VersionMismatch {
     /// Versions the service speaks, if it said.
@@ -856,7 +856,7 @@ impl std::fmt::Display for VersionMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "this program (rapidfind {BUILD}, protocol v{MIN_PROTOCOL}-v{PROTOCOL}) and the rapidfind service"
+            "this program (quickseek {BUILD}, protocol v{MIN_PROTOCOL}-v{PROTOCOL}) and the Quickseek service"
         )?;
         match (&self.service_build, self.service) {
             (Some(b), Some((lo, hi))) => write!(f, " ({b}, protocol v{lo}-v{hi})")?,
@@ -1397,9 +1397,9 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to the service (or `RAPIDFIND_PIPE` if set); fails fast if it isn't running.
+    /// Connects to the service (or `QUICKSEEK_PIPE` if set); fails fast if it isn't running.
     pub fn connect() -> io::Result<Client> {
-        match std::env::var("RAPIDFIND_PIPE") {
+        match std::env::var("QUICKSEEK_PIPE") {
             Ok(p) if !p.is_empty() => Self::connect_to(&p),
             _ => Self::connect_to(PIPE_NAME),
         }
@@ -1962,7 +1962,7 @@ mod tests {
     fn session_history_compare_series() {
         use crate::index::tests::by_name;
         let dir =
-            std::env::temp_dir().join(format!("rapidfind-ipc-history-{}", std::process::id()));
+            std::env::temp_dir().join(format!("quickseek-ipc-history-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let eng = Arc::new(Engine::from_indexes(vec![sample()]));
         let mut be = Local::new(eng.clone());
@@ -2078,7 +2078,7 @@ mod tests {
     /// mask (works unelevated: the test user is an interactive user).
     #[test]
     fn pipe_roundtrip() {
-        let name = format!(r"\\.\pipe\rapidfind-test-{}", std::process::id());
+        let name = format!(r"\\.\pipe\quickseek-test-{}", std::process::id());
         let server_name = name.clone();
         let engine = Arc::new(std::sync::OnceLock::new());
         let e2 = engine.clone();
@@ -2205,7 +2205,7 @@ mod tests {
     #[test]
     fn talks_to_a_service_from_before_hellos() {
         // A v3 service rejects anything else (the hello too) with a v3 error.
-        let name = format!(r"\\.\pipe\rapidfind-test-v3-{}", std::process::id());
+        let name = format!(r"\\.\pipe\quickseek-test-v3-{}", std::process::id());
         fake_service(&name, |f| match Request::decode_any(f) {
             Ok((3, Request::Status)) => Response::Status(StatusInfo {
                 ready: true,
@@ -2226,7 +2226,7 @@ mod tests {
 
     #[test]
     fn incompatible_service_is_a_version_mismatch() {
-        let name = format!(r"\\.\pipe\rapidfind-test-v9-{}", std::process::id());
+        let name = format!(r"\\.\pipe\quickseek-test-v9-{}", std::process::id());
         fake_service(&name, |_| {
             Response::Error("malformed message: protocol version".into()).encode_for(9)
         });
@@ -2237,7 +2237,7 @@ mod tests {
             "{e}"
         );
         // A newer service that does hellos but dropped our versions says so (and its build).
-        let name = format!(r"\\.\pipe\rapidfind-test-v9h-{}", std::process::id());
+        let name = format!(r"\\.\pipe\quickseek-test-v9h-{}", std::process::id());
         fake_service(&name, |_| {
             let mut w = W(vec![HELLO, 0, 8, 9]);
             w.str("9.0.0+abc");
@@ -2249,7 +2249,7 @@ mod tests {
             "{e}"
         );
         // Not running is not a mismatch.
-        let e = Client::connect_to(r"\\.\pipe\rapidfind-test-nobody-here")
+        let e = Client::connect_to(r"\\.\pipe\quickseek-test-nobody-here")
             .err()
             .unwrap();
         assert!(!is_version_mismatch(&e));
@@ -2259,7 +2259,7 @@ mod tests {
     /// picks a version both know from a hello.
     #[test]
     fn serves_older_clients() {
-        let name = format!(r"\\.\pipe\rapidfind-test-old-{}", std::process::id());
+        let name = format!(r"\\.\pipe\quickseek-test-old-{}", std::process::id());
         let server_name = name.clone();
         let engine = Arc::new(std::sync::OnceLock::new());
         let _ = engine.set(Arc::new(Engine::from_indexes(vec![sample()])));

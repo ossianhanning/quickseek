@@ -609,7 +609,7 @@ mod tests {
         assert!(find(&ix, "notes.txt").is_empty());
 
         // The real lookup, on a temp folder of this machine.
-        let dir = std::env::temp_dir().join(format!("rapidfind-links-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("quickseek-links-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.o");

@@ -1,6 +1,6 @@
-# rapidfind and Everything: benchmarks
+# Quickseek and Everything: benchmarks
 
-[Everything](https://www.voidtools.com/) is the tool rapidfind is most often compared with, and the
+[Everything](https://www.voidtools.com/) is the tool Quickseek is most often compared with, and the
 one it learned from. These numbers come from one PC and one afternoon. They show where each tool is
 quicker, not a winner. Run [`tools/bench/bench.ps1`](../tools/bench/bench.ps1) to measure your own
 machine.
@@ -14,46 +14,46 @@ machine.
 | RAM | 64 GB |
 | Disks | SATA SSD 1 TB (C:), NVMe 1 TB (F:), NVMe 2 TB (S:) |
 | OS | Windows 11 Pro 10.0.26200 |
-| rapidfind | 0.1.0+c514c0b as the service, 6,913,961 entries on C:, F:, S: |
-| Everything | 1.4.1.1024 with its service, 6,686,064 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
+| Quickseek | 0.1.0+c514c0b as the service, 6,913,961 entries on C:, F:, S: |
+| Everything | 1.4.1.1024 with its service, 6,686,064 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to Quickseek's defaults) |
 
 ## Method
 
 - **Query latency** is what a client sees: a round trip to each tool's own process over its own IPC.
-  For rapidfind that's its named pipe ([`ipc_bench`](../crates/core/examples/ipc_bench.rs)), and for
+  For Quickseek that's its named pipe ([`ipc_bench`](../crates/core/examples/ipc_bench.rs)), and for
   Everything the `WM_COPYDATA` query from its SDK's `everything_ipc.h`. Both sort by name and return
   the first 100 results, as a list view would ask. Each query gets one warm-up run, then 41 timed
   runs: the median, and the 10th-90th percentile as the spread. Nothing else ran at the time, and
-  `bench.ps1` waits until no rapidfind volume is rescanning.
+  `bench.ps1` waits until no Quickseek volume is rescanning.
 - **Memory** is the working set and private bytes of the process holding the index, after the
   queries.
-- **Index on disk** is rapidfind's `%ProgramData%\rapidfind\index\*.db` and Everything's
+- **Index on disk** is Quickseek's `%ProgramData%\quickseek\index\*.db` and Everything's
   `Everything.db`.
 - **Cold build** (building the index with nothing saved) needs administrator rights for both tools.
-  rapidfind scans in its own process, ignoring the saved index; Everything runs as a separate
+  quickseek scans in its own process, ignoring the saved index; Everything runs as a separate
   instance with its own database, a copy of its settings and `-reindex`. Everything's time is from
   its own debug log (`-debug-log`: when it started, and when each volume was indexed and the
   database built), checked against its entry count over IPC and its normal database's count.
 
 **Hit counts.** This PC's Everything settings exclude one large cloud-synced folder on C: that
-rapidfind indexes. `bench.ps1` reads that list from Everything's settings and also counts
-rapidfind's hits outside it ("outside" below). There the two agree to within the files that
+Quickseek indexes. `bench.ps1` reads that list from Everything's settings and also counts
+Quickseek's hits outside it ("outside" below). There the two agree to within the files that
 changed between the counts, which shows the queries mean the same thing.
 
-`dm:today` is the exception: rapidfind found 850-1,000 more files modified today. All of them are
+`dm:today` is the exception: Quickseek found 850-1,000 more files modified today. All of them are
 in one build-output folder where a compiler keeps creating, renaming and deleting folders of object
-files. Everything had those folders, but only 3 of the 98-260 files in each; rapidfind's counts
+files. Everything had those folders, but only 3 of the 98-260 files in each; Quickseek's counts
 matched what was on disk (97 of 98, 157 of 157, 259 of 259 in a sample). So Everything had missed
-them; it isn't a rapidfind error.
+them; it isn't a Quickseek error.
 
 ## Results
 
 Round trip in milliseconds, median and 10th-90th percentile of 41 runs; lower is quicker. Hits are
-rapidfind (outside Everything's excludes) / Everything. The middle column is an earlier run of the
+Quickseek (outside Everything's excludes) / Everything. The middle column is an earlier run of the
 same build, a few hours before (Everything was slower then on every row, the machine busier); the
 035aabe column is the build before the stored orders, median of 15 runs.
 
-| Query | rapidfind c514c0b | Everything | earlier run: rapidfind / Everything | rapidfind 035aabe | Hits |
+| Query | Quickseek c514c0b | Everything | earlier run: quickseek / Everything | Quickseek 035aabe | Hits |
 |---|---:|---:|---:|---:|---|
 | `report` (substring) | **4.1** (3.8-5.7) | 18.3 (16.9-20.4) | 4.2 / 36.6 | 7.9 | 7,576 / 7,576 |
 | `*.pdf` | **0.8** (0.7-1.1) | 7.2 (6.6-8.2) | 1.2 / 10.7 | 8.5 | 2,473 / 2,473 |
@@ -66,9 +66,9 @@ same build, a few hours before (Everything was slower then on every row, the mac
 | `a` (4.2 million hits) | **12.1** (11.3-13.3) | 16.5 (15.2-17.2) | 15.8 / 25.6 | 19.1 | 4,241,917 / 4,242,666 |
 | `f:\` (a whole drive, 1.9 million hits) | **5.0** (4.7-6.0) | 13.1 (12.6-14.2) | 6.6 / 21.2 | 9.7 | 1,914,007 / 1,912,735 |
 
-In both runs, on every row rapidfind's 90th percentile is below Everything's 10th.
+In both runs, on every row Quickseek's 90th percentile is below Everything's 10th.
 
-| | rapidfind c514c0b | Everything | rapidfind 035aabe |
+| | Quickseek c514c0b | Everything | Quickseek 035aabe |
 |---|---:|---:|---:|
 | Memory, working set / private | 501-552 / 541-573 MB ¹ | 590-591 / 579-580 MB | 488 / 488 MB |
 | Index on disk | 75 MB | 260 MB | 74 MB |
@@ -78,7 +78,7 @@ In both runs, on every row rapidfind's 90th percentile is below Everything's 10t
 stored orders (below) cost most of the difference to 035aabe; on private bytes the gap to
 Everything is now 7-39 MB.
 
-² 27.3 s for C: alone (11:37). rapidfind builds C:, F: and S: in parallel in 28.8-40.7 s, 6.91 M
+² 27.3 s for C: alone (11:37). Quickseek builds C:, F: and S: in parallel in 28.8-40.7 s, 6.91 M
 entries in all (three runs).
 
 ³ 152.5 s to index C: by its debug log, database built 158.4 s after start, 3,096,698 entries, the
@@ -93,15 +93,15 @@ wasn't investigated further.
 ## Reading the numbers
 
 - Both answer typical searches well under 50 ms, which feels instant while typing.
-- rapidfind is quicker on every row: 1.4x on `a`, 2.6-2.8x on `ext:dll` and a whole drive, 4.5x
+- Quickseek is quicker on every row: 1.4x on `a`, 2.6-2.8x on `ext:dll` and a whole drive, 4.5x
   on `report` and `dm:today`, 9x on `*.pdf` and `f:\ *.jpg`, 10x on `c:\windows\system32\*.dll`,
   31x on `*\system32\*.dll`, and `size:>1gb` in 0.2 ms against 6.1.
 - The biggest changes since the first run are large name-sorted results (`a`, a whole drive), now
   read off a stored name order instead of sorted (10-14x faster), and the stored size, date and
   extension orders (below).
-- rapidfind's saved index is under a third of Everything's, and it uses a little less memory (7-39
+- Quickseek's saved index is under a third of Everything's, and it uses a little less memory (7-39
   MB private) for slightly more files.
-- A cold build of C: takes rapidfind about 27 s and Everything about 153 s; rapidfind builds all
+- A cold build of C: takes Quickseek about 27 s and Everything about 153 s; Quickseek builds all
   three drives in about 29 s.
 
 ## Stored size, date and extension orders (e9afa56)
@@ -231,7 +231,7 @@ each step.
 
 ## What each one does that the other doesn't
 
-| rapidfind | Everything |
+| Quickseek | Everything |
 |---|---|
 | Folder sizes in a live tree, and history: what grew or shrank since yesterday, last week or a save point | Mature: since 2009, with a huge user base and a long track record |
 | An MCP server, so AI assistants (Claude, Codex, Cursor, VS Code, ...) can search and free space | An ecosystem: the SDK, `es.exe`, plugins (PowerToys Run, Flow Launcher, ...), the HTTP and ETP servers |

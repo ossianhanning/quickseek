@@ -1,6 +1,6 @@
 [package]
-name = "rapidfind-mcp"
-description = "MCP server for rapidfind: find files and clean up disk space"
+name = "quickseek-mcp"
+description = "MCP server for Quickseek: find files and clean up disk space"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-rapidfind-core = { path = "../core" }
+quickseek-core = { path = "../core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 toml_edit = "0.25.15"

@@ -1,12 +1,12 @@
 //! In-process search timing on a saved index, phase by phase, for profiling:
-//! `cargo run --release -p rapidfind-core --example prof_search -- C.db "ext:dll" "a"`
-//! Set RAPIDFIND_PROFILE=1 to print each phase of every search.
+//! `cargo run --release -p quickseek-core --example prof_search -- C.db "ext:dll" "a"`
+//! Set QUICKSEEK_PROFILE=1 to print each phase of every search.
 
 use std::time::Instant;
 
-use rapidfind_core::engine::Engine;
-use rapidfind_core::query::SearchFlags;
-use rapidfind_core::search::SearchOptions;
+use quickseek_core::engine::Engine;
+use quickseek_core::query::SearchFlags;
+use quickseek_core::search::SearchOptions;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -14,10 +14,10 @@ fn main() {
         args.iter().partition(|a| a.ends_with(".db"));
     let mut ixs = Vec::new();
     for p in dbs {
-        let mut ix = rapidfind_core::persist::load(std::path::Path::new(p)).expect("load");
+        let mut ix = quickseek_core::persist::load(std::path::Path::new(p)).expect("load");
         let t = Instant::now();
         ix.compute_ranks();
-        if std::env::var_os("RAPIDFIND_PROFILE").is_some() {
+        if std::env::var_os("QUICKSEEK_PROFILE").is_some() {
             eprintln!("{p}: sort orders in {} ms", t.elapsed().as_millis());
             eprintln!(
                 "{p}: {}; samples {} extra {} blocks {} late {} dead {} excl {} links {}+{} seqs {}",

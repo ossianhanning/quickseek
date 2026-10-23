@@ -1,4 +1,4 @@
-//! rapidfind GUI: an Everything-style search window over the rapidfind
+//! Quickseek GUI: an Everything-style search window over the Quickseek
 //! service (or an in-process index when run elevated without the service).
 //!
 //! Flags: `--background` (start in the tray), `--test` (no tray/hotkey/
@@ -25,10 +25,10 @@ use std::ptr::null_mut;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use rapidfind_core::engine::{Engine, EngineOptions};
-use rapidfind_core::ipc::{self, Backend};
-use rapidfind_core::ntfs::win as ntwin;
-use rapidfind_core::persist;
+use quickseek_core::engine::{Engine, EngineOptions};
+use quickseek_core::ipc::{self, Backend};
+use quickseek_core::ntfs::win as ntwin;
+use quickseek_core::persist;
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Controls::{
@@ -66,7 +66,7 @@ fn connect(local: bool) -> Result<Box<dyn Backend>, String> {
             Ok(c) => return Ok(Box::new(ipc::Remote(c))),
             Err(e) if ipc::is_version_mismatch(&e) => {
                 return Err(format!(
-                    "{e}.\n\nUpdate or reinstall rapidfind (rapidfind-setup.exe) so they match."
+                    "{e}.\n\nUpdate or reinstall Quickseek (quickseek-setup.exe) so they match."
                 ));
             }
             Err(e) => log::info!("service not reachable: {e}"),
@@ -74,9 +74,9 @@ fn connect(local: bool) -> Result<Box<dyn Backend>, String> {
     }
     if !ntwin::is_elevated() {
         return Err(concat!(
-            "The rapidfind service isn't running.\n\n",
-            "Install it once from an elevated terminal:\n    rapidfind service install\n\n",
-            "or run rapidfind-gui as administrator to index in this process."
+            "The Quickseek service isn't running.\n\n",
+            "Install it once from an elevated terminal:\n    quickseek service install\n\n",
+            "or run quickseek-gui as administrator to index in this process."
         )
         .into());
     }
@@ -117,7 +117,7 @@ fn main() {
 
     // One instance per user: a second launch just shows the first.
     if !test {
-        let name = w::wide("Local\\rapidfind-gui");
+        let name = w::wide("Local\\quickseek-gui");
         unsafe {
             CreateMutexW(null_mut(), 0, name.as_ptr());
             if GetLastError() == ERROR_ALREADY_EXISTS {
@@ -134,7 +134,7 @@ fn main() {
     let be = match connect(local) {
         Ok(b) => b,
         Err(e) => {
-            w::message_box(null_mut(), &e, "rapidfind", MB_OK | MB_ICONINFORMATION);
+            w::message_box(null_mut(), &e, "quickseek", MB_OK | MB_ICONINFORMATION);
             return;
         }
     };

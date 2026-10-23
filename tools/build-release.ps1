@@ -1,11 +1,11 @@
-# Builds a release: binaries, rapidfind-setup.exe (with the binaries
+# Builds a release: binaries, quickseek-setup.exe (with the binaries
 # embedded), the Claude Desktop extension and winget manifests (validated).
-#   tools\build-release.ps1 -Repo https://github.com/<owner>/rapidfind
+#   tools\build-release.ps1 -Repo https://github.com/<owner>/quickseek
 # Output in target\dist:
-#   rapidfind-setup-<ver>-x64.exe        the installer (upload to the GitHub release v<ver>)
-#   rapidfind-<ver>.mcpb                 Claude Desktop extension
-#   winget\manifests\o\OssianHanning\rapidfind\<ver>\*.yaml   for a PR to microsoft/winget-pkgs
-param([string]$Repo = "https://github.com/OWNER/rapidfind", [switch]$SkipBuild)
+#   quickseek-setup-<ver>-x64.exe        the installer (upload to the GitHub release v<ver>)
+#   quickseek-<ver>.mcpb                 Claude Desktop extension
+#   winget\manifests\o\OssianHanning\quickseek\<ver>\*.yaml   for a PR to microsoft/winget-pkgs
+param([string]$Repo = "https://github.com/OWNER/quickseek", [switch]$SkipBuild)
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..").Path
 $version = (Select-String -Path "$root\Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
@@ -23,22 +23,22 @@ if (-not $SkipBuild) {
   Push-Location $root
   try {
     Cargo-Build @("build", "--release")
-    $env:RAPIDFIND_SETUP_PAYLOAD = Join-Path $root "target\release"
-    Cargo-Build @("build", "--release", "-p", "rapidfind-setup")
+    $env:QUICKSEEK_SETUP_PAYLOAD = Join-Path $root "target\release"
+    Cargo-Build @("build", "--release", "-p", "quickseek-setup")
   } finally {
-    Remove-Item Env:RAPIDFIND_SETUP_PAYLOAD -ErrorAction SilentlyContinue
+    Remove-Item Env:QUICKSEEK_SETUP_PAYLOAD -ErrorAction SilentlyContinue
     Pop-Location
   }
 }
 
-$setupName = "rapidfind-setup-$version-x64.exe"
+$setupName = "quickseek-setup-$version-x64.exe"
 $setup = Join-Path $dist $setupName
-Copy-Item (Join-Path $root "target\release\rapidfind-setup.exe") $setup -Force
-& "$PSScriptRoot\build-mcpb.ps1" -Exe (Join-Path $root "target\release\rapidfind-mcp.exe") -OutDir $dist
+Copy-Item (Join-Path $root "target\release\quickseek-setup.exe") $setup -Force
+& "$PSScriptRoot\build-mcpb.ps1" -Exe (Join-Path $root "target\release\quickseek-mcp.exe") -OutDir $dist
 
 $sha = (Get-FileHash $setup -Algorithm SHA256).Hash
 $url = "$($Repo.TrimEnd('/'))/releases/download/v$version/$setupName"
-$out = Join-Path $dist "winget\manifests\o\OssianHanning\rapidfind\$version"
+$out = Join-Path $dist "winget\manifests\o\OssianHanning\quickseek\$version"
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $out | Out-Null
 foreach ($t in Get-ChildItem "$root\packaging\winget\*.yaml") {

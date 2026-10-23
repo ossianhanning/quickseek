@@ -111,7 +111,7 @@ mod tests {
         let m = h.for_index(&ix);
         assert_eq!(m.len(), 1);
         assert_eq!(m[&by_name(&ix, "notepad.exe")], 2);
-        let p = std::env::temp_dir().join(format!("rapidfind-runs-{}.json", std::process::id()));
+        let p = std::env::temp_dir().join(format!("quickseek-runs-{}.json", std::process::id()));
         h.save(&p).unwrap();
         let back = RunHistory::load(&p);
         std::fs::remove_file(&p).ok();

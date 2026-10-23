@@ -1,4 +1,4 @@
-//! How assistants learn when to use rapidfind: the server instructions
+//! How assistants learn when to use Quickseek: the server instructions
 //! (Claude Code puts them in its system prompt), MCP prompts (slash commands
 //! / attach-menu entries) and a Claude Code skill that loads itself when a
 //! request is about finding files, file contents or disk space on this PC.
@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 /// The `instructions` of the `initialize` reply: when to reach for these
 /// tools, phrased like the requests that should trigger them.
-pub const INSTRUCTIONS: &str = "rapidfind has an always-current index of every file and folder on this Windows PC's drives (and configured network shares) \
+pub const INSTRUCTIONS: &str = "Quickseek has an always-current index of every file and folder on this Windows PC's drives (and configured network shares) \
 with names, paths, sizes and dates, so it answers instantly without scanning the disk. \
 Use these tools WHENEVER a request involves files on this computer, instead of shell commands (dir, Get-ChildItem, where, findstr, \
 Select-String over folders, du, scripts) or the Glob/Grep tools outside the current project, which walk the disk slowly. For example: \
@@ -24,18 +24,18 @@ ready to plot. If you have a chart or visualization tool (show_widget, visualize
 Explain it in a few sentences next to it.";
 
 /// Name of the Claude Code skill folder (`~/.claude/skills/<name>/SKILL.md`).
-pub const SKILL_NAME: &str = "rapidfind";
+pub const SKILL_NAME: &str = "quickseek";
 
 /// The skill: its description is what Claude matches requests against.
 pub const SKILL_MD: &str = r#"---
-name: rapidfind
-description: Find files and folders on this Windows PC and work out what uses disk space, instantly, with the rapidfind MCP tools (a live index of every file on all drives and network shares). Use whenever a request involves files on this computer outside the current project, for example finding a file by name, part of a name, extension, folder or wildcard path; files changed recently or not for a long time; the largest, oldest or duplicate files; files containing some text; what is in a folder; what is eating or filling a drive (C:, D:, ...); a full disk; what grew or changed in size recently or since a date; cleaning up or freeing space; deleting node_modules, build output, caches or temp files.
+name: quickseek
+description: Find files and folders on this Windows PC and work out what uses disk space, instantly, with the Quickseek MCP tools (a live index of every file on all drives and network shares). Use whenever a request involves files on this computer outside the current project, for example finding a file by name, part of a name, extension, folder or wildcard path; files changed recently or not for a long time; the largest, oldest or duplicate files; files containing some text; what is in a folder; what is eating or filling a drive (C:, D:, ...); a full disk; what grew or changed in size recently or since a date; cleaning up or freeing space; deleting node_modules, build output, caches or temp files.
 ---
 
-# rapidfind: files and disk space on this PC
+# Quickseek: files and disk space on this PC
 
-rapidfind keeps a live index of every file on this PC's drives (and indexed network shares) with
-names, paths, sizes and dates. Its MCP tools (`mcp__rapidfind__*`) answer in milliseconds. Use
+quickseek keeps a live index of every file on this PC's drives (and indexed network shares) with
+names, paths, sizes and dates. Its MCP tools (`mcp__quickseek__*`) answer in milliseconds. Use
 them instead of `dir`, `Get-ChildItem -Recurse`, `where`, `findstr`, `du` or Glob/Grep over whole
 drives, which crawl the disk.
 
@@ -98,8 +98,8 @@ few sentences: what the folders probably are and whether the growth looks normal
   separately (`online_only`); a file with several hard links counts once.
 - The tools refuse to delete volume roots, Windows, Program Files, profile roots and system
   files like pagefile.sys.
-- If the service isn't reachable, the user needs the rapidfind installer or
-  `rapidfind service install` (elevated).
+- If the service isn't reachable, the user needs the Quickseek installer or
+  `quickseek service install` (elevated).
 "#;
 
 pub fn prompts_list() -> Value {
@@ -158,7 +158,7 @@ pub fn prompt_get(name: &str, args: &Value) -> Result<Value, String> {
             (
                 "Free up disk space",
                 format!(
-                    "Help me free up disk space on {drive} using the rapidfind tools. Start with disk_overview and cleanup_candidates, then \
+                    "Help me free up disk space on {drive} using the Quickseek tools. Start with disk_overview and cleanup_candidates, then \
 folder_sizes (depth 2) for big folders the categories miss. Draw the charts from each result's `present` field if you have a \
 chart or visualization tool. Show me a list of what could go, with sizes and how safe each is, and wait \
 for my OK before deleting anything. After deleting, tell me how much is in the Recycle Bin and ask before emptying it."
@@ -172,7 +172,7 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             (
                 "What's using space?",
                 format!(
-                    "What is using the space on {path}? Use rapidfind's folder_sizes (start at depth 2, then drill into the biggest folders), draw the chart from the result's `present` field if you have a chart or visualization tool, and explain the biggest items: what they probably are, and which could be cleaned up."
+                    "What is using the space on {path}? Use Quickseek's folder_sizes (start at depth 2, then drill into the biggest folders), draw the chart from the result's `present` field if you have a chart or visualization tool, and explain the biggest items: what they probably are, and which could be cleaned up."
                 ),
             )
         }
@@ -182,7 +182,7 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             (
                 "What's growing?",
                 format!(
-                    "What has grown or shrunk{path} over the last {days} days? Use rapidfind's folder_growth (depth 3), draw the charts from the result's `present` field if you have a chart or visualization tool, and explain the biggest changes: what the folders probably are, whether the growth looks normal, and what could be cleaned up."
+                    "What has grown or shrunk{path} over the last {days} days? Use Quickseek's folder_growth (depth 3), draw the charts from the result's `present` field if you have a chart or visualization tool, and explain the biggest changes: what the folders probably are, whether the growth looks normal, and what could be cleaned up."
                 ),
             )
         }
@@ -191,7 +191,7 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             (
                 "Find files",
                 format!(
-                    "Find this on my computer with rapidfind's search_files: {what}. Try a few searches (name parts, likely extensions and folders, dates, and content search if the name doesn't help), then list the best matches with their paths, sizes and dates."
+                    "Find this on my computer with Quickseek's search_files: {what}. Try a few searches (name parts, likely extensions and folders, dates, and content search if the name doesn't help), then list the best matches with their paths, sizes and dates."
                 ),
             )
         }
@@ -203,7 +203,7 @@ for my OK before deleting anything. After deleting, tell me how much is in the R
             if let Some(d) = arg("older_than_days") {
                 t.push_str(&format!(" not modified in the last {d} days"));
             }
-            t.push_str(" with rapidfind's search_files (sort by size, descending, limit 30), and group them by what they are. Don't delete anything.");
+            t.push_str(" with Quickseek's search_files (sort by size, descending, limit 30), and group them by what they are. Don't delete anything.");
             ("Find large files", t)
         }
         _ => return Err(format!("unknown prompt: {name}")),

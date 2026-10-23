@@ -624,7 +624,7 @@ mod tests {
         let m = old.paths();
         assert!(!m.has_files && m.get(r"C:\pagefile.sys").is_none());
         assert_eq!(m.get(r"C:\Users"), Some(600 << 30));
-        let dir = std::env::temp_dir().join(format!("rapidfind-history-v2-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("quickseek-history-v2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let h = History::new(dir.clone());
         let now = now_unix();
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn store_list_prune() {
-        let d = std::env::temp_dir().join(format!("rapidfind-history-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("quickseek-history-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let h = History::new(d.clone());
         let mut s = sample();
