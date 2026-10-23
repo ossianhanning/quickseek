@@ -126,6 +126,23 @@ $ev.Query("") | Out-Null
 # ---- queries -------------------------------------------------------------------------
 $rf = @{}
 & $bench --runs $Runs @Queries | ForEach-Object { $o = $_ | ConvertFrom-Json; $rf[$o.query] = $o }
+# Everything's own exclude list (its settings), so hit counts can be compared
+# on the same files: rapidfind's hits outside those folders. Counts only.
+$evIni = Join-Path $env:APPDATA "Everything\Everything.ini"
+$excl = @()
+if (Test-Path $evIni) {
+  $line = Select-String -Path $evIni -Pattern '^exclude_folders=(.*)$' | Select-Object -First 1
+  if ($line) { $excl = [regex]::Matches($line.Matches[0].Groups[1].Value, '"([^"]*)"') | ForEach-Object { $_.Groups[1].Value -replace '\\\\', '\' } }
+}
+$rfOut = @{}
+if ($excl) {
+  $not = ($excl | ForEach-Object { "!`"$($_.TrimEnd('\'))\`"" }) -join " "
+  foreach ($q in $Queries) {
+    $o = & $bench --runs 1 "$q $not" | ConvertFrom-Json
+    $rfOut[$q] = $o.total
+  }
+  "Everything excludes $($excl.Count) folder(s) in its settings; 'rapidfind hits outside them' counts rapidfind's hits elsewhere"
+}
 $rows = foreach ($q in $Queries) {
   $ev.Query($q) | Out-Null   # warm-up
   $times = 1..$Runs | ForEach-Object { $ev.Query($q) }
@@ -133,6 +150,7 @@ $rows = foreach ($q in $Queries) {
     Query = $q
     "rapidfind ms" = [math]::Round($rf[$q].median_ms, 1)
     "rapidfind hits" = $rf[$q].total
+    "rapidfind hits outside them" = if ($excl) { $rfOut[$q] } else { $rf[$q].total }
     "Everything ms" = [math]::Round((Median $times), 1)
     "Everything hits" = $ev.TotalItems
   }
@@ -175,5 +193,12 @@ if ($ColdBuild) {
     Stop-Process -Id $p.Id -Force
   }
 }
-if ($started) { Stop-Process -Name Everything -Force }
+# Close the Everything this script started (its own -exit; its service, which
+# runs elevated, isn't ours to stop).
+if ($started) {
+  & $Everything -exit 2>$null
+  Start-Sleep 2
+  Get-Process Everything -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -ne 0 -and $_.Path } |
+    ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch { } }
+}
 $ev.Dispose()
