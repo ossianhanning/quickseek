@@ -293,6 +293,35 @@ pub struct Engine {
 
 // ---- loading single volumes ------------------------------------------------------
 
+/// Drops the hard links of `checks` that no longer exist (see
+/// [`Applier::link_checks`]).
+fn reconcile_links(letter: char, extended: bool, ix_lock: &RwLock<Index>, checks: &[(u32, u128)]) {
+    if checks.is_empty() {
+        return;
+    }
+    let Ok(hint) = win::open_root_dir(letter) else {
+        return;
+    };
+    let root = format!("{letter}:");
+    let mut found: Vec<(u32, Vec<String>)> = checks
+        .iter()
+        .filter_map(|&(rec, id)| {
+            crate::live::link_names_by_id(&hint, id, extended, &root).map(|n| (rec, n))
+        })
+        .collect();
+    found.sort_by_key(|f| f.0);
+    found.dedup_by_key(|f| f.0);
+    let mut ix = ix_lock.write();
+    let dropped: usize = found
+        .iter()
+        .map(|(rec, names)| ix.drop_missing_links(*rec, names))
+        .sum();
+    if dropped > 0 {
+        ix.generation += 1;
+        log::debug!("{letter}: dropped {dropped} removed hard links");
+    }
+}
+
 fn refresh(letter: char, extended: bool, ix_lock: &RwLock<Index>, list: &[(u32, u128)]) {
     if list.is_empty() || !ix_lock.read().has_sizes {
         return;
@@ -390,6 +419,12 @@ fn scan_journaled(
     let (n, list) = catch_up(&mut ix, &mut applier, &mut j).map_err(|e| anyhow::anyhow!("{e}"))?;
     let lock = RwLock::new(ix);
     refresh(letter, kind == VolumeKind::Refs, &lock, &list);
+    reconcile_links(
+        letter,
+        kind == VolumeKind::Refs,
+        &lock,
+        &applier.link_checks,
+    );
     let ix = lock.into_inner();
     let report = LoadReport::Scanned {
         method,
@@ -442,6 +477,12 @@ fn open_journaled(
                         if let Ok((n, list)) = catch_up(&mut ix, &mut applier, &mut j) {
                             let lock = RwLock::new(ix);
                             refresh(letter, kind == VolumeKind::Refs, &lock, &list);
+                            reconcile_links(
+                                letter,
+                                kind == VolumeKind::Refs,
+                                &lock,
+                                &applier.link_checks,
+                            );
                             let ix = lock.into_inner();
                             return Ok((
                                 ix,
@@ -1197,14 +1238,16 @@ fn watch_journal(v: Arc<Volume>, mut j: Journal, stop: Arc<AtomicBool>) {
         if batch.is_empty() {
             continue;
         }
-        let list = {
+        let (list, links) = {
             let mut ix = v.index.write();
-            let list = v.applier.lock().apply(&mut ix, &batch);
+            let mut applier = v.applier.lock();
+            let list = applier.apply(&mut ix, &batch);
             ix.journal_id = j.journal_id;
             ix.next_usn = j.next_usn;
-            list
+            (list, std::mem::take(&mut applier.link_checks))
         };
         refresh(v.letter, refs, &v.index, &list);
+        reconcile_links(v.letter, refs, &v.index, &links);
         maintain(&v, &mut last_ranks);
         let unsaved = v.add_unsaved(batch.len() as u64);
         if unsaved >= SAVE_THRESHOLD && last_save.elapsed() > Duration::from_secs(300) {

@@ -36,6 +36,10 @@ pub struct Applier {
     /// Records whose parent directory wasn't known yet.
     orphans: Vec<UsnRecord>,
     pub applied: u64,
+    /// (record, file id) of files whose hard links changed: NTFS reports
+    /// adding and removing a link alike, so the caller asks the file system
+    /// which links exist ([`link_names_by_id`]) and drops the rest.
+    pub link_checks: Vec<(u32, u128)>,
 }
 
 impl Applier {
@@ -113,6 +117,7 @@ impl Applier {
         }
 
         let is_dir = r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
+        let before = ix.entries.len();
         let entry = if reason & USN_REASON_RENAME_NEW_NAME != 0 {
             match self.pending_rename.remove(&rec).filter(|&l| ix.is_live(l)) {
                 Some(l) => {
@@ -165,9 +170,15 @@ impl Applier {
         e.set_attrs(r.attrs);
         if reason & DATA_CHANGE != 0 {
             e.mtime = e.mtime.max(crate::index::mtime_of(r.timestamp));
-            if !is_dir {
-                refresh.push((rec, r.frn128));
-            }
+        }
+        if !is_dir && reason & USN_REASON_HARD_LINK_CHANGE != 0 {
+            self.link_checks.push((rec, r.frn128));
+        }
+        // An entry added just now (a new hard link, a missed create) starts
+        // with the record's time and no size: fetch the file's own, or a
+        // hard link made today shows an old file as modified today.
+        if !is_dir && (reason & DATA_CHANGE != 0 || entry as usize >= before) {
+            refresh.push((rec, r.frn128));
         }
         ix.note_recent(entry, r.timestamp);
         ix.generation += 1;
@@ -179,8 +190,8 @@ fn deleted_since(o: &UsnRecord, recs: &[UsnRecord]) -> bool {
         .any(|r| r.frn128 == o.frn128 && r.reason & USN_REASON_FILE_DELETE != 0)
 }
 
-/// Size and timestamps of a file by id (64-bit NTFS or 128-bit ReFS id).
-pub fn file_info_by_id(hint: &Handle, id: u128, extended: bool) -> Option<(u64, i64, i64)> {
+/// Opens a file by id (64-bit NTFS or 128-bit ReFS id) to read attributes.
+fn open_by_id(hint: &Handle, id: u128, extended: bool) -> Option<Handle> {
     use windows_sys::Win32::Storage::FileSystem::{
         ExtendedFileIdType, FILE_ID_128, FILE_ID_DESCRIPTOR_0,
     };
@@ -211,10 +222,56 @@ pub fn file_info_by_id(hint: &Handle, id: u128, extended: bool) -> Option<(u64, 
             FILE_FLAG_BACKUP_SEMANTICS,
         )
     };
-    if h == INVALID_HANDLE_VALUE {
+    (h != INVALID_HANDLE_VALUE).then_some(Handle(h))
+}
+
+/// Every name (hard link) a file has now, as paths below the volume root
+/// (`\dir\name`, lower case), or None if it can't be opened.
+pub fn link_names_by_id(
+    hint: &Handle,
+    id: u128,
+    extended: bool,
+    root: &str,
+) -> Option<Vec<String>> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FindClose, FindFirstFileNameW, FindNextFileNameW, GetFinalPathNameByHandleW,
+        VOLUME_NAME_NONE,
+    };
+    let h = open_by_id(hint, id, extended)?;
+    let mut buf = vec![0u16; 1024];
+    let n = unsafe {
+        GetFinalPathNameByHandleW(h.0, buf.as_mut_ptr(), buf.len() as u32, VOLUME_NAME_NONE)
+    } as usize;
+    if n == 0 || n >= buf.len() {
         return None;
     }
-    let h = Handle(h);
+    drop(h);
+    let first: Vec<u16> = format!("{}\\", root.trim_end_matches('\\'))
+        .encode_utf16()
+        .chain(buf[..n].iter().copied().skip_while(|&c| c == '\\' as u16))
+        .chain([0])
+        .collect();
+    let mut names = Vec::new();
+    let mut len = buf.len() as u32;
+    let find = unsafe { FindFirstFileNameW(first.as_ptr(), 0, &mut len, buf.as_mut_ptr()) };
+    if find == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    loop {
+        let s = String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(0)]);
+        names.push(s.to_lowercase());
+        len = buf.len() as u32;
+        if unsafe { FindNextFileNameW(find, &mut len, buf.as_mut_ptr()) } == 0 {
+            break;
+        }
+    }
+    unsafe { FindClose(find) };
+    Some(names)
+}
+
+/// Size and timestamps of a file by id (64-bit NTFS or 128-bit ReFS id).
+pub fn file_info_by_id(hint: &Handle, id: u128, extended: bool) -> Option<(u64, i64, i64)> {
+    let h = open_by_id(hint, id, extended)?;
     let mut std_info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
     let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
     unsafe {
@@ -529,6 +586,103 @@ mod tests {
             &[mk(file, dir, USN_REASON_FILE_DELETE, 0x20, "main.rs", 3)],
         );
         assert!(find(&ix, "main.rs").is_empty());
+    }
+
+    /// Removed hard links: the index keeps only the links the file system
+    /// reports, and the lookup really lists a file's links.
+    #[test]
+    fn removed_hard_links_are_dropped() {
+        let mut ix = sample();
+        let notes = crate::index::tests::by_name(&ix, "notes.txt");
+        let rec_no = ix.record(notes);
+        let win = crate::index::tests::by_name(&ix, "Windows");
+        ix.add_link(rec_no, 0, win, "second.txt", 0x20, 24, 0, 0);
+        assert_eq!(ix.links(rec_no).count(), 2);
+        assert_eq!(
+            ix.drop_missing_links(rec_no, &[]),
+            0,
+            "no answer: keep everything"
+        );
+        let dropped = ix.drop_missing_links(rec_no, &[r"\windows\second.txt".to_string()]);
+        assert_eq!(dropped, 1);
+        assert_eq!(find(&ix, "second.txt"), vec![r"C:\Windows\second.txt"]);
+        assert!(find(&ix, "notes.txt").is_empty());
+
+        // The real lookup, on a temp folder of this machine.
+        let dir = std::env::temp_dir().join(format!("rapidfind-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.o");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::hard_link(&a, dir.join("b.o")).unwrap();
+        let letter = dir.to_string_lossy().chars().next().unwrap();
+        let id = {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            };
+            let f = std::fs::File::open(&a).unwrap();
+            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            assert!(unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } != 0);
+            (info.nFileIndexHigh as u128) << 32 | info.nFileIndexLow as u128
+        };
+        let hint = crate::ntfs::win::open_root_dir(letter).unwrap();
+        let root = format!("{letter}:");
+        let names = link_names_by_id(&hint, id, false, &root).unwrap();
+        let rel = |p: &std::path::Path| p.to_string_lossy()[2..].to_lowercase();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(
+            names.contains(&rel(&a)) && names.contains(&rel(&dir.join("b.o"))),
+            "{names:?}"
+        );
+        std::fs::remove_file(dir.join("b.o")).unwrap();
+        assert_eq!(
+            link_names_by_id(&hint, id, false, &root).unwrap(),
+            vec![rel(&a)]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A new hard link to an old file is a new entry: its size and dates
+    /// are fetched from the file, not taken from the record's time.
+    #[test]
+    fn new_hard_link_is_refreshed() {
+        let mut ix = sample();
+        let mut a = Applier::default();
+        let notes = crate::index::tests::by_name(&ix, "notes.txt");
+        let rec_no = ix.record(notes) as u64;
+        let refresh = a.apply(
+            &mut ix,
+            &[rec(
+                rec_no,
+                34,
+                USN_REASON_HARD_LINK_CHANGE | USN_REASON_CLOSE,
+                0x20,
+                "notes-link.txt",
+                9,
+            )],
+        );
+        assert_eq!(
+            find(&ix, "notes-link.txt"),
+            vec![r"C:\Windows\notes-link.txt"]
+        );
+        assert_eq!(
+            refresh.iter().map(|r| r.0 as u64).collect::<Vec<_>>(),
+            vec![rec_no]
+        );
+        // A plain attribute change on a known file fetches nothing.
+        let refresh = a.apply(
+            &mut ix,
+            &[rec(
+                rec_no,
+                34,
+                USN_REASON_SECURITY_CHANGE | USN_REASON_CLOSE,
+                0x20,
+                "notes-link.txt",
+                10,
+            )],
+        );
+        assert!(refresh.is_empty());
     }
 
     #[test]
