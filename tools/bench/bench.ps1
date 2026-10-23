@@ -48,6 +48,7 @@ function Run-Step([string]$name, [string]$exe, [string[]]$argv, [int]$timeoutSec
   Remove-Item $out, $err -ErrorAction SilentlyContinue
   $t = [Diagnostics.Stopwatch]::StartNew()
   $p = Start-Process -FilePath $exe -ArgumentList $argv -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -NoNewWindow
+  $null = $p.Handle   # kept open, or ExitCode reads empty after exit
   $code = $null
   if ($p.WaitForExit($timeoutSec * 1000)) { $code = $p.ExitCode }
   else {
@@ -88,7 +89,7 @@ public class EverythingIpc : NativeWindow, IDisposable {
   [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, ref COPYDATASTRUCT l);
   [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
   [StructLayout(LayoutKind.Sequential)] struct COPYDATASTRUCT { public IntPtr dwData; public int cbData; public IntPtr lpData; }
-  const int WM_COPYDATA = 0x4A, WM_USER = 0x400, IS_DB_LOADED = 401, GET_MAJOR = 0, GET_MINOR = 1, GET_REVISION = 2, GET_BUILD = 3;
+  const int WM_COPYDATA = 0x4A, WM_USER = 0x400, IS_DB_LOADED = 401, IS_DB_BUSY = 402, GET_MAJOR = 0, GET_MINOR = 1, GET_REVISION = 2, GET_BUILD = 3;
   const int COPYDATAQUERYW = 2, REPLY_ID = 0x52464231;
   public string Class = "EVERYTHING_TASKBAR_NOTIFICATION";
   bool got; public uint TotalItems;
@@ -98,6 +99,8 @@ public class EverythingIpc : NativeWindow, IDisposable {
   IntPtr Target() { return FindWindow(Class, null); }
   public bool Running() { return Target() != IntPtr.Zero; }
   public bool Loaded() { IntPtr t = Target(); return t != IntPtr.Zero && SendMessage(t, WM_USER, (IntPtr)IS_DB_LOADED, IntPtr.Zero) != IntPtr.Zero; }
+  // Indexing, sorting or saving (everything_ipc.h's IS_DB_BUSY).
+  public bool Busy() { IntPtr t = Target(); return t == IntPtr.Zero || SendMessage(t, WM_USER, (IntPtr)IS_DB_BUSY, IntPtr.Zero) != IntPtr.Zero; }
   public string Version() {
     IntPtr t = Target();
     return SendMessage(t, WM_USER, (IntPtr)GET_MAJOR, IntPtr.Zero) + "." + SendMessage(t, WM_USER, (IntPtr)GET_MINOR, IntPtr.Zero) + "." +
@@ -279,31 +282,49 @@ try {
       $r.Err | Where-Object { $_ -match "entries|saved in|done in" } | ForEach-Object { Say ("  " + ($_ -replace '\s*\(index saved to .*\)', '')) }
       Say "cold build of ${label}: rapidfind $($r.Seconds) s (exit code $($r.Code))"
 
-      # Everything: a separate instance, its own database, -reindex. Once with
-      # its settings as they are (every volume it includes), once with a copy
-      # that includes only C:.
+      # Everything: a separate instance, its own database, -reindex, with a
+      # copy of its settings (as they are, then with only C: included) passed
+      # by -config, so no other settings file is picked up. "Loaded" alone
+      # comes too early (it reports a database while volumes are still being
+      # indexed): it's done when it's loaded, not busy, and its entry count
+      # has held still for 30 s (reading a volume can pause it that long);
+      # the time is when the count last changed. Each run also shows the
+      # normal database's count, so a short one stands out.
       $tmp = Join-Path $root "target\bench-cold"
-      function Cold-Everything([string]$what, [string]$config) {
+      function Cold-Everything([string]$what, [string]$config, $expect) {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue; New-Item -ItemType Directory $tmp | Out-Null
         $cold = New-Object EverythingIpc
         $cold.Class = "EVERYTHING_TASKBAR_NOTIFICATION_(bench)"
-        $cfg = if ($config) { " -config `"$config`"" } else { "" }
         Say "cold build of ${what}: Everything (instance 'bench', its own database) reindexing..."
         $t = [Diagnostics.Stopwatch]::StartNew()
-        $script:coldProc = Start-Process $Everything -ArgumentList "-instance bench -startup$cfg -db `"$(Join-Path $tmp 'everything.db')`" -reindex" -PassThru
-        $done = $false
-        while ($t.Elapsed.TotalSeconds -lt 900) { if ($cold.Loaded()) { $done = $true; break }; Start-Sleep -Milliseconds 100 }
+        $script:coldProc = Start-Process $Everything -ArgumentList "-instance bench -startup -config `"$config`" -db `"$(Join-Path $tmp 'everything.db')`" -reindex" -PassThru
+        $n = -1; $changed = 0.0; $done = $false; $said = 0.0
+        while ($t.Elapsed.TotalSeconds -lt 1200) {
+          Start-Sleep -Milliseconds 250
+          $now = $t.Elapsed.TotalSeconds
+          if (-not $cold.Loaded() -or $cold.Busy()) { $changed = $now; continue }
+          $m = $null; try { $cold.Query("") | Out-Null; $m = [long]$cold.TotalItems } catch { $changed = $now; continue }
+          if ($m -ne $n) { $n = $m; $changed = $now }
+          elseif ($n -gt 0 -and $now - $changed -ge 30) { $done = $true; break }
+          if ($now - $said -ge 30) { Say "  ... $([math]::Round($now)) s, $n entries so far"; $said = $now }
+        }
         if ($done) {
-          $n = $null; try { $cold.Query("") | Out-Null; $n = $cold.TotalItems } catch { }
-          Say "cold build of ${what}: Everything $([math]::Round($t.Elapsed.TotalSeconds, 1)) s, $n entries"
-        } else { Say "cold build of ${what}: Everything not done after 900 s" }
+          $vs = if ($expect) { ", against $expect in its normal database" } else { "" }
+          Say "cold build of ${what}: Everything $([math]::Round($changed, 1)) s, $n entries$vs"
+        } else { Say "cold build of ${what}: Everything not done after 1200 s ($n entries)" }
         $cold.Dispose()
         & $Everything -instance bench -exit 2>$null
-        if (-not $script:coldProc.WaitForExit(30000)) { try { Stop-Process -Id $script:coldProc.Id -Force -ErrorAction Stop } catch { } }
+        if (-not $script:coldProc.WaitForExit(60000)) { try { Stop-Process -Id $script:coldProc.Id -Force -ErrorAction Stop } catch { } }
         $script:coldProc = $null
       }
-      Cold-Everything "every volume it includes ($(($evVols | ForEach-Object { "${_}:" }) -join ' '))" ""
-      if (Test-Path $evIni) {
+      if (-not (Test-Path $evIni)) { Say "cold build: Everything skipped (no settings file at $evIni)" } else {
+        # Expected counts from the normal database: everything, and C: alone.
+        $ev.Query("") | Out-Null; $all = $ev.TotalItems
+        $ev.Query("c:" + [char]92) | Out-Null; $cOnly = $ev.TotalItems
+        $asIs = Join-Path $env:TEMP "everything-bench-all.ini"
+        Copy-Item $evIni $asIs -Force
+        Cold-Everything "every volume it includes ($(($evVols | ForEach-Object { "${_}:" }) -join ' '))" $asIs $all
+        Remove-Item $asIs -ErrorAction SilentlyContinue
         # Its settings with every volume but C: left out (and no folder indexes).
         $onlyC = Join-Path $env:TEMP "everything-bench-c.ini"
         $paths = @(([regex]::Matches((($ini | Where-Object { $_ -match '^ntfs_volume_paths=' }) -replace '^[^=]*=', ''), '"([^"]*)"')) | ForEach-Object { $_.Groups[1].Value })
@@ -313,7 +334,7 @@ try {
           elseif ($_ -match '^folders=') { "folders=" }
           else { $_ }
         } | Set-Content -Path $onlyC -Encoding UTF8
-        Cold-Everything "C: alone" $onlyC
+        Cold-Everything "C: alone" $onlyC $cOnly
         Remove-Item $onlyC -ErrorAction SilentlyContinue
       }
     }
