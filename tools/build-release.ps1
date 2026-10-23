@@ -67,3 +67,5 @@ Write-Output ""
 Write-Output "installer: $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB, sha256 $sha)"
 Write-Output "manifests: $out"
 if ($Repo -like "*OWNER*") { Write-Output "note: pass -Repo with the real GitHub repository before submitting the manifests" }
+# winget validate's exit code would otherwise be the script's.
+exit 0
