@@ -270,6 +270,9 @@ impl Packed {
     }
 }
 
+/// Each folded extension's positions in [`Ranks::ext_order`].
+pub type ExtRanges = HashMap<Box<[u8]>, (u32, u32)>;
+
 /// Position of each entry in each sort order. `NONE` = changed since the
 /// ranks were computed; comparisons fall back to the real key for those.
 #[derive(Default)]
@@ -283,6 +286,20 @@ pub struct Ranks {
     /// Entries without a valid name rank: renamed, moved or added since the
     /// ranks were computed (may hold deleted entries; check before use).
     pub unranked_names: Vec<u32>,
+    /// The size and modified orders the same way (`[0]` size, `[1]`
+    /// modified; empty when that fast sort is off), so a range (`size:>1gb`,
+    /// `dm:today`) is two binary searches instead of a scan of every entry.
+    pub value_orders: [Packed; 2],
+    /// Entries whose size or modified rank went stale since, per order
+    /// (may hold deleted entries or repeats; check before use).
+    pub unranked_values: [Vec<u32>; 2],
+    /// Entries with an extension in (folded extension, name) order, and
+    /// each extension's range in it, so `ext:dll` (or `*.dll`) reads its
+    /// range instead of scanning every name. A position is current while
+    /// its entry's name rank is (a rename or move unranks the name); the
+    /// rest are in `unranked_names`.
+    pub ext_order: Packed,
+    pub ext_ranges: ExtRanges,
     /// A folder was renamed/moved: path ranks of its subtree are unknown.
     pub path_stale: bool,
     /// Ranks invalidated since the last computation.
@@ -925,6 +942,10 @@ impl Index {
         for k in 1..4 {
             if !opts.fast_sort[k] {
                 self.ranks.by[k] = Packed::default();
+                if k <= 2 {
+                    self.ranks.value_orders[k - 1] = Packed::default();
+                    self.ranks.unranked_values[k - 1] = Vec::new();
+                }
             }
         }
         self.opts = opts;
@@ -967,6 +988,13 @@ impl Index {
             }
             rank
         };
+        let to_order = |order: &[u32]| {
+            let mut o = Packed::new(order.len(), n);
+            for (r, &i) in order.iter().enumerate() {
+                o.set(r, i);
+            }
+            o
+        };
 
         let keys: Vec<&[u8]> = (0..n as u32)
             .into_par_iter()
@@ -990,23 +1018,23 @@ impl Index {
         let (size, (modified, path)) = rayon::join(
             || {
                 if !on[RankKey::Size as usize] {
-                    return Packed::default();
+                    return Default::default();
                 }
                 let mut o = live.clone();
                 o.par_sort_unstable_by_key(|&i| (self.entries[i as usize].size, name[i as usize]));
-                to_rank(&o)
+                rayon::join(|| to_rank(&o), || to_order(&o))
             },
             || {
                 rayon::join(
                     || {
                         if !on[RankKey::Modified as usize] {
-                            return Packed::default();
+                            return Default::default();
                         }
                         let mut o = live.clone();
                         o.par_sort_unstable_by_key(|&i| {
                             (self.entries[i as usize].mtime, name[i as usize])
                         });
-                        to_rank(&o)
+                        rayon::join(|| to_rank(&o), || to_order(&o))
                     },
                     || {
                         if on[RankKey::Path as usize] {
@@ -1019,17 +1047,144 @@ impl Index {
             },
         );
         drop(live);
-        let mut name_order = Packed::new(order.len(), n);
-        for (r, &i) in order.iter().enumerate() {
-            name_order.set(r, i);
-        }
+        let ((size, size_order), (modified, modified_order)) = (size, modified);
+        let (ext_order, ext_ranges) = self.ext_order(&order);
         Ranks {
             by: [to_rank(&order), size, modified, path],
-            name_order,
+            name_order: to_order(&order),
+            ext_order,
+            ext_ranges,
             unranked_names: Vec::new(),
+            value_orders: [size_order, modified_order],
+            unranked_values: Default::default(),
             path_stale: false,
             dirty: 0,
         }
+    }
+
+    /// Live entries with an extension (of at most `MAX_EXT` bytes) grouped
+    /// by it, each group in name order (`by_name`, all live entries sorted).
+    fn ext_order(&self, by_name: &[u32]) -> (Packed, ExtRanges) {
+        const MAX_EXT: usize = 32;
+        // Numbered per chunk in parallel, then the chunks' numbers merged.
+        let chunks: Vec<(Vec<&[u8]>, Vec<u32>)> = by_name
+            .par_chunks(1 << 16)
+            .map(|c| {
+                let mut seen: HashMap<&[u8], u32> = HashMap::new();
+                let mut exts = Vec::new();
+                let ids = c
+                    .iter()
+                    .map(|&i| match crate::query::extension(self.fold_name(i)) {
+                        Some(x) if x.len() <= MAX_EXT => *seen.entry(x).or_insert_with(|| {
+                            exts.push(x);
+                            exts.len() as u32 - 1
+                        }),
+                        _ => NONE,
+                    })
+                    .collect();
+                (exts, ids)
+            })
+            .collect();
+        let mut global: HashMap<&[u8], u32> = HashMap::new();
+        let mut names: Vec<&[u8]> = Vec::new();
+        let maps: Vec<Vec<u32>> = chunks
+            .iter()
+            .map(|(exts, _)| {
+                exts.iter()
+                    .map(|&x| {
+                        *global.entry(x).or_insert_with(|| {
+                            names.push(x);
+                            names.len() as u32 - 1
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        // (extension number, position in name order): sorting these groups
+        // by extension and keeps name order within each group.
+        let mut keys: Vec<u64> = chunks
+            .par_iter()
+            .zip(&maps)
+            .enumerate()
+            .flat_map_iter(|(k, ((_, ids), map))| {
+                ids.iter()
+                    .enumerate()
+                    .filter(|(_, id)| **id != NONE)
+                    .map(move |(j, &id)| {
+                        (map[id as usize] as u64) << 32 | (k * (1 << 16) + j) as u64
+                    })
+            })
+            .collect();
+        keys.par_sort_unstable();
+        let mut order = Packed::new(keys.len(), self.entries.len());
+        let mut ranges = HashMap::with_capacity(names.len());
+        let mut start = 0;
+        for (p, &key) in keys.iter().enumerate() {
+            order.set(p, by_name[key as u32 as usize]);
+            if keys.get(p + 1).is_none_or(|&n| n >> 32 != key >> 32) {
+                let x: Box<[u8]> = names[(key >> 32) as usize].into();
+                ranges.insert(x, (start as u32, p as u32 + 1));
+                start = p + 1;
+            }
+        }
+        (order, ranges)
+    }
+
+    /// Live entries whose folded extension is `ext` and that `keep`
+    /// accepts, in name order except for those renamed or added since the
+    /// ranks were computed (at the end). None when there's no extension
+    /// order to read.
+    pub fn ext_candidates(
+        &self,
+        ext: &[u8],
+        keep: impl Fn(u32) -> bool + Sync,
+    ) -> Option<Vec<u32>> {
+        const CHUNK: u32 = 1 << 13;
+        let name_rank = &self.ranks.by[RankKey::Name as usize];
+        if self.ranks.ext_order.is_empty() || name_rank.len() != self.entries.len() {
+            return None;
+        }
+        let current = |i: u32| {
+            name_rank.get(i as usize) != NONE && !self.entries[i as usize].is_deleted() && keep(i)
+        };
+        let order = &self.ranks.ext_order;
+        let mut out: Vec<u32> = match self.ranks.ext_ranges.get(ext) {
+            Some(&(a, b)) if b - a <= CHUNK => (a..b)
+                .map(|p| order.get(p as usize))
+                .filter(|&i| current(i))
+                .collect(),
+            Some(&(a, b)) => {
+                let parts: Vec<Vec<u32>> = (0..(b - a).div_ceil(CHUNK))
+                    .into_par_iter()
+                    .map(|c| {
+                        (a + c * CHUNK..(a + (c + 1) * CHUNK).min(b))
+                            .map(|p| order.get(p as usize))
+                            .filter(|&i| current(i))
+                            .collect()
+                    })
+                    .collect();
+                parts.concat()
+            }
+            None => Vec::new(),
+        };
+        let mut late: Vec<u32> = self
+            .ranks
+            .unranked_names
+            .iter()
+            .copied()
+            .filter(|&i| {
+                (i as usize) < self.entries.len()
+                    && name_rank.get(i as usize) == NONE
+                    && !self.entries[i as usize].is_deleted()
+                    && crate::query::extension(self.fold_name(i)) == Some(ext)
+                    && keep(i)
+            })
+            .collect();
+        // An entry renamed twice is listed twice.
+        late.sort_unstable();
+        late.dedup();
+        out.extend(late);
+        Some(out)
     }
 
     /// Path order = (containing folder in depth-first order with siblings by
@@ -1092,8 +1247,11 @@ impl Index {
             if r.get(i as usize) != NONE {
                 r.set(i as usize, NONE);
                 self.ranks.dirty += 1;
-                if k == RankKey::Name {
-                    self.ranks.unranked_names.push(i);
+                match k {
+                    RankKey::Name => self.ranks.unranked_names.push(i),
+                    RankKey::Size => self.ranks.unranked_values[0].push(i),
+                    RankKey::Modified => self.ranks.unranked_values[1].push(i),
+                    RankKey::Path => {}
                 }
             }
         }
@@ -1384,6 +1542,63 @@ impl Index {
             .collect()
     }
 
+    /// Candidates for a size (`key` = Size) or date modified range, read
+    /// off the stored order: `below` and `above` say an entry sorts before or
+    /// after the range (monotone along the order). Positions whose entry
+    /// changed since are skipped and the changed entries added instead, so
+    /// this may hold non-matches; the caller checks each one. In size (or date) order, roughly.
+    /// None when that order isn't kept, isn't in step with the entries, or
+    /// the range holds more than `max` entries (a scan is quicker then).
+    pub fn ordered_range(
+        &self,
+        key: RankKey,
+        below: impl Fn(&Entry) -> bool,
+        above: impl Fn(&Entry) -> bool,
+        max: usize,
+    ) -> Option<Vec<u32>> {
+        let v = match key {
+            RankKey::Size => 0,
+            RankKey::Modified => 1,
+            _ => return None,
+        };
+        let (order, rank) = (&self.ranks.value_orders[v], &self.ranks.by[key as usize]);
+        if order.is_empty() || rank.len() != self.entries.len() {
+            return None;
+        }
+        let valid = |p: usize| {
+            let i = order.get(p);
+            (i != NONE && rank.get(i as usize) == p as u32).then(|| &self.entries[i as usize])
+        };
+        // First position whose entry fails `pred`; stale positions in
+        // between don't matter (they aren't candidates).
+        let first = |pred: &dyn Fn(&Entry) -> bool| {
+            let (mut lo, mut hi) = (0, order.len());
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                match (mid..hi).find_map(|q| valid(q).map(|e| (q, e))) {
+                    Some((q, e)) if pred(e) => lo = q + 1,
+                    _ => hi = mid,
+                }
+            }
+            lo
+        };
+        let start = first(&below);
+        let end = start.max(first(&|e: &Entry| !above(e)));
+        if end - start > max {
+            return None;
+        }
+        // A stale position's entry is in the changed list too: both are
+        // checked by the caller, so only repeats need removing.
+        let mut out: Vec<u32> = (start..end).map(|p| order.get(p)).collect();
+        let changed = &self.ranks.unranked_values[v];
+        if !changed.is_empty() {
+            out.extend_from_slice(changed);
+            out.par_sort_unstable();
+            out.dedup();
+        }
+        Some(out)
+    }
+
     /// Folders whose folded full path equals `path` (no trailing `\`).
     pub fn dirs_with_path(&self, path: &[u8]) -> Vec<u32> {
         let root_fold = self.fold_name(self.root);
@@ -1671,6 +1886,11 @@ impl Index {
         }
         if self.ranks.by[RankKey::Name as usize].len() == idx as usize + 1 {
             self.ranks.unranked_names.push(idx);
+        }
+        for (v, k) in [RankKey::Size, RankKey::Modified].into_iter().enumerate() {
+            if self.ranks.by[k as usize].len() == idx as usize + 1 {
+                self.ranks.unranked_values[v].push(idx);
+            }
         }
         self.ranks.dirty += 1;
         self.rec_count = self.rec_count.max(record + 1);
@@ -1962,6 +2182,18 @@ impl Index {
             .sum::<usize>()
             + self.ranks.name_order.capacity_bytes()
             + self.ranks.unranked_names.capacity() * 4
+            + self
+                .ranks
+                .value_orders
+                .iter()
+                .map(Packed::capacity_bytes)
+                .sum::<usize>()
+            + self
+                .ranks
+                .unranked_values
+                .iter()
+                .map(|v| v.capacity() * 4)
+                .sum::<usize>()
     }
 
     pub fn memory_bytes(&self) -> usize {

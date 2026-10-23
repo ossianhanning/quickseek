@@ -15,8 +15,10 @@ fn main() {
     let mut ixs = Vec::new();
     for p in dbs {
         let mut ix = rapidfind_core::persist::load(std::path::Path::new(p)).expect("load");
+        let t = Instant::now();
         ix.compute_ranks();
         if std::env::var_os("RAPIDFIND_PROFILE").is_some() {
+            eprintln!("{p}: sort orders in {} ms", t.elapsed().as_millis());
             eprintln!(
                 "{p}: {}; samples {} extra {} blocks {} late {} dead {} excl {} links {}+{} seqs {}",
                 ix.memory_breakdown(),

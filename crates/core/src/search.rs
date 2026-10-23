@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use crate::index::{Index, NONE, RankKey};
-use crate::query::{Ctx, Dupe, PathGlob, Prep, Query};
+use crate::query::{Ctx, Dupe, PathGlob, Prep, Query, ValueRange};
 use crate::runs::RunHistory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -93,7 +93,7 @@ pub fn build_prep(ix: &Index, q: &Query, runs: Option<&RunHistory>, need_runs: b
         path_globs: q
             .path_globs
             .iter()
-            .map(|(p, case)| PathGlob::new(p, *case, ix.entries.len()))
+            .map(|(p, case)| PathGlob::new(p, *case, &ix.dirs))
             .collect(),
     }
 }
@@ -115,10 +115,39 @@ pub fn filter_range(n: usize, keep: impl Fn(u32) -> bool + Sync) -> Vec<u32> {
     concat(parts)
 }
 
+/// Fewer items than this are handled on the calling thread: waking the
+/// pool's threads takes longer (a few hundred microseconds) than the work.
+const SMALL: usize = 4096;
+
+/// `f` of every id, None if any is None.
+fn gather<T: Send>(ids: &[u32], f: impl Fn(u32) -> Option<T> + Sync) -> Option<Vec<T>> {
+    if ids.len() < SMALL {
+        ids.iter().map(|&i| f(i)).collect()
+    } else {
+        ids.par_iter().map(|&i| f(i)).collect()
+    }
+}
+
+fn sort_keys<T: Ord + Send>(v: &mut [T]) {
+    if v.len() < SMALL {
+        v.sort_unstable();
+    } else {
+        v.par_sort_unstable();
+    }
+}
+
 /// The candidates `keep` accepts, in order. Rayon's adaptive splitting
-/// balances uneven checks (path patterns climb folders) best here.
+/// balances uneven checks (path patterns climb folders) best here; a few
+/// thousand are checked quicker than the pool's threads wake up.
 fn filter_list(ids: &[u32], keep: impl Fn(u32) -> bool + Sync) -> Vec<u32> {
-    ids.par_iter().copied().filter(|&i| keep(i)).collect()
+    if ids.len() < SMALL {
+        return ids.iter().copied().filter(|&i| keep(i)).collect();
+    }
+    ids.par_iter()
+        .with_min_len(1024)
+        .copied()
+        .filter(|&i| keep(i))
+        .collect()
 }
 
 fn concat(parts: Vec<Vec<u32>>) -> Vec<u32> {
@@ -143,19 +172,41 @@ fn matching(ix: &Index, q: &Query, prep: &Prep) -> Vec<u32> {
     if q.is_empty() {
         return filter_range(ix.entries.len(), |i| ix.is_visible(i));
     }
-    // A lone `ext:dll`: the arena scan for `.dll\0` finds exactly the live
-    // names ending in it; files among them that aren't excluded are the
-    // answer, both from bitsets, so no candidate's entry is read.
+    // A lone `ext:dll`: the entries with that extension (from the stored
+    // order, else the arena scan for `.dll\0`) that are files and aren't
+    // excluded are the answer, both from bitsets.
     if let Some(ext) = q.single_ext() {
+        let file = |i: u32| !ix.is_excluded_fast(i) && !ix.is_dir_fast(i);
+        if let Some(c) = ix.ext_candidates(ext, file) {
+            return c;
+        }
         let mut needle = Vec::with_capacity(ext.len() + 2);
         needle.push(b'.');
         needle.extend_from_slice(ext);
         needle.push(0);
         let mut c = arena_candidates(ix, &needle);
-        c.retain(|&i| !ix.is_excluded_fast(i) && !ix.is_dir_fast(i));
+        c.retain(|&i| file(i));
         return c;
     }
     let check = |i: u32| ix.is_visible(i) && q.root.eval(&mut Ctx::new(ix, i, prep));
+    // A narrow size or date range (`size:>1gb`, `dm:today`): its entries
+    // come off the stored order, so only they are read, not every entry.
+    if let Some(c) = range_candidates(ix, q) {
+        return filter_list(&c, check);
+    }
+    // An extension (`ext:pdf`, `*.pdf`): its entries, from the stored order.
+    if let Some(x) = q.ext_driver() {
+        // Path patterns climb folders: in index order, neighbours share
+        // their folders' cached states (it's twice as quick).
+        if !q.path_globs.is_empty() {
+            if let Some(mut c) = ix.ext_candidates(x, |_| true) {
+                c.par_sort_unstable();
+                return filter_list(&c, check);
+            }
+        } else if let Some(c) = ix.ext_candidates(x, check) {
+            return c;
+        }
+    }
     match q.driver() {
         // A lone substring term: the arena scan already is the answer.
         Some(needle) if q.is_single_name_substring() => {
@@ -167,6 +218,24 @@ fn matching(ix: &Index, q: &Query, prep: &Prep) -> Vec<u32> {
         }
         Some(needle) => filter_list(&arena_candidates(ix, &needle), check),
         None => filter_range(ix.entries.len(), check),
+    }
+}
+
+/// Candidates from [`Query::value_range`] when that range holds at most a
+/// sixteenth of the entries (beyond that a scan reads memory in order and
+/// wins), else None.
+fn range_candidates(ix: &Index, q: &Query) -> Option<Vec<u32>> {
+    let max = ix.entries.len() / 16;
+    match q.value_range()? {
+        ValueRange::Size(lo, hi) => {
+            ix.ordered_range(RankKey::Size, |e| e.size < lo, |e| e.size > hi, max)
+        }
+        ValueRange::Modified(lo, hi) => ix.ordered_range(
+            RankKey::Modified,
+            |e| e.modified() < lo,
+            |e| e.modified() >= hi,
+            max,
+        ),
     }
 }
 
@@ -426,16 +495,13 @@ impl ResultSet {
             return self.walk_name_order(ixs, v, k);
         }
         if let Some(rk) = rank_key {
-            let keys: Option<Vec<u64>> = ids
-                .par_iter()
-                .map(|&i| {
-                    let r = ix.ranks.get(rk, i);
-                    (r != NONE).then(|| {
-                        let r = if desc { u32::MAX - r } else { r };
-                        (r as u64) << 32 | i as u64
-                    })
+            let keys: Option<Vec<u64>> = gather(ids, |i| {
+                let r = ix.ranks.get(rk, i);
+                (r != NONE).then(|| {
+                    let r = if desc { u32::MAX - r } else { r };
+                    (r as u64) << 32 | i as u64
                 })
-                .collect();
+            });
             if let Some(mut keys) = keys {
                 if let Some(k) = k
                     && k < keys.len()
@@ -443,7 +509,7 @@ impl ResultSet {
                     keys.select_nth_unstable(k);
                     keys.truncate(k);
                 }
-                keys.par_sort_unstable();
+                sort_keys(&mut keys);
                 return keys
                     .into_iter()
                     .map(|x| Hit { vol, idx: x as u32 })
@@ -467,20 +533,17 @@ impl ResultSet {
             _ => None,
         };
         if let Some(value) = value {
-            let keys: Option<Vec<u128>> = ids
-                .par_iter()
-                .map(|&i| {
-                    let r = ix.ranks.get(RankKey::Name, i);
-                    (r != NONE).then(|| {
-                        let (val, r) = if desc {
-                            (u64::MAX - value(i), u32::MAX - r)
-                        } else {
-                            (value(i), r)
-                        };
-                        (val as u128) << 64 | (r as u128) << 32 | i as u128
-                    })
+            let keys: Option<Vec<u128>> = gather(ids, |i| {
+                let r = ix.ranks.get(RankKey::Name, i);
+                (r != NONE).then(|| {
+                    let (val, r) = if desc {
+                        (u64::MAX - value(i), u32::MAX - r)
+                    } else {
+                        (value(i), r)
+                    };
+                    (val as u128) << 64 | (r as u128) << 32 | i as u128
                 })
-                .collect();
+            });
             if let Some(mut keys) = keys {
                 if let Some(k) = k
                     && k < keys.len()
@@ -488,7 +551,7 @@ impl ResultSet {
                     keys.select_nth_unstable(k);
                     keys.truncate(k);
                 }
-                keys.par_sort_unstable();
+                sort_keys(&mut keys);
                 return keys
                     .into_iter()
                     .map(|x| Hit { vol, idx: x as u32 })
@@ -503,7 +566,11 @@ impl ResultSet {
             h.select_nth_unstable_by(k, |a, b| c.cmp(a, b));
             h.truncate(k);
         }
-        h.par_sort_unstable_by(|a, b| c.cmp(a, b));
+        if h.len() < SMALL {
+            h.sort_unstable_by(|a, b| c.cmp(a, b));
+        } else {
+            h.par_sort_unstable_by(|a, b| c.cmp(a, b));
+        }
         h
     }
 
@@ -823,6 +890,101 @@ mod tests {
             n(&ix, "file: ext:dll"),
             "same as the general path"
         );
+    }
+
+    /// Size and date ranges and extensions read off the stored orders give
+    /// what checking every entry gives, also after changes since the orders
+    /// were computed (new, renamed, removed, resized and redated entries).
+    #[test]
+    fn stored_orders_match_a_full_check() {
+        use crate::index::tests::scan_of;
+        let mut items: Vec<(u32, u32, String, bool, u64)> = (0..4)
+            .map(|d| (30 + d, 5, format!("d{d}"), true, 0))
+            .collect();
+        for k in 0..3000u32 {
+            let ext = ["dll", "txt", "pdf", "Dll", "none"][(k % 5) as usize];
+            let name = if ext == "none" {
+                format!("f{k}")
+            } else {
+                format!("f{k}.{ext}")
+            };
+            items.push((100 + k, 30 + k % 4, name, false, k as u64 * 1000));
+        }
+        let refs: Vec<(u32, u32, &str, bool, u64)> = items
+            .iter()
+            .map(|i| (i.0, i.1, i.2.as_str(), i.3, i.4))
+            .collect();
+        let mut ix = Index::from_scan('C', &scan_of(&refs));
+        // 2026-10-20 12:00 UTC as a FILETIME.
+        let day = 134_369_712_000_000_000i64;
+        for k in (0..3000u32).step_by(7) {
+            ix.set_file_info(100 + k, k as u64 * 1000 + 5_000_000, day, 0);
+        }
+        for k in 0..50u32 {
+            let ext = ["pdf", "dll"][(k % 2) as usize];
+            let parent = ix.links(31).next().unwrap();
+            ix.add_link(
+                9000 + k,
+                0,
+                parent,
+                &format!("new{k}.{ext}"),
+                0x20,
+                9_000_000,
+                day,
+                0,
+            );
+        }
+        let d2 = ix.links(32).next().unwrap();
+        for k in (3..3000u32).step_by(11) {
+            let i = ix.links(100 + k).next().unwrap();
+            ix.rename_entry(i, d2, &format!("renamed{k}.pdf"));
+        }
+        for k in (4..3000u32).step_by(13) {
+            ix.remove_record(100 + k);
+        }
+        assert!(!ix.ranks.unranked_names.is_empty() && !ix.ranks.unranked_values[0].is_empty());
+        assert!(
+            ix.ext_candidates(b"pdf", |_| true).is_some()
+                && ix
+                    .ordered_range(RankKey::Size, |e| e.size < 1, |_| false, usize::MAX)
+                    .is_some(),
+            "the stored orders are used"
+        );
+        for q in [
+            "size:>8mb",
+            "size:>2900kb",
+            "size:<2kb",
+            "size:>2mb",
+            "dm:2026-10-20",
+            "ext:pdf",
+            "ext:dll",
+            "ext:none",
+            "*.pdf",
+            "*.dll",
+            r"*\d1\*.dll",
+            r"c:\d2\*.pdf",
+            "ext:dll size:>2900kb",
+            "*.txt dm:2026-10-20",
+            "f1*.pdf",
+        ] {
+            let (text, q) = (q, Query::parse(q).unwrap());
+            let prep = build_prep(&ix, &q, None, false);
+            let want: Vec<u32> = (0..ix.entries.len() as u32)
+                .filter(|&i| ix.is_visible(i) && q.root.eval(&mut Ctx::new(&ix, i, &prep)))
+                .collect();
+            let mut got = matching(&ix, &q, &build_prep(&ix, &q, None, false));
+            got.sort_unstable();
+            assert_eq!(got, want, "{text}");
+            let h = search(
+                &[&ix],
+                &q,
+                &SearchOptions {
+                    limit: 0,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(h.total, want.len(), "{text}");
+        }
     }
 
     /// A path term starting with a drive skips other volumes; a folder

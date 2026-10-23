@@ -121,6 +121,15 @@ pub enum Leaf {
     },
 }
 
+/// See [`Query::value_range`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueRange {
+    /// Bytes, inclusive.
+    Size(u64, u64),
+    /// Half-open UTC FILETIME interval.
+    Modified(i64, i64),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dupe {
     Name,
@@ -748,6 +757,42 @@ impl Query {
             .collect()
     }
 
+    /// A size or date modified range every match must be in, which can
+    /// drive the search off the index's stored orders instead of a scan.
+    pub fn value_range(&self) -> Option<ValueRange> {
+        let Node::All(items) = &self.root else {
+            return None;
+        };
+        items.iter().find_map(|n| match n {
+            Node::Leaf(Leaf::Size { lo, hi }) => Some(ValueRange::Size(*lo, *hi)),
+            Node::Leaf(Leaf::Date {
+                field: DateField::Modified,
+                lo,
+                hi,
+            }) => Some(ValueRange::Modified(*lo, *hi)),
+            _ => None,
+        })
+    }
+
+    /// A folded extension every match's name must have, from a lone `ext:`
+    /// value or a pattern ending in `*.ext` (name or path), which can drive the search off the
+    /// index's extension order.
+    pub fn ext_driver(&self) -> Option<&[u8]> {
+        let Node::All(items) = &self.root else {
+            return None;
+        };
+        items.iter().find_map(|n| match n {
+            Node::Leaf(Leaf::Ext(exts)) if exts.len() == 1 => exts.iter().next().map(Vec::as_slice),
+            // Ending in `.dll` after a wildcard: the name's extension is `dll`.
+            Node::Leaf(Leaf::Glob {
+                pat, case: false, ..
+            }) => glob_tail(pat)
+                .and_then(|t| t.strip_prefix(b"."))
+                .filter(|x| !x.is_empty() && !x.contains(&b'.')),
+            _ => None,
+        })
+    }
+
     /// The extension, when the whole query is one `ext:` with a single one.
     pub fn single_ext(&self) -> Option<&[u8]> {
         if self.dupe.is_some() {
@@ -1017,15 +1062,32 @@ pub struct PathGlob {
     rest_any: u64,
     /// Epsilon closure of each position.
     eps: Vec<u64>,
-    /// Per entry: `KNOWN | state` once computed (0 = not yet).
+    /// Per folder: `KNOWN | state` once computed (0 = not yet), at the
+    /// folder's position among the index's folders (see `slot`).
     states: Vec<std::sync::atomic::AtomicU64>,
+    /// Folders before each 64-entry word of the index's folder bitset.
+    dir_base: Vec<u32>,
 }
 
 const KNOWN: u64 = 1 << 63;
 
+/// `n` zeroed atomics from a zeroed allocation: fresh pages from the OS
+/// are already zero, so the table (built for every path query) costs only
+/// the pages a query touches, not a pass over all of it.
+fn zeroed_atomics(n: usize) -> Vec<std::sync::atomic::AtomicU64> {
+    use std::sync::atomic::AtomicU64;
+    const _: () =
+        assert!(std::mem::size_of::<AtomicU64>() == 8 && std::mem::align_of::<AtomicU64>() == 8);
+    let mut v = std::mem::ManuallyDrop::new(vec![0u64; n]);
+    // SAFETY: same size and alignment, and zero is a valid AtomicU64, so the
+    // allocation's layout and contents carry over unchanged.
+    unsafe { Vec::from_raw_parts(v.as_mut_ptr().cast::<AtomicU64>(), v.len(), v.capacity()) }
+}
+
 impl PathGlob {
-    /// `None` for patterns too long for a 62-position state set.
-    pub fn new(pat: &[u8], case: bool, entries: usize) -> Option<PathGlob> {
+    /// `None` for patterns too long for a 62-position state set. `dirs` is
+    /// the index's folder bitset ([`Index::dirs`]).
+    pub fn new(pat: &[u8], case: bool, dirs: &[u64]) -> Option<PathGlob> {
         let s = std::str::from_utf8(pat).ok()?;
         let mut toks = Vec::with_capacity(s.len());
         for c in s.chars() {
@@ -1076,11 +1138,15 @@ impl PathGlob {
             rest_any,
             eps,
             states: Vec::new(),
+            dir_base: Vec::with_capacity(dirs.len()),
         };
         g.start = g.closure(1);
-        g.states = (0..entries)
-            .map(|_| std::sync::atomic::AtomicU64::new(0))
-            .collect();
+        let mut folders = 0u32;
+        for w in dirs {
+            g.dir_base.push(folders);
+            folders += w.count_ones();
+        }
+        g.states = zeroed_atomics(folders as usize);
         Some(g)
     }
 
@@ -1140,12 +1206,23 @@ impl PathGlob {
         }
     }
 
+    /// Folder `i`'s cached state (None for files).
+    #[inline]
+    fn slot(&self, ix: &Index, i: u32) -> Option<&std::sync::atomic::AtomicU64> {
+        let w = *ix.dirs.get(i as usize / 64)?;
+        let bit = 1u64 << (i % 64);
+        if w & bit == 0 {
+            return None;
+        }
+        let k = *self.dir_base.get(i as usize / 64)? + (w & (bit - 1)).count_ones();
+        self.states.get(k as usize)
+    }
+
     /// State after the full path of entry `i`.
     fn state(&self, ix: &Index, i: u32) -> u64 {
         use std::sync::atomic::Ordering::Relaxed;
         let cached = |i: u32| {
-            self.states
-                .get(i as usize)
+            self.slot(ix, i)
                 .map(|a| a.load(Relaxed))
                 .filter(|v| v & KNOWN != 0)
         };
@@ -1193,9 +1270,7 @@ impl PathGlob {
                 Some(st) => self.feed_name(self.step(st, '\\'), ix, c),
             };
             // Only folders' states are reused (by their children).
-            if ix.entries[c as usize].is_dir()
-                && let Some(a) = self.states.get(c as usize)
-            {
+            if let Some(a) = self.slot(ix, c) {
                 a.store(next | KNOWN, Relaxed);
             }
             s = Some(next);
@@ -1467,7 +1542,7 @@ mod tests {
                 path_globs: parsed
                     .path_globs
                     .iter()
-                    .map(|(p, c)| PathGlob::new(p, *c, ix.entries.len()))
+                    .map(|(p, c)| PathGlob::new(p, *c, &ix.dirs))
                     .collect(),
                 ..Default::default()
             };
@@ -1477,7 +1552,7 @@ mod tests {
             assert_eq!(a, b, "{q}");
         }
         let long = "a?".repeat(40);
-        assert!(PathGlob::new(long.as_bytes(), false, 1).is_none());
+        assert!(PathGlob::new(long.as_bytes(), false, &[]).is_none());
     }
 
     #[test]
@@ -1495,7 +1570,7 @@ mod tests {
             let path: String = (0..next(12)).map(|_| alphabet[next(4) as usize]).collect();
             let raw: String = (0..1 + next(7)).map(|_| wild[next(8) as usize]).collect();
             let pat = path_glob(raw.clone().into_bytes());
-            let g = PathGlob::new(&pat, true, 0).unwrap();
+            let g = PathGlob::new(&pat, true, &[]).unwrap();
             let nfa = g.feed(g.start, path.as_bytes()) >> g.toks.len() & 1 == 1;
             assert_eq!(
                 nfa,

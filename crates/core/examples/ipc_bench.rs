@@ -3,9 +3,9 @@
 //!
 //! `cargo run --release -p rapidfind-core --example ipc_bench -- --runs 15 "*.pdf" "ext:dll"`
 //!
-//! Prints one JSON line per query: total matches, and the median, minimum
-//! and maximum of the client-measured round trip and of the service's own
-//! search time, in milliseconds. Results are sorted by name and the first
+//! Prints one JSON line per query: total matches; the median, 10th and
+//! 90th percentile, minimum and maximum of the client-measured round trip;
+//! and the median of the service's own search time, in milliseconds. Results are sorted by name and the first
 //! page is 100 rows, as a list view would ask.
 
 use std::time::Instant;
@@ -13,6 +13,11 @@ use std::time::Instant;
 use rapidfind_core::ipc::{Backend, Client, Remote};
 use rapidfind_core::query::SearchFlags;
 use rapidfind_core::search::SortKey;
+
+/// The `p`-th percentile of sorted `v` (nearest rank).
+fn percentile(v: &[f64], p: f64) -> f64 {
+    v[((v.len() - 1) as f64 * p / 100.0).round() as usize]
+}
 
 fn median(v: &mut [f64]) -> f64 {
     v.sort_by(f64::total_cmp);
@@ -49,14 +54,12 @@ fn main() {
             }
             total = page.total;
         }
-        let (lo, hi) = (
-            wall.iter().copied().fold(f64::MAX, f64::min),
-            wall.iter().copied().fold(0.0, f64::max),
-        );
+        let med = median(&mut wall);
+        let (lo, hi) = (wall[0], wall[wall.len() - 1]);
+        let (p10, p90) = (percentile(&wall, 10.0), percentile(&wall, 90.0));
         println!(
-            "{{\"query\":{:?},\"total\":{total},\"runs\":{runs},\"median_ms\":{:.3},\"min_ms\":{lo:.3},\"max_ms\":{hi:.3},\"server_median_ms\":{:.3}}}",
+            "{{\"query\":{:?},\"total\":{total},\"runs\":{runs},\"median_ms\":{med:.3},\"p10_ms\":{p10:.3},\"p90_ms\":{p90:.3},\"min_ms\":{lo:.3},\"max_ms\":{hi:.3},\"server_median_ms\":{:.3}}}",
             q,
-            median(&mut wall),
             median(&mut server)
         );
     }

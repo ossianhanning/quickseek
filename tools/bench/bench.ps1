@@ -2,20 +2,27 @@
 # (elevated only) a cold index build. Prints numbers only, no file names.
 #
 #   tools\bench\bench.ps1                     queries, memory, index size
-#   tools\bench\bench.ps1 -Runs 25            more runs per query
-#   tools\bench\bench.ps1 -ColdBuild C        also time a cold build of C: (run elevated)
+#   tools\bench\bench.ps1 -Runs 101           more runs per query
+#   tools\bench\bench.ps1 -ColdBuild all      also time cold builds (run elevated)
+#   tools\bench\bench.ps1 -ColdBuild C        ... of C: alone
+#
+# Cold builds: rapidfind scans the volumes (in parallel, as its service
+# does), and a separate Everything instance with its own database reindexes.
+# "all" means the local volumes Everything's settings include, so both build
+# the same drives; Everything also rebuilds with a copy of its settings that
+# includes only C:, the like-for-like single-volume number.
 #
 # Query latency is what a client sees: a round trip to each tool's own
 # process over its own IPC (rapidfind's pipe, Everything's WM_COPYDATA
 # query), sorted by name, first 100 results. One warm-up run, then the
-# median of -Runs. rapidfind needs its service running; Everything is
+# median of -Runs, and the 10th-90th percentile spread. rapidfind needs its service running; Everything is
 # started (tray, no window) if it isn't, and loads its existing database.
 #
 # Every line also goes to -Log as it happens (default target\tmp\bench-<time>.txt).
 # It waits for rapidfind to finish any background rescan first, every step
 # has a time limit, and it only closes the Everything instances it started.
 param(
-  [int]$Runs = 15,
+  [int]$Runs = 41,
   [string[]]$Queries = @("report", "*.pdf", "ext:dll", "size:>1gb", "dm:today", "c:\windows\system32\*.dll", "*\system32\*.dll", "f:\ *.jpg", "a", "f:\"),
   [string]$ColdBuild = "",
   [string]$Everything = "C:\Program Files\Everything\Everything.exe",
@@ -138,6 +145,9 @@ public class EverythingIpc : NativeWindow, IDisposable {
 "@
 
 function Median([double[]]$v) { $s = $v | Sort-Object; $n = $s.Count; if ($n % 2) { $s[[int][math]::Floor($n / 2)] } else { ($s[$n / 2 - 1] + $s[$n / 2]) / 2 } }
+# Nearest-rank percentile, as ipc_bench computes it.
+function Pct([double[]]$v, [double]$p) { $s = @($v | Sort-Object); $s[[int][math]::Round(($s.Count - 1) * $p / 100)] }
+function Spread($lo, $hi) { "{0:0.0}-{1:0.0}" -f $lo, $hi }
 function Mb($bytes) { [math]::Round($bytes / 1MB, 0) }
 
 $ev = $null
@@ -208,21 +218,25 @@ try {
     Say "Everything excludes $($excl.Count) folder(s) in its settings; 'rapidfind hits outside them' counts rapidfind's hits elsewhere"
   }
   $rows = foreach ($q in $Queries) {
-    $med = $null
+    $med = $null; $evSpread = $null
     try {
       $ev.Query($q) | Out-Null   # warm-up
       $times = 1..$Runs | ForEach-Object { $ev.Query($q) }
       $med = [math]::Round((Median $times), 1)
+      $evSpread = Spread (Pct $times 10) (Pct $times 90)
     } catch { Say "  Everything: no answer to $q ($($_.Exception.Message))" }
     [pscustomobject]@{
       Query = $q
       "rapidfind ms" = if ($rf[$q]) { [math]::Round($rf[$q].median_ms, 1) } else { $null }
-      "rapidfind hits" = $rf[$q].total
-      "rapidfind hits outside them" = if ($excl) { $rfOut[$q] } else { $rf[$q].total }
+      "p10-p90" = if ($rf[$q]) { Spread $rf[$q].p10_ms $rf[$q].p90_ms } else { $null }
       "Everything ms" = $med
+      "p10-p90 " = $evSpread
+      "rapidfind hits" = $rf[$q].total
+      "outside its excludes" = if ($excl) { $rfOut[$q] } else { $rf[$q].total }
       "Everything hits" = $ev.TotalItems
     }
   }
+  Say "median round trip over $Runs runs, and the 10th-90th percentile"
   Say ($rows | Format-Table -AutoSize | Out-String -Width 200)
 
   # ---- memory and index size -----------------------------------------------------------
@@ -244,35 +258,75 @@ try {
   if ($ColdBuild) {
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $admin) { Say "cold build: skipped (run elevated)" } else {
+      # The local volumes Everything includes, from its settings.
+      $evVols = @()
+      if (Test-Path $evIni) {
+        $ini = Get-Content $evIni
+        $paths = @(([regex]::Matches((($ini | Where-Object { $_ -match '^ntfs_volume_paths=' }) -replace '^[^=]*=', ''), '"([^"]*)"')) | ForEach-Object { $_.Groups[1].Value })
+        $incl = @((($ini | Where-Object { $_ -match '^ntfs_volume_includes=' }) -replace '^[^=]*=', '') -split ',')
+        $evVols = @(for ($k = 0; $k -lt $paths.Count; $k++) {
+          if ($incl[$k] -eq '1' -and $paths[$k] -match '^([A-Za-z]):$' -and (Test-Path "$($paths[$k])\")) { $Matches[1].ToUpper() }
+        }) | Select-Object -Unique
+      }
+      $vols = if ($ColdBuild -eq "all") { @($evVols) } else { @($ColdBuild -split '[, ]+' | Where-Object { $_ } | ForEach-Object { $_.Substring(0, 1).ToUpper() }) }
+      if (-not $vols) { Say "cold build: no volumes (Everything's settings name none)"; $vols = @("C") }
       # In its own process from the MFT, ignoring any saved index (rewrites the
-      # per-user local index, not the service's).
-      Say "cold build of ${ColdBuild}: rapidfind scanning..."
-      $r = Run-Step "rapidfind scan" $rapidfind @("scan", "--local", "--force", "-v", $ColdBuild) 900
+      # per-user local index, not the service's). Volumes build in parallel.
+      $label = ($vols | ForEach-Object { "${_}:" }) -join " "
+      Say "cold build of ${label}: rapidfind scanning..."
+      $argv = @("scan", "--local", "--force") + @($vols | ForEach-Object { "-v"; $_ })
+      $r = Run-Step "rapidfind scan" $rapidfind $argv 900
       $r.Err | Where-Object { $_ -match "entries|saved in|done in" } | ForEach-Object { Say ("  " + ($_ -replace '\s*\(index saved to .*\)', '')) }
-      Say "cold build of ${ColdBuild}: rapidfind $($r.Seconds) s (exit code $($r.Code))"
+      Say "cold build of ${label}: rapidfind $($r.Seconds) s (exit code $($r.Code))"
+
+      # Everything: a separate instance, its own database, -reindex. Once with
+      # its settings as they are (every volume it includes), once with a copy
+      # that includes only C:.
       $tmp = Join-Path $root "target\bench-cold"
-      Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue; New-Item -ItemType Directory $tmp | Out-Null
-      $cold = New-Object EverythingIpc
-      $cold.Class = "EVERYTHING_TASKBAR_NOTIFICATION_(bench)"
-      Say "cold build: Everything (instance 'bench', its own database) reindexing..."
-      $t = [Diagnostics.Stopwatch]::StartNew()
-      $coldProc = Start-Process $Everything -ArgumentList "-instance bench -startup -db `"$(Join-Path $tmp 'everything.db')`" -reindex" -PassThru
-      $done = $false
-      while ($t.Elapsed.TotalSeconds -lt 900) { if ($cold.Loaded()) { $done = $true; break }; Start-Sleep -Milliseconds 100 }
-      if ($done) { Say "cold build of every included volume: Everything $([math]::Round($t.Elapsed.TotalSeconds, 1)) s (its -db/-reindex rebuilds all its volumes, not one)" }
-      else { Say "cold build: Everything not done after 900 s" }
-      $cold.Dispose()
+      function Cold-Everything([string]$what, [string]$config) {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue; New-Item -ItemType Directory $tmp | Out-Null
+        $cold = New-Object EverythingIpc
+        $cold.Class = "EVERYTHING_TASKBAR_NOTIFICATION_(bench)"
+        $cfg = if ($config) { " -config `"$config`"" } else { "" }
+        Say "cold build of ${what}: Everything (instance 'bench', its own database) reindexing..."
+        $t = [Diagnostics.Stopwatch]::StartNew()
+        $script:coldProc = Start-Process $Everything -ArgumentList "-instance bench -startup$cfg -db `"$(Join-Path $tmp 'everything.db')`" -reindex" -PassThru
+        $done = $false
+        while ($t.Elapsed.TotalSeconds -lt 900) { if ($cold.Loaded()) { $done = $true; break }; Start-Sleep -Milliseconds 100 }
+        if ($done) {
+          $n = $null; try { $cold.Query("") | Out-Null; $n = $cold.TotalItems } catch { }
+          Say "cold build of ${what}: Everything $([math]::Round($t.Elapsed.TotalSeconds, 1)) s, $n entries"
+        } else { Say "cold build of ${what}: Everything not done after 900 s" }
+        $cold.Dispose()
+        & $Everything -instance bench -exit 2>$null
+        if (-not $script:coldProc.WaitForExit(30000)) { try { Stop-Process -Id $script:coldProc.Id -Force -ErrorAction Stop } catch { } }
+        $script:coldProc = $null
+      }
+      Cold-Everything "every volume it includes ($(($evVols | ForEach-Object { "${_}:" }) -join ' '))" ""
+      if (Test-Path $evIni) {
+        # Its settings with every volume but C: left out (and no folder indexes).
+        $onlyC = Join-Path $env:TEMP "everything-bench-c.ini"
+        $paths = @(([regex]::Matches((($ini | Where-Object { $_ -match '^ntfs_volume_paths=' }) -replace '^[^=]*=', ''), '"([^"]*)"')) | ForEach-Object { $_.Groups[1].Value })
+        $inclC = ($paths | ForEach-Object { if ($_ -eq "C:") { "1" } else { "0" } }) -join ","
+        $ini | ForEach-Object {
+          if ($_ -match '^ntfs_volume_includes=') { "ntfs_volume_includes=$inclC" }
+          elseif ($_ -match '^folders=') { "folders=" }
+          else { $_ }
+        } | Set-Content -Path $onlyC -Encoding UTF8
+        Cold-Everything "C: alone" $onlyC
+        Remove-Item $onlyC -ErrorAction SilentlyContinue
+      }
     }
   }
 } finally {
   # Close only what this script started: the cold-build instance by its own
   # name, and the Everything it started for the queries. Never the user's
   # Everything or its (elevated) service.
-  if ($coldProc) {
+  if ($script:coldProc) {
     & $Everything -instance bench -exit 2>$null
-    if (-not $coldProc.WaitForExit(10000)) { try { Stop-Process -Id $coldProc.Id -Force -ErrorAction Stop } catch { Say "couldn't close the cold-build Everything (process $($coldProc.Id))" } }
-    Remove-Item -Recurse -Force (Join-Path $root "target\bench-cold") -ErrorAction SilentlyContinue
+    if (-not $script:coldProc.WaitForExit(10000)) { try { Stop-Process -Id $script:coldProc.Id -Force -ErrorAction Stop } catch { Say "couldn't close the cold-build Everything (process $($script:coldProc.Id))" } }
   }
+  Remove-Item -Recurse -Force (Join-Path $root "target\bench-cold") -ErrorAction SilentlyContinue
   if ($evStarted) {
     & $Everything -exit 2>$null
     if (-not $evStarted.WaitForExit(10000)) { try { Stop-Process -Id $evStarted.Id -Force -ErrorAction Stop } catch { Say "couldn't close the Everything this script started (process $($evStarted.Id))" } }
