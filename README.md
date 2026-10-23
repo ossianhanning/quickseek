@@ -103,8 +103,9 @@ inspiration. Measured on one PC with about 7 million files ([details](docs/bench
 | Typical searches (substring, `*.pdf`, `ext:dll`, `size:>1gb`, `dm:today`) | 0.2–4 ms | 6–18 ms |
 | Path wildcards (`*\system32\*.dll`) | 6 ms | 184 ms |
 | Millions of results sorted by name (`a`, a whole drive) | 5–12 ms | 13–17 ms |
-| Memory for ~7M files | ~550 MB | ~580 MB |
+| Memory for ~7M files | ~540–570 MB | ~580 MB |
 | Index on disk | 75 MB | 260 MB |
+| Building the index from scratch (C:, 3.3M files) | ~27 s (all three drives: ~29 s) | ~153 s |
 | Folder sizes, history of what grew | yes | folder sizes only |
 | AI assistants (MCP) | yes | no |
 | Maturity and ecosystem | new | since 2009; SDK, `es.exe`, plugins, HTTP/ETP servers |

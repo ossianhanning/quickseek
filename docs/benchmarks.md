@@ -12,7 +12,7 @@ machine.
 | Date | 2026-10-23 |
 | CPU | AMD Ryzen 9 7950X3D (16 cores) |
 | RAM | 64 GB |
-| Disks | NVMe 1 TB (C:), NVMe 2 TB, SATA SSD 1 TB |
+| Disks | SATA SSD 1 TB (C:), NVMe 1 TB (F:), NVMe 2 TB (S:) |
 | OS | Windows 11 Pro 10.0.26200 |
 | rapidfind | 0.1.0+c514c0b as the service, 6,913,961 entries on C:, F:, S: |
 | Everything | 1.4.1.1024 with its service, 6,686,064 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
@@ -31,7 +31,9 @@ machine.
   `Everything.db`.
 - **Cold build** (building the index with nothing saved) needs administrator rights for both tools.
   rapidfind scans in its own process, ignoring the saved index; Everything runs as a separate
-  instance with its own database and `-reindex`.
+  instance with its own database, a copy of its settings and `-reindex`. Everything's time is from
+  its own debug log (`-debug-log`: when it started, and when each volume was indexed and the
+  database built), checked against its entry count over IPC and its normal database's count.
 
 **Hit counts.** This PC's Everything settings exclude one large cloud-synced folder on C: that
 rapidfind indexes. `bench.ps1` reads that list from Everything's settings and also counts
@@ -68,18 +70,25 @@ In both runs, on every row rapidfind's 90th percentile is below Everything's 10t
 
 | | rapidfind c514c0b | Everything | rapidfind 035aabe |
 |---|---:|---:|---:|
-| Memory, working set / private | 552 / 552 MB | 590 / 579 MB | 488 / 488 MB |
+| Memory, working set / private | 501-552 / 541-573 MB ¹ | 590-591 / 579-580 MB | 488 / 488 MB |
 | Index on disk | 75 MB | 260 MB | 74 MB |
+| Cold build of C: (3.3 M entries, SATA SSD) | **about 27 s** ² | about 153 s ³ | 27.3 s |
 
-The stored orders (below) cost most of the memory difference between c514c0b and 035aabe.
+¹ Over three runs of the same build on the service (12:36, 16:12, 16:54), after the queries. The
+stored orders (below) cost most of the difference to 035aabe; on private bytes the gap to
+Everything is now 7-39 MB.
 
-**Cold build** (building the index with nothing saved) is being re-measured. rapidfind builds C:,
-F: and S: in parallel in 30-41 s (6.91 M entries). Everything's numbers aren't trustworthy yet: its
-"database loaded" signal comes before every volume is indexed, live changes keep its count moving
-so "finished" has to allow for that, and its separate benchmark instance came up missing a volume
-(S: in one run, F: in the next). `bench.ps1` now reads Everything's own debug log for each
-volume's indexing time and any volume it couldn't open, and checks each volume's count against
-the normal database. Everything indexes its volumes one after another; rapidfind in parallel.
+² 27.3 s for C: alone (11:37). rapidfind builds C:, F: and S: in parallel in 28.8-40.7 s, 6.91 M
+entries in all (three runs); C: is the slowest of them.
+
+³ 152.5 s to index C: by its debug log, database built 158.4 s after start, 3,096,698 entries, the
+same as its normal database; over IPC its count settled at 159.4 s. In the run with every volume,
+C: took 137.1 s. Everything indexes its volumes one after another. There's no all-volume number:
+in that run the benchmark instance couldn't read F: ("failed to read NTFS boot sector: 50",
+ERROR_NOT_SUPPORTED), and in an earlier one S: was missing instead. F: has the same sector layout
+as S:, which worked, and the normal Everything indexes F: fine, so it looks like an intermittent
+conflict over raw access to the volume while the normal instance and its service are running. It
+wasn't investigated further.
 
 ## Reading the numbers
 
@@ -90,8 +99,10 @@ the normal database. Everything indexes its volumes one after another; rapidfind
 - The biggest changes since the first run are large name-sorted results (`a`, a whole drive), now
   read off a stored name order instead of sorted (10-14x faster), and the stored size, date and
   extension orders (below).
-- rapidfind's saved index is under a third of Everything's, and it uses about 30 MB less memory
-  for slightly more files.
+- rapidfind's saved index is under a third of Everything's, and it uses a little less memory (7-39
+  MB private) for slightly more files.
+- A cold build of C: takes rapidfind about 27 s and Everything about 153 s; rapidfind builds all
+  three drives in about 29 s.
 
 ## Stored size, date and extension orders (e9afa56)
 
