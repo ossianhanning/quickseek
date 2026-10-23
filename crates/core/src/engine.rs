@@ -759,17 +759,28 @@ impl Engine {
                 let Some(w) = want.iter().find(|w| w.0 == old.key) else {
                     continue;
                 };
+                // Shown in status, so tools (and benchmarks) can wait for it.
+                old.set_state("rescanning");
                 match self.load(&w.0, w.1, w.2, w.3.clone(), &cfg, true) {
                     Ok((v, rep)) => {
                         self.report(&w.0, &Ok(rep));
-                        let mut vols = self.volumes.write();
-                        if let Some(slot) = vols.iter_mut().find(|x| x.key == old.key) {
-                            *slot = v;
+                        {
+                            let mut vols = self.volumes.write();
+                            if let Some(slot) = vols.iter_mut().find(|x| x.key == old.key) {
+                                *slot = v;
+                            }
                         }
                         old.alive.store(false, Ordering::Relaxed);
+                        // Free the old index now: its journal watcher holds the
+                        // volume until the drive next changes, which on an idle
+                        // drive can be hours (two indexes' worth of memory).
+                        drop(std::mem::take(&mut *old.index.write()));
                         self.set_version.fetch_add(1, Ordering::Relaxed);
                     }
-                    Err(e) => self.report(&w.0, &Err(e)),
+                    Err(e) => {
+                        old.set_state("ready");
+                        self.report(&w.0, &Err(e));
+                    }
                 }
             }
         }
@@ -1236,6 +1247,10 @@ fn watch_journal(v: Arc<Volume>, mut j: Journal, stop: Arc<AtomicBool>) {
                 continue;
             }
         };
+        // Retired while waiting (rescanned or removed): its index is gone.
+        if !v.alive.load(Ordering::Relaxed) {
+            break;
+        }
         // Coalesce bursts (e.g. unzipping) into one write-lock.
         let mut batch = first;
         if let Ok(more) = j.drain() {
