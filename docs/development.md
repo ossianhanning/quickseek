@@ -3,7 +3,7 @@ Building, testing and releasing rapidfind.
 
 ## Building
 
-Windows 10 or 11 with the stable Rust toolchain (MSVC). `cargo build --release` builds the CLI and service
+Windows 10 or 11 with Rust (MSVC); `rust-toolchain.toml` pins the version CI uses, and rustup installs it on first build. `cargo build --release` builds the CLI and service
 (`rapidfind.exe`), the window (`rapidfind-gui.exe`) and the MCP server (`rapidfind-mcp.exe`) into
 `target\release`. The installer embeds those binaries, so it's built by `tools\build-release.ps1`
 (see below) rather than by `cargo build`. To run a development build against the real index, install

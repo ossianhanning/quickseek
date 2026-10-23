@@ -321,8 +321,10 @@ pub fn parse_notifications(buf: &[u8]) -> Vec<(Action, String)> {
             break;
         }
         let units = buf[name_start..name_start + len]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]));
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c));
         let name: String = char::decode_utf16(units)
             .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect();

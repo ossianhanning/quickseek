@@ -243,7 +243,7 @@ pub fn parse_std_info(v: &[u8]) -> Option<StdInfo> {
 }
 
 pub fn utf16le_to_string(b: &[u8]) -> String {
-    let it = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
+    let it = b.as_chunks::<2>().0.iter().map(|&c| u16::from_le_bytes(c));
     char::decode_utf16(it)
         .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect()

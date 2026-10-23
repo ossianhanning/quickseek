@@ -272,7 +272,14 @@ pub fn detect(head: &[u8]) -> (Encoding, usize) {
     if memchr::memchr(0, sniff).is_some() {
         // UTF-16 without a BOM: mostly-ASCII text has a zero in every other byte.
         let pairs = sniff.len() / 2;
-        let zeros = |odd: usize| sniff.chunks_exact(2).filter(|p| p[odd] == 0).count();
+        let zeros = |odd: usize| {
+            sniff
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter(|p| p[odd] == 0)
+                .count()
+        };
         let (lo, hi) = (zeros(0), zeros(1));
         if pairs >= 2 && hi * 10 >= pairs * 3 && lo * 20 <= pairs {
             return (Encoding::Utf16Le, 0);
@@ -304,7 +311,9 @@ impl Decoder {
                 data.extend_from_slice(raw);
                 let be = self.enc == Encoding::Utf16Be;
                 let mut units: Vec<u16> = data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|p| {
                         if be {
                             u16::from_be_bytes([p[0], p[1]])

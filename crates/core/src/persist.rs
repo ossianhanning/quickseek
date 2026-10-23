@@ -448,7 +448,9 @@ pub fn load(path: &Path) -> io::Result<Index> {
         return Err(bad());
     }
     let id_map = (!ids.is_empty()).then(|| {
-        ids.chunks_exact(20)
+        ids.as_chunks::<20>()
+            .0
+            .iter()
             .map(|c| {
                 (
                     u128::from_le_bytes(c[..16].try_into().unwrap()),

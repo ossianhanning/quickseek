@@ -24,7 +24,8 @@ jobs:
       SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
       - name: The tag matches the version
         shell: pwsh
         run: |

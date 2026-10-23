@@ -536,7 +536,7 @@ fn has_alpha(b: HBITMAP) -> bool {
             bm.bmBits as *const u8,
             (bm.bmWidthBytes * bm.bmHeight) as usize,
         );
-        px.chunks_exact(4).any(|p| p[3] != 0)
+        px.as_chunks::<4>().0.iter().any(|p| p[3] != 0)
     }
 }
 

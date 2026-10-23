@@ -231,7 +231,7 @@ impl Volume {
     fn add_unsaved(&self, n: u64) -> u64 {
         let old = self
             .unsaved
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
                 Some(u.saturating_add(n))
             })
             .unwrap();

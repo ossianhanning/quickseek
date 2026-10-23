@@ -86,8 +86,10 @@ pub fn parse_records(mut b: &[u8], mut f: impl FnMut(UsnRecord)) {
             && noff + nlen <= len
         {
             let it = r[noff..noff + nlen]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]));
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_le_bytes(c));
             let name: String = char::decode_utf16(it)
                 .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
                 .collect();

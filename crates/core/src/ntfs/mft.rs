@@ -343,8 +343,10 @@ fn parse_chunk(buf: &mut [u8], first: u64, count: usize, rs: usize, bitmap: &[u8
                     name.clear();
                     let it = f
                         .name_utf16
-                        .chunks_exact(2)
-                        .map(|c| u16::from_le_bytes([c[0], c[1]]));
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|&c| u16::from_le_bytes(c));
                     name.extend(
                         char::decode_utf16(it).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)),
                     );
