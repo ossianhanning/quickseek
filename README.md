@@ -9,9 +9,6 @@
 **Find any file on your Windows PC as you type, see where your disk space went, and let your AI
 assistant answer both.**
 
-Quickseek was called rapidfind until October 2026; installing it over rapidfind moves your index,
-history and settings over ([how](docs/user-guide.md#moving-over-from-rapidfind)).
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-as-you-type-dark.webp">
@@ -21,11 +18,21 @@ history and settings over ([how](docs/user-guide.md#moving-over-from-rapidfind))
 
 ## What it does for you
 
-| | |
-|---|---|
-| **Instant search on every drive** | Millions of files on every NTFS and ReFS drive, and on USB drives or network shares if you add them, searched as you type, by name, folder, wildcard, size or date, or by the text inside. The index stays current on its own. |
-| **Where did my space go?** | A live folder-size tree of every drive, and daily snapshots that show what grew or shrank since yesterday, last week or before a cleanup: a timeline, a "where it went" breakdown, a treemap and a calendar. |
-| **Your AI assistant can use it** | An MCP server lets Claude, Codex, Cursor, VS Code and others find files, explain what fills a drive (with a chart), suggest what to clean up and, with your OK, move it to the Recycle Bin. |
+**Instant search on every drive**
+- Search millions of files as you type
+- By name, folder, wildcard, size, date or text inside
+- NTFS and ReFS drives, plus USB drives and network shares you add
+- The index keeps itself up to date
+
+**See where your space went**
+- Live folder sizes for every drive
+- Daily snapshots: what grew or shrank since yesterday or last week
+- Timeline, breakdown, treemap and calendar views
+
+**Works with your AI assistant**
+- Claude, Codex, Cursor, VS Code and more, through an MCP server
+- Finds files and explains what fills a drive, with a chart
+- Suggests cleanups, and recycles files only with your OK
 
 ## Install
 
