@@ -197,6 +197,41 @@ pub fn stable_exe(src: &Path) -> Result<PathBuf, String> {
     Ok(dst)
 }
 
+/// Whether `command` (a registration) runs the per-user copy in `dir`.
+pub fn runs_from(command: &str, dir: &Path) -> bool {
+    let c = plain_path(PathBuf::from(command))
+        .to_string_lossy()
+        .to_lowercase();
+    let mut d = dir.to_string_lossy().to_lowercase();
+    if !d.ends_with('\\') {
+        d.push('\\');
+    }
+    c.starts_with(&d)
+}
+
+/// After an install: deletes the per-user copy of the server ([`user_dir`],
+/// made when registering from a build folder) unless a client still runs it.
+/// `still_used` says whether one does. Whether it went.
+pub fn retire_user_copy_in(dir: &Path, still_used: bool) -> bool {
+    if still_used || !dir.exists() {
+        return false;
+    }
+    quickseek_core::upgrade::kill_in(dir, &[EXE]);
+    let _ = std::fs::remove_file(dir.join(EXE));
+    quickseek_core::upgrade::remove_leftovers(dir);
+    std::fs::remove_dir(dir).is_ok()
+}
+
+/// [`retire_user_copy_in`] for this user, if no client is registered with it.
+pub fn retire_user_copy() -> bool {
+    let dir = user_dir();
+    let used = ALL
+        .into_iter()
+        .filter_map(|c| status(c).registered)
+        .any(|r| runs_from(&r, &dir));
+    retire_user_copy_in(&dir, used)
+}
+
 /// `p` without the `\\?\` that `canonicalize` puts in front of a local path
 /// on Windows (clients get a plain path, and [`is_stable_dir`] can match it).
 pub fn plain_path(p: PathBuf) -> PathBuf {
@@ -828,6 +863,24 @@ mod tests {
         assert!(!remove_skill_at(&theirs, LEGACY_NAME).unwrap());
         assert!(theirs.exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn retires_the_per_user_copy_only_when_unused() {
+        let d = std::env::temp_dir().join(format!("quickseek-usercopy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(EXE), "copy").unwrap();
+        let cmd = d.join(EXE).to_string_lossy().into_owned();
+        assert!(runs_from(&cmd, &d));
+        assert!(!runs_from(
+            r"C:\Program Files\Quickseek\quickseek-mcp.exe",
+            &d
+        ));
+        assert!(!retire_user_copy_in(&d, true), "a client still runs it");
+        assert!(d.join(EXE).exists());
+        assert!(retire_user_copy_in(&d, false));
+        assert!(!d.exists());
     }
 
     #[test]

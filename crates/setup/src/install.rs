@@ -158,20 +158,50 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     if o.startup {
         sys::set_run_at_login(Some(&gui))?;
     }
-    if !o.mcp.is_empty() {
+    let user_copy = reg::user_dir();
+    let registered: Vec<(reg::Client, Option<String>)> = reg::ALL
+        .into_iter()
+        .map(|c| (c, reg::status(c).registered))
+        .collect();
+    let clients = clients_to_register(&o.mcp, &registered, &user_copy);
+    if !clients.is_empty() {
         let exe = o.dir.join(reg::EXE);
-        for c in &o.mcp {
+        for c in &clients {
             match reg::register(*c, &exe) {
                 Ok(()) => log(&format!("Connected {}", c.label())),
                 Err(e) => log(&format!("Couldn't connect {}: {e}", c.label())),
             }
         }
     }
+    if reg::retire_user_copy() {
+        log(&format!(
+            "Removed the per-user copy in {}",
+            user_copy.display()
+        ));
+    }
     if o.arp {
         sys::write_arp(&o.dir, dir_size_kb(&o.dir))?;
     }
     log(&format!("Quickseek {VERSION} is installed"));
     Ok(())
+}
+
+/// The clients to register with the installed server: the ones chosen, and
+/// any registered with the per-user copy in `user_copy` (a development
+/// install, or `quickseek service install` from a build folder), which move
+/// to the installed one.
+pub fn clients_to_register(
+    chosen: &[reg::Client],
+    registered: &[(reg::Client, Option<String>)],
+    user_copy: &Path,
+) -> Vec<reg::Client> {
+    let mut out = chosen.to_vec();
+    for (c, r) in registered {
+        if r.as_deref().is_some_and(|r| reg::runs_from(r, user_copy)) && !out.contains(c) {
+            out.push(*c);
+        }
+    }
+    out
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -263,6 +293,26 @@ pub fn uninstall(r: &Removal, log: &mut dyn FnMut(&str)) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A machine moved over by a build folder's `service install`: clients
+    /// registered with the per-user copy move to the installed server, even
+    /// ones not chosen; others stay as they are.
+    #[test]
+    fn per_user_registrations_move_to_the_install() {
+        use reg::Client::*;
+        let user = Path::new(r"C:\Users\a\AppData\Local\Programs\quickseek");
+        let copy = Some(user.join(reg::EXE).to_string_lossy().into_owned());
+        let elsewhere = Some(r"D:\tools\quickseek-mcp.exe".to_string());
+        let registered = [
+            (ClaudeCode, copy.clone()),
+            (Cursor, copy),
+            (VsCode, elsewhere),
+            (Codex, None),
+        ];
+        let got = clients_to_register(&[ClaudeCode, Windsurf], &registered, user);
+        assert_eq!(got, vec![ClaudeCode, Windsurf, Cursor]);
+        assert!(clients_to_register(&[], &[(VsCode, None)], user).is_empty());
+    }
 
     #[test]
     fn options_default_to_program_files() {

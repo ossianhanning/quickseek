@@ -45,6 +45,25 @@ impl Roots {
     }
 }
 
+/// Whether this process may move rapidfind over. A full install (its
+/// installer's Program Files folder, Start menu, PATH and Apps & Features
+/// entries) is only moved by Quickseek's installer, which puts the same
+/// back for Quickseek; `quickseek service install` from a build folder
+/// would take them away and leave a development install. `from_installer`:
+/// the installer started this (it sets [`crate::upgrade::NO_SYNC_ENV`]).
+pub fn check_may_move(old_full_install: Option<&Path>, from_installer: bool) -> Result<(), String> {
+    match old_full_install {
+        Some(dir) if !from_installer => Err(format!(
+            "rapidfind (Quickseek's former name) is installed in {}. Run quickseek-setup.exe as \
+             administrator to move it over: it installs Quickseek in its place (Program Files, \
+             Start menu, PATH, Apps & Features) and keeps your index, history and settings. \
+             Nothing was changed.",
+            dir.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Whether anything of an old install is left to move.
 pub fn present(roots: &Roots) -> bool {
     roots.0.iter().any(|r| r.join(OLD).exists()) || old_install_dir().is_some()
@@ -364,6 +383,21 @@ mod tests {
         assert!(!remove_old_programs_in(&d));
         assert!(d.join("notes.txt").exists() && !d.join("rapidfind-mcp.exe").exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A full rapidfind install moves over only through the installer; a
+    /// development one (no installer entry) from anywhere.
+    #[test]
+    fn full_installs_move_only_through_the_installer() {
+        let dir = Path::new(r"C:\Program Files\rapidfind");
+        let e = check_may_move(Some(dir), false).unwrap_err();
+        assert!(
+            e.contains("quickseek-setup.exe") && e.contains("Nothing was changed"),
+            "{e}"
+        );
+        assert!(check_may_move(Some(dir), true).is_ok());
+        assert!(check_may_move(None, false).is_ok());
+        assert!(check_may_move(None, true).is_ok());
     }
 
     #[test]

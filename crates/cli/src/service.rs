@@ -120,6 +120,9 @@ pub fn migrate_from_rapidfind() -> anyhow::Result<()> {
     if old.is_none() && !legacy::present(&roots) {
         return Ok(());
     }
+    let from_installer = std::env::var_os(upgrade::NO_SYNC_ENV).is_some();
+    legacy::check_may_move(legacy::old_install_dir().as_deref(), from_installer)
+        .map_err(anyhow::Error::msg)?;
     println!("moving rapidfind (Quickseek's former name) over:");
     if let Some(svc) = old {
         if svc.query_status()?.current_state != ServiceState::Stopped {
