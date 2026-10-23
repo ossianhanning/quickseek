@@ -345,6 +345,9 @@ pub struct Index {
     pub rules: Rules,
     /// Bitset mirror of F_EXCLUDED: a cache-friendly check for hot loops.
     pub excl: Vec<u64>,
+    /// Bitset: the entry is a folder. Lets `ext:` keep files without
+    /// touching each candidate's entry (a cache miss apiece).
+    pub dirs: Vec<u64>,
     /// A folder moved under exclude rules: flags need recomputing.
     pub rules_stale: bool,
     pub root: u32,
@@ -701,6 +704,31 @@ impl Index {
         }
     }
 
+    /// Removes the entries of `record` whose path (below the volume root,
+    /// lower case, `\dir\name`) isn't in `names`, the file's links as the
+    /// file system has them now. Returns how many went.
+    pub fn drop_missing_links(&mut self, record: u32, names: &[String]) -> usize {
+        if names.is_empty() {
+            return 0;
+        }
+        let gone: Vec<u32> = self
+            .links(record)
+            .filter(|&l| self.is_live(l))
+            .filter(|&l| {
+                // `C:\dir\name` -> `\dir\name` (journal volumes are drive roots).
+                let p = self.path(l);
+                let below = p
+                    .find('\\')
+                    .map_or(String::new(), |k| p[k..].to_lowercase());
+                !names.contains(&below)
+            })
+            .collect();
+        for &l in &gone {
+            self.remove_entry(l);
+        }
+        gone.len()
+    }
+
     /// MFT record number of entry `i`.
     pub fn record(&self, i: u32) -> u32 {
         if i >= self.rec_sorted {
@@ -812,6 +840,23 @@ impl Index {
             }
         }
         self.fold_dead = dead;
+        self.dirs = self
+            .entries
+            .par_chunks(64)
+            .map(|c| {
+                c.iter()
+                    .enumerate()
+                    .fold(0u64, |w, (k, e)| w | (e.is_dir() as u64) << k)
+            })
+            .collect();
+    }
+
+    /// Whether entry `i` is a folder, from the bitset.
+    #[inline]
+    pub fn is_dir_fast(&self, i: u32) -> bool {
+        self.dirs
+            .get(i as usize / 64)
+            .is_some_and(|w| w >> (i % 64) & 1 == 1)
     }
 
     /// Entry owning fold record `rec` (`NONE` if dead).
@@ -1639,6 +1684,15 @@ impl Index {
                 | (if in_fold { F_NAME_IN_FOLD } else { 0 })
                 | pack_attrs(attrs),
         });
+        if is_dir {
+            let w = idx as usize / 64;
+            if self.dirs.len() <= w {
+                let extra = w + 1 - self.dirs.len();
+                Self::headroom(&mut self.dirs, extra);
+                self.dirs.resize(w + 1, 0);
+            }
+            self.dirs[w] |= 1 << (idx % 64);
+        }
         if self.seqs.len() == idx as usize {
             Self::headroom(&mut self.seqs, 1);
             self.seqs.push(seq);
@@ -1889,6 +1943,7 @@ impl Index {
             * 4
             + self.fold_dead.capacity() * 8
             + self.excl.capacity() * 8
+            + self.dirs.capacity() * 8
             + (self.more_links.capacity() + self.late_links.capacity()) * 9
     }
 

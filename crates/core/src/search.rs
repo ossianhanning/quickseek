@@ -143,6 +143,18 @@ fn matching(ix: &Index, q: &Query, prep: &Prep) -> Vec<u32> {
     if q.is_empty() {
         return filter_range(ix.entries.len(), |i| ix.is_visible(i));
     }
+    // A lone `ext:dll`: the arena scan for `.dll\0` finds exactly the live
+    // names ending in it; files among them that aren't excluded are the
+    // answer, both from bitsets, so no candidate's entry is read.
+    if let Some(ext) = q.single_ext() {
+        let mut needle = Vec::with_capacity(ext.len() + 2);
+        needle.push(b'.');
+        needle.extend_from_slice(ext);
+        needle.push(0);
+        let mut c = arena_candidates(ix, &needle);
+        c.retain(|&i| !ix.is_excluded_fast(i) && !ix.is_dir_fast(i));
+        return c;
+    }
     let check = |i: u32| ix.is_visible(i) && q.root.eval(&mut Ctx::new(ix, i, prep));
     match q.driver() {
         // A lone substring term: the arena scan already is the answer.
@@ -779,6 +791,38 @@ mod tests {
             ]
         );
         assert_eq!(h.total, 6);
+    }
+
+    /// A lone `ext:` answers from bitsets: folders named like files and
+    /// excluded files stay out, also ones added later.
+    #[test]
+    fn single_ext_skips_folders_and_exclusions() {
+        use crate::index::tests::scan_of;
+        let mut ix = Index::from_scan(
+            'C',
+            &scan_of(&[
+                (30, 5, "lib.dll", true, 0),
+                (31, 30, "a.dll", false, 1),
+                (32, 5, "b.DLL", false, 1),
+                (33, 5, "c.dll.bak", false, 1),
+            ]),
+        );
+        let n = |ix: &Index, q: &str| {
+            search(&[ix], &Query::parse(q).unwrap(), &SearchOptions::default()).total
+        };
+        assert_eq!(n(&ix, "ext:dll"), 2);
+        ix.add_link(40, 0, ix.root, "late.dll", 0x10, 0, 0, 0); // a folder
+        ix.add_link(41, 0, ix.root, "late2.dll", 0x20, 5, 0, 0);
+        assert_eq!(n(&ix, "ext:dll"), 3);
+        let mut rules = ix.rules.clone();
+        rules.file_patterns.push(b"b.*".to_vec());
+        ix.apply_rules(rules);
+        assert_eq!(n(&ix, "ext:dll"), 2, "excluded");
+        assert_eq!(
+            n(&ix, "ext:dll"),
+            n(&ix, "file: ext:dll"),
+            "same as the general path"
+        );
     }
 
     /// A path term starting with a drive skips other volumes; a folder

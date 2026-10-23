@@ -748,6 +748,22 @@ impl Query {
             .collect()
     }
 
+    /// The extension, when the whole query is one `ext:` with a single one.
+    pub fn single_ext(&self) -> Option<&[u8]> {
+        if self.dupe.is_some() {
+            return None;
+        }
+        match &self.root {
+            Node::All(v) if v.len() == 1 => match &v[0] {
+                Node::Leaf(Leaf::Ext(exts)) if exts.len() == 1 => {
+                    exts.iter().next().map(Vec::as_slice)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// True when the whole query is one case-insensitive name substring.
     pub fn is_single_name_substring(&self) -> bool {
         self.dupe.is_none()
