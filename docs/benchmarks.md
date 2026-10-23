@@ -14,8 +14,8 @@ machine.
 | RAM | 64 GB |
 | Disks | NVMe 1 TB (C:), NVMe 2 TB, SATA SSD 1 TB |
 | OS | Windows 11 Pro 10.0.26200 |
-| rapidfind | 0.1.0+c514c0b as the service, 6,913,913 entries on C:, F:, S: |
-| Everything | 1.4.1.1024 with its service, 6,686,016 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
+| rapidfind | 0.1.0+c514c0b as the service, 6,913,961 entries on C:, F:, S: |
+| Everything | 1.4.1.1024 with its service, 6,686,064 entries, indexing names, sizes and modified dates with fast sorting by size, date and path (comparable to rapidfind's defaults) |
 
 ## Method
 
@@ -47,47 +47,50 @@ them; it isn't a rapidfind error.
 ## Results
 
 Round trip in milliseconds, median and 10th-90th percentile of 41 runs; lower is quicker. Hits are
-rapidfind (outside Everything's excludes) / Everything. The earlier builds' columns are medians of
-15 runs.
+rapidfind (outside Everything's excludes) / Everything. The middle column is an earlier run of the
+same build, a few hours before (Everything was slower then on every row, the machine busier); the
+035aabe column is the build before the stored orders, median of 15 runs.
 
-| Query | rapidfind c514c0b | Everything | rapidfind 035aabe | rapidfind adcf11a (first run) | Hits |
+| Query | rapidfind c514c0b | Everything | earlier run: rapidfind / Everything | rapidfind 035aabe | Hits |
 |---|---:|---:|---:|---:|---|
-| `report` (substring) | **4.2** (3.7-6.2) | 36.6 (32.6-46.0) | 7.9 | 8.8 | 7,576 / 7,576 |
-| `*.pdf` | **1.2** (1.1-1.8) | 10.7 (9.0-18.6) | 8.5 | 13.8 | 2,473 / 2,473 |
-| `ext:dll` | **3.9** (3.1-7.5) | 10.3 (8.1-15.2) | 8.9 | 45.6 | 219,386 / 219,384 |
-| `size:>1gb` | **0.2** (0.2-0.3) | 7.8 (6.7-10.9) | 6.6 | 6.4 | 358 / 358 |
-| `dm:today` | **1.6** (1.4-2.1) | 10.1 (8.2-15.5) | 7.7 | 21.9 | 29,284 / 28,430 (see above) |
-| `c:\windows\system32\*.dll` | **5.3** (4.7-7.6) | 65.6 (57.7-80.5) | 12.6 | 50.1 | 5,012 / 5,012 |
-| `*\system32\*.dll` | **8.3** (6.9-11.5) | 290.7 (267.8-304.7) | 23.4 | 35.6 | 6,078 / 6,078 |
-| `f:\ *.jpg` | **1.6** (1.3-3.6) | 19.8 (16.0-26.5) | 7.1 | 44.7 | 5,886 / 5,886 |
-| `a` (4.2 million hits) | **15.8** (13.3-22.8) | 25.6 (22.6-33.5) | 19.1 | 201.6 | 4,241,863 / 4,242,612 |
-| `f:\` (a whole drive, 1.9 million hits) | **6.6** (5.8-8.8) | 21.2 (18.0-32.7) | 9.7 | 155.2 | 1,914,007 / 1,912,735 |
+| `report` (substring) | **4.1** (3.8-5.7) | 18.3 (16.9-20.4) | 4.2 / 36.6 | 7.9 | 7,576 / 7,576 |
+| `*.pdf` | **0.8** (0.7-1.1) | 7.2 (6.6-8.2) | 1.2 / 10.7 | 8.5 | 2,473 / 2,473 |
+| `ext:dll` | **2.4** (2.2-2.8) | 6.7 (6.1-7.8) | 3.9 / 10.3 | 8.9 | 219,386 / 219,384 |
+| `size:>1gb` | **0.2** (0.1-0.3) | 6.1 (5.6-7.2) | 0.2 / 7.8 | 6.6 | 358 / 358 |
+| `dm:today` | **1.6** (1.4-1.9) | 7.4 (6.7-8.7) | 1.6 / 10.1 | 7.7 | 29,824 / 29,072 (see above) |
+| `c:\windows\system32\*.dll` | **3.7** (3.4-4.7) | 35.8 (33.9-38.8) | 5.3 / 65.6 | 12.6 | 5,012 / 5,012 |
+| `*\system32\*.dll` | **5.9** (5.5-7.0) | 183.6 (178.8-190.1) | 8.3 / 290.7 | 23.4 | 6,078 / 6,078 |
+| `f:\ *.jpg` | **1.1** (1.0-1.3) | 10.2 (9.7-10.9) | 1.6 / 19.8 | 7.1 | 5,886 / 5,886 |
+| `a` (4.2 million hits) | **12.1** (11.3-13.3) | 16.5 (15.2-17.2) | 15.8 / 25.6 | 19.1 | 4,241,917 / 4,242,666 |
+| `f:\` (a whole drive, 1.9 million hits) | **5.0** (4.7-6.0) | 13.1 (12.6-14.2) | 6.6 / 21.2 | 9.7 | 1,914,007 / 1,912,735 |
 
-On every row rapidfind's 90th percentile is below Everything's 10th.
+In both runs, on every row rapidfind's 90th percentile is below Everything's 10th.
 
 | | rapidfind c514c0b | Everything | rapidfind 035aabe |
 |---|---:|---:|---:|
-| Memory, working set / private | 539 / 541 MB | 591 / 580 MB | 488 / 488 MB |
-| Index on disk | 74 MB | 260 MB | 74 MB |
+| Memory, working set / private | 552 / 552 MB | 590 / 579 MB | 488 / 488 MB |
+| Index on disk | 75 MB | 260 MB | 74 MB |
 
-The stored orders (below) cost the memory difference between c514c0b and 035aabe, about 50 MB.
+The stored orders (below) cost most of the memory difference between c514c0b and 035aabe.
 
-**Cold build** (building the index with nothing saved) is being re-measured. rapidfind built C:,
-F: and S: in parallel in 30.1 s (6.91 M entries), but the run's Everything numbers weren't
-trustworthy: its "database loaded" signal came before every volume was indexed (5.0 M entries
-against 6.69 M). `bench.ps1` now waits until Everything is no longer busy and its count has held
-still, and prints the normal database's count next to it.
+**Cold build** (building the index with nothing saved) is being re-measured. rapidfind builds C:,
+F: and S: in parallel in 30-41 s (6.91 M entries). Everything's numbers aren't trustworthy yet: its
+"database loaded" signal comes before every volume is indexed, live changes keep its count moving
+so "finished" has to allow for that, and its separate benchmark instance came up missing a volume
+(S: in one run, F: in the next). `bench.ps1` now reads Everything's own debug log for each
+volume's indexing time and any volume it couldn't open, and checks each volume's count against
+the normal database. Everything indexes its volumes one after another; rapidfind in parallel.
 
 ## Reading the numbers
 
 - Both answer typical searches well under 50 ms, which feels instant while typing.
-- rapidfind is quicker on every row: 1.6x on `a`, 2.6-3.2x on `ext:dll` and a whole drive, 6-12x on
-  `report`, `*.pdf`, `dm:today` and `f:\ *.jpg`, 12x on `c:\windows\system32\*.dll`, 35x on
-  `*\system32\*.dll`, and `size:>1gb` in 0.2 ms against 7.8.
+- rapidfind is quicker on every row: 1.4x on `a`, 2.6-2.8x on `ext:dll` and a whole drive, 4.5x
+  on `report` and `dm:today`, 9x on `*.pdf` and `f:\ *.jpg`, 10x on `c:\windows\system32\*.dll`,
+  31x on `*\system32\*.dll`, and `size:>1gb` in 0.2 ms against 6.1.
 - The biggest changes since the first run are large name-sorted results (`a`, a whole drive), now
   read off a stored name order instead of sorted (10-14x faster), and the stored size, date and
   extension orders (below).
-- rapidfind's saved index is under a third of Everything's, and it uses about 40 MB less memory
+- rapidfind's saved index is under a third of Everything's, and it uses about 30 MB less memory
   for slightly more files.
 
 ## Stored size, date and extension orders (e9afa56)
@@ -120,7 +123,8 @@ median of 41 round trips each:
 - The floor: a search for a name substring reads every name once (about 75 MB per 3.3 M entries).
   That takes about 1 ms per volume at this PC's memory bandwidth, so `report` and a search with no
   match stay at 3-4 ms over three volumes. The new orders don't help there.
-- Cost: the orders take about 17 MB more per 3.3 M entries; on the service, 541 MB against 488.
+- Cost: the orders take about 17 MB more per 3.3 M entries; on the service, 541-552 MB against
+  488.
 
 ## Optimization round (2026-10-23)
 

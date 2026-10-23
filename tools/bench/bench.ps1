@@ -284,38 +284,77 @@ try {
 
       # Everything: a separate instance, its own database, -reindex, with a
       # copy of its settings (as they are, then with only C: included) passed
-      # by -config, so no other settings file is picked up. "Loaded" alone
-      # comes too early (it reports a database while volumes are still being
-      # indexed): it's done when it's loaded, not busy, and its entry count
-      # has held still for 30 s (reading a volume can pause it that long);
-      # the time is when the count last changed. Each run also shows the
-      # normal database's count, so a short one stands out.
+      # by -config, so no other settings file is picked up.
+      #
+      # When it's done: "loaded" comes before every volume is indexed, and
+      # live changes keep the count moving by a few entries, so it's done
+      # once it's loaded, not busy, and the count moved by under 0.01% over
+      # 30 s (sampled every second). The IPC time is when the count first
+      # came within 0.1% of that final count. It also runs with -debug-log,
+      # whose timestamps give its own indexing time per volume and the end
+      # of the build ("create db time taken"), and which says why a volume
+      # wasn't indexed. Each volume's count is checked against the normal
+      # database's.
       $tmp = Join-Path $root "target\bench-cold"
+      $evLog = Join-Path $env:TEMP "Everything Debug Log.txt"
+      function Stamp([string]$line) { [datetime]::ParseExact($line.Substring(0, 23), "yyyy-MM-dd HH:mm:ss.fff", $null) }
       function Cold-Everything([string]$what, [string]$config, $expect) {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue; New-Item -ItemType Directory $tmp | Out-Null
+        Remove-Item $evLog -ErrorAction SilentlyContinue
         $cold = New-Object EverythingIpc
         $cold.Class = "EVERYTHING_TASKBAR_NOTIFICATION_(bench)"
         Say "cold build of ${what}: Everything (instance 'bench', its own database) reindexing..."
         $t = [Diagnostics.Stopwatch]::StartNew()
-        $script:coldProc = Start-Process $Everything -ArgumentList "-instance bench -startup -config `"$config`" -db `"$(Join-Path $tmp 'everything.db')`" -reindex" -PassThru
-        $n = -1; $changed = 0.0; $done = $false; $said = 0.0
+        $script:coldProc = Start-Process $Everything -ArgumentList "-instance bench -startup -debug-log -config `"$config`" -db `"$(Join-Path $tmp 'everything.db')`" -reindex" -PassThru
+        $samples = New-Object System.Collections.Generic.List[object]   # { T = seconds, N = count }
+        $done = $false; $said = 0.0
         while ($t.Elapsed.TotalSeconds -lt 1200) {
-          Start-Sleep -Milliseconds 250
+          Start-Sleep -Milliseconds 1000
           $now = $t.Elapsed.TotalSeconds
-          if (-not $cold.Loaded() -or $cold.Busy()) { $changed = $now; continue }
-          $m = $null; try { $cold.Query("") | Out-Null; $m = [long]$cold.TotalItems } catch { $changed = $now; continue }
-          if ($m -ne $n) { $n = $m; $changed = $now }
-          elseif ($n -gt 0 -and $now - $changed -ge 30) { $done = $true; break }
-          if ($now - $said -ge 30) { Say "  ... $([math]::Round($now)) s, $n entries so far"; $said = $now }
+          if ($now - $said -ge 30) { Say "  ... $([math]::Round($now)) s, $(if ($samples.Count) { $samples[$samples.Count - 1].N } else { 0 }) entries so far"; $said = $now }
+          if (-not $cold.Loaded() -or $cold.Busy()) { continue }
+          try { $cold.Query("") | Out-Null } catch { continue }
+          $m = [long]$cold.TotalItems
+          $samples.Add([pscustomobject]@{ T = $t.Elapsed.TotalSeconds; N = $m })
+          $old = @($samples | Where-Object { $_.T -le $t.Elapsed.TotalSeconds - 30 })
+          if ($m -gt 0 -and $old.Count -gt 0) {
+            $base = $old[$old.Count - 1].N
+            if ([math]::Abs($m - $base) -lt [math]::Max(1, $m * 0.0001)) { $done = $true; break }
+          }
         }
-        if ($done) {
-          $vs = if ($expect) { ", against $expect in its normal database" } else { "" }
-          Say "cold build of ${what}: Everything $([math]::Round($changed, 1)) s, $n entries$vs"
-        } else { Say "cold build of ${what}: Everything not done after 1200 s ($n entries)" }
+        $final = if ($samples.Count) { $samples[$samples.Count - 1].N } else { 0 }
+        $near = $samples | Where-Object { [math]::Abs($_.N - $final) -le $final * 0.001 } | Select-Object -First 1
+        $vs = if ($expect) { " (normal database: $expect)" } else { "" }
+        if ($done) { Say "cold build of ${what}: Everything within 0.1% of its final count after $([math]::Round($near.T, 1)) s (IPC), $final entries$vs" }
+        else { Say "cold build of ${what}: Everything not settled after 1200 s ($final entries$vs)" }
+        # Each volume's count, against the normal database.
+        foreach ($d in $evVols) {
+          $q = "${d}:" + [char]92
+          $c = $null; try { $cold.Query($q) | Out-Null; $c = $cold.TotalItems } catch { }
+          $ev.Query($q) | Out-Null
+          Say "  ${d}: $c entries (normal database: $($ev.TotalItems))"
+        }
         $cold.Dispose()
         & $Everything -instance bench -exit 2>$null
         if (-not $script:coldProc.WaitForExit(60000)) { try { Stop-Process -Id $script:coldProc.Id -Force -ErrorAction Stop } catch { } }
         $script:coldProc = $null
+        # Its own account of the build.
+        if (Test-Path $evLog) {
+          $lines = @(Get-Content $evLog | Where-Object { $_ -match '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}: ' })
+          $start = Stamp $lines[0]
+          $vol = $null; $volAt = $null; $errs = 0
+          foreach ($l in $lines) {
+            $msg = $l.Substring(25)
+            if ($msg -match '^Indexing [^,]*, ([A-Z]:)') { $vol = $Matches[1]; $volAt = Stamp $l }
+            elseif ($msg -match '^ntfs index: (\d+) folders, (\d+) files' -and $vol) {
+              Say ("  log: {0} indexed in {1:0.0} s, {2} folders and {3} files" -f $vol, ((Stamp $l) - $volAt).TotalSeconds, $Matches[1], $Matches[2])
+              $vol = $null
+            }
+            elseif ($msg -match 'access denied|Failed to open|error' -and $msg -notmatch 'GetLastError\(\): 0:' -and $errs++ -lt 20) { Say "  log: $msg" }
+            elseif ($msg -match '^create db time taken') { Say ("  log: database built {0:0.0} s after start" -f ((Stamp $l) - $start).TotalSeconds) }
+          }
+          Copy-Item $evLog (Join-Path (Split-Path $Log) ("everything-cold-{0}.log" -f ($what -replace '[^A-Za-z]+', '-').Trim('-'))) -ErrorAction SilentlyContinue
+        } else { Say "  (no Everything debug log at $evLog)" }
       }
       if (-not (Test-Path $evIni)) { Say "cold build: Everything skipped (no settings file at $evIni)" } else {
         # Expected counts from the normal database: everything, and C: alone.
