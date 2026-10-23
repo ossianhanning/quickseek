@@ -51,8 +51,11 @@ consistent with what the real tree computes.
 
 The README images come from it, never from a real machine:
 
-- `tools\demo-shots.ps1` captures the GUI shots and the frames of the typing animation;
-  `python tools\frames-to-anim.py` makes the animation and `python tools\optimize-images.py` shrinks the PNGs.
+- `tools\demo-shots.ps1 -Theme both` captures the GUI shots and the frames of the typing animation in
+  the light and the dark theme (`name-dark.png`), and the light/dark comparison
+  (`theme-light-dark.png`); `python tools\frames-to-anim.py` (and `--dark`) makes the animations and
+  `python tools\optimize-images.py` shrinks the PNGs. The README shows each light or dark image with
+  `<picture>` and `prefers-color-scheme`, matching the reader's GitHub theme.
 - `python tools\mcp-images.py` asks `rapidfind-mcp` on the demo PC "where did my space go" and renders the
   chat illustration and the chart with headless Edge.
 

@@ -4,7 +4,10 @@
 assistant answer both.**
 
 <p align="center">
-  <img src="docs/images/search-as-you-type.webp" width="840" alt="Typing iceland*\*.mp4 in rapidfind: 290 video clips across two drives listed in 2 ms">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-as-you-type-dark.webp">
+    <img src="docs/images/search-as-you-type.webp" width="840" alt="Typing iceland*\*.mp4 in rapidfind: 290 video clips across two drives listed in 2 ms">
+  </picture>
 </p>
 
 ## What it does for you
@@ -32,19 +35,33 @@ admin rights), the window with a Start menu entry and a global hotkey (`Ctrl+Alt
 drag and drop and a preview pane. [Query syntax](docs/user-guide.md#query-syntax) covers wildcards
 across folders (`users\*\*.pdf`), `ext:`, `size:>1gb`, `dm:lastweek`, duplicates and `content:`.
 
-<img src="docs/images/search.png" width="840" alt="Search results for iceland across drives">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-dark.png">
+  <img src="docs/images/search.png" width="840" alt="Search results for iceland across drives">
+</picture>
 
 **Folder sizes.** The tree (`Ctrl+T`) shows every drive and folder by size, live, with what's free
 on each drive. Type in the search box to count only matching files, for example `*.mp4` for where
 the videos are.
 
-<img src="docs/images/tree.png" width="840" alt="Folder size tree of three drives">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/tree-dark.png">
+  <img src="docs/images/tree.png" width="840" alt="Folder size tree of three drives">
+</picture>
 
 **What grew.** Compare with yesterday, a week or a month ago: each folder shows its change and a
 trend line. The pane on the right breaks down where the growth went, as a waterfall, a treemap or a
 calendar.
 
-<img src="docs/images/growth.png" width="840" alt="Growth view: a video project that grew 152 GB this month, with its breakdown">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/growth-dark.png">
+  <img src="docs/images/growth.png" width="840" alt="Growth view: a video project that grew 152 GB this month, with its breakdown">
+</picture>
+
+**Light or dark.** The window follows Windows' light or dark mode, or pick one in View → Theme:
+every list, chart and dialog follows it.
+
+<img src="docs/images/theme-light-dark.png" width="840" alt="The search window in the light theme on the left and the dark theme on the right">
 
 **Ask your AI assistant.** "Where did my disk space go this month?" The assistant asks rapidfind
 and gets the answer with a ready-made chart, which it can draw if it renders charts.

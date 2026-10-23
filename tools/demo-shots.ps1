@@ -3,9 +3,13 @@
 # needed, starts the service, and captures each shot into docs\images:
 #   tools\demo-shots.ps1                 all shots
 #   tools\demo-shots.ps1 -Only search    one of them
+#   tools\demo-shots.ps1 -Theme dark     the dark versions (name-dark.png)
+#   tools\demo-shots.ps1 -Theme both     light, then dark, and the side-by-side
+#                                       comparison (theme-light-dark.png)
+#   tools\demo-shots.ps1 -Theme both -Only compose   just remake the comparison
 # Shots are taken at this display's scale (name.png) and also scaled to
 # 96 DPI (name@1x.png), as optimized PNGs when optipng or oxipng is on PATH.
-param([string]$Only = "", [switch]$NoBuild)
+param([string]$Only = "", [switch]$NoBuild, [ValidateSet("light", "dark", "both")] [string]$Theme = "light")
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..").Path
 $rel = Join-Path $root "target\release"
@@ -67,7 +71,7 @@ function Capture($h, $name, [switch]$NoOneX) {
   $s = [RfDemo]::GetDpiForWindow($h) / 96.0
   $trim = [int](7 * $s)
   $crop = $bmp.Clone((New-Object System.Drawing.Rectangle $trim, 0, ($w - 2 * $trim), ($hh - $trim)), $bmp.PixelFormat)
-  $dest = if ($name -like "frames\*") { Join-Path $root "target\demo-gui\$name.png" } else { Join-Path $out "$name.png" }
+  $dest = if ($name -like "frames*\*") { Join-Path $root "target\demo-gui\$name.png" } else { Join-Path $out "$name.png" }
   if ($NoOneX) { $crop.Save($dest, [System.Drawing.Imaging.ImageFormat]::Png); $crop.Dispose(); $bmp.Dispose(); return }
   Save-Png $crop $dest
   $k = 1.0 / $s
@@ -81,13 +85,18 @@ function Capture($h, $name, [switch]$NoOneX) {
   $crop.Dispose(); $small.Dispose(); $bmp.Dispose()
 }
 
+$script:suffix = ""   # "-dark" while taking the dark shots
+$script:themeName = "light"
+
 # One shot: fresh settings, start the GUI, run the steps, capture, close.
 function Shot($name, [hashtable]$settings, [scriptblock]$steps) {
   if ($Only -and $Only -ne $name) { return }
+  $base = $name
+  $name = "$name$script:suffix"
   $dir = Join-Path $root "target\demo-gui\$name"
   Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $dir | Out-Null
-  $s = @{ window = @(60, 40, 1920, 1170); sort = "size"; descending = $true }
+  $s = @{ window = @(60, 40, 1920, 1170); sort = "size"; descending = $true; theme = $script:themeName }
   foreach ($k in $settings.Keys) { $s[$k] = $settings[$k] }
   # No BOM: the GUI reads plain UTF-8 JSON.
   [IO.File]::WriteAllText((Join-Path $dir "gui.json"), ($s | ConvertTo-Json))
@@ -103,7 +112,7 @@ function Shot($name, [hashtable]$settings, [scriptblock]$steps) {
   Start-Sleep 2
   & $steps $h
   Start-Sleep 2
-  if ($name -ne "search-typing") { Capture $h $name }
+  if ($base -ne "search-typing") { Capture $h $name }
   Stop-Process -Id $gui.Id -Force
   Start-Sleep -Milliseconds 500
 }
@@ -120,18 +129,20 @@ function PaneTab($h, [int]$tab) {
   Start-Sleep 1
 }
 
+function All-Shots {
 # The hero animation: typing a search, one frame per keystroke
-# (tools\frames-to-anim.py makes docs\images\search-as-you-type.webp).
+# (tools\frames-to-anim.py makes docs\images\search-as-you-type.webp, and
+# with "dark" search-as-you-type-dark.webp from frames-dark).
 Shot "search-typing" @{ window = @(60, 40, 1920, 900) } {
   param($h)
-  $frames = Join-Path $root "target\demo-gui\frames"
+  $frames = Join-Path $root "target\demo-gui\frames$script:suffix"
   Remove-Item -Recurse -Force $frames -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $frames | Out-Null
   $n = 0
   foreach ($q in @("", "i", "ic", "ice", "icel", "icela", "icelan", "iceland", "iceland*", "iceland*\", "iceland*\*", "iceland*\*.", "iceland*\*.m", "iceland*\*.mp", "iceland*\*.mp4")) {
     Query $h $q
     Start-Sleep -Milliseconds 350
-    Capture $h ("frames\{0:D2}" -f $n) -NoOneX
+    Capture $h ("frames$script:suffix\{0:D2}" -f $n) -NoOneX
     $n++
   }
 }
@@ -139,3 +150,38 @@ Shot "search" @{ window = @(60, 40, 1920, 1000) } { param($h) Query $h "iceland"
 Shot "tree" @{ tree_mode = $true } { param($h) }
 Shot "growth" @{ tree_mode = $true } { param($h) Command $h 412; PaneTab $h 0 }
 Shot "growth-map" @{ tree_mode = $true } { param($h) Command $h 412; PaneTab $h 2 }
+}
+
+foreach ($t in $(if ($Theme -eq "both") { "light", "dark" } else { $Theme })) {
+  $script:themeName = $t
+  $script:suffix = if ($t -eq "dark") { "-dark" } else { "" }
+  All-Shots
+}
+
+# Light and dark side by side: the light search shot with the dark one over
+# its right part, split on a diagonal, so the dark theme shows as a feature.
+if ($Theme -eq "both" -and (-not $Only -or $Only -in "search", "compose")) {
+  foreach ($sfx in "", "@1x") {
+    $l = [System.Drawing.Image]::FromFile((Join-Path $out "search$sfx.png"))
+    $d = [System.Drawing.Image]::FromFile((Join-Path $out "search-dark$sfx.png"))
+    $bmp = New-Object System.Drawing.Bitmap $l.Width, $l.Height
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.DrawImage($l, 0, 0, $l.Width, $l.Height)
+    $top = [single]($l.Width * 0.58); $bottom = [single]($l.Width * 0.42)
+    $pts = [System.Drawing.PointF[]]@(
+      (New-Object System.Drawing.PointF $top, 0), (New-Object System.Drawing.PointF $l.Width, 0),
+      (New-Object System.Drawing.PointF $l.Width, $l.Height), (New-Object System.Drawing.PointF $bottom, $l.Height))
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.AddPolygon($pts)
+    $g.SetClip($path)
+    $g.DrawImage($d, 0, 0, $l.Width, $l.Height)
+    $g.ResetClip()
+    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 128, 128, 128)), ([single]([math]::Max(2, $l.Width / 640)))
+    $g.DrawLine($pen, $top, 0, $bottom, $l.Height)
+    $pen.Dispose(); $path.Dispose(); $g.Dispose(); $l.Dispose(); $d.Dispose()
+    Save-Png $bmp (Join-Path $out "theme-light-dark$sfx.png")
+    "theme-light-dark$sfx.png: $($bmp.Width) x $($bmp.Height)"
+    $bmp.Dispose()
+  }
+}
