@@ -79,7 +79,7 @@ stored orders (below) cost most of the difference to 035aabe; on private bytes t
 Everything is now 7-39 MB.
 
 ² 27.3 s for C: alone (11:37). rapidfind builds C:, F: and S: in parallel in 28.8-40.7 s, 6.91 M
-entries in all (three runs); C: is the slowest of them.
+entries in all (three runs).
 
 ³ 152.5 s to index C: by its debug log, database built 158.4 s after start, 3,096,698 entries, the
 same as its normal database; over IPC its count settled at 159.4 s. In the run with every volume,
