@@ -4,7 +4,7 @@
 # Output in target\dist:
 #   quickseek-setup-<ver>-x64.exe        the installer (upload to the GitHub release v<ver>)
 #   quickseek-<ver>.mcpb                 Claude Desktop extension
-#   winget\manifests\o\OssianHanning\quickseek\<ver>\*.yaml   for a PR to microsoft/winget-pkgs
+#   winget\manifests\o\OssianHanning\Quickseek\<ver>\*.yaml   for a PR to microsoft/winget-pkgs
 param([string]$Repo = "https://github.com/OWNER/quickseek", [switch]$SkipBuild)
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..").Path
@@ -38,7 +38,7 @@ Copy-Item (Join-Path $root "target\release\quickseek-setup.exe") $setup -Force
 
 $sha = (Get-FileHash $setup -Algorithm SHA256).Hash
 $url = "$($Repo.TrimEnd('/'))/releases/download/v$version/$setupName"
-$out = Join-Path $dist "winget\manifests\o\OssianHanning\quickseek\$version"
+$out = Join-Path $dist "winget\manifests\o\OssianHanning\Quickseek\$version"
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $out | Out-Null
 foreach ($t in Get-ChildItem "$root\packaging\winget\*.yaml") {
