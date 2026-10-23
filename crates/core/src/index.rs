@@ -345,6 +345,9 @@ pub struct Index {
     pub rules: Rules,
     /// Bitset mirror of F_EXCLUDED: a cache-friendly check for hot loops.
     pub excl: Vec<u64>,
+    /// Loaded from an index saved before removed hard links were tracked:
+    /// it may list links that are gone, so the engine rescans it once.
+    pub needs_rescan: bool,
     /// Bitset: the entry is a folder. Lets `ext:` keep files without
     /// touching each candidate's entry (a cache miss apiece).
     pub dirs: Vec<u64>,

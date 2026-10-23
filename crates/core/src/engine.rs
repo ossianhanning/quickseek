@@ -737,7 +737,7 @@ impl Engine {
             win::logical_drives(),
             self.config_version.load(Ordering::Relaxed),
         );
-        if *self.signature.lock() == Some(sig) {
+        if *self.signature.lock() == Some(sig) && !self.rescan_requested.load(Ordering::Relaxed) {
             return;
         }
         self.sync_volumes();
@@ -798,6 +798,12 @@ impl Engine {
             match res {
                 Ok((v, rep)) => {
                     self.report(&key, &Ok(rep));
+                    if v.kind != VolumeKind::Folder && v.index.read().needs_rescan {
+                        // Saved by a build that kept removed hard links: rebuild
+                        // it once in the background (it serves meanwhile).
+                        log::info!("{key}: index from an older build; rescanning it once");
+                        self.rescan_requested.store(true, Ordering::Relaxed);
+                    }
                     self.volumes.write().push(v);
                     self.set_version.fetch_add(1, Ordering::Relaxed);
                 }

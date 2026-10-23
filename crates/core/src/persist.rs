@@ -9,7 +9,10 @@
 //! sort ranks, hard-link chains, exclusion flags, arena offsets) is rebuilt
 //! on load. Loading reads a fraction of the bytes of a raw dump, which on a
 //! slow disk makes it faster, not slower. v6 stores dates modified as the
-//! seconds entries keep (v5 had FILETIMEs; it still loads).
+//! seconds entries keep (v5 had FILETIMEs; it still loads). v7 is v6 written
+//! by a build that tracks removed hard links; a v5 or v6 index may hold
+//! links that no longer exist, so loading one asks for a rescan
+//! (`Index::needs_rescan`) and it's saved as v6 until that has happened.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -21,7 +24,9 @@ use crate::index::{
     Entry, F_DELETED, F_EXCLUDED, F_INCLUDE_ANCESTOR, F_NAME_IN_FOLD, Index, IndexOptions, NONE,
 };
 
-const MAGIC: &[u8; 8] = b"RAPIDFD\x06";
+const MAGIC: &[u8; 8] = b"RAPIDFD\x07";
+/// v7's layout, from builds that kept removed hard links.
+const MAGIC_V6: &[u8; 8] = b"RAPIDFD\x06";
 /// Dates modified as FILETIMEs; loaded and converted.
 const MAGIC_V5: &[u8; 8] = b"RAPIDFD\x05";
 const BLOCK: usize = 4 << 20;
@@ -284,7 +289,7 @@ fn write_to(ix: &Index, tmp: &Path) -> io::Result<()> {
 
     {
         let mut w = io::BufWriter::with_capacity(1 << 20, std::fs::File::create(tmp)?);
-        w.write_all(MAGIC)?;
+        w.write_all(if ix.needs_rescan { MAGIC_V6 } else { MAGIC })?;
         w.write_all(&(ix.letter as u32).to_le_bytes())?;
         w.write_all(&ix.volume_serial.to_le_bytes())?;
         w.write_all(&ix.journal_id.to_le_bytes())?;
@@ -314,7 +319,8 @@ pub fn load(path: &Path) -> io::Result<Index> {
     let data = std::fs::read(path)?;
     let mut r: &[u8] = &data;
     let v5 = r.len() >= 8 && &r[..8] == MAGIC_V5;
-    if r.len() < 8 || (&r[..8] != MAGIC && !v5) {
+    let v6 = r.len() >= 8 && &r[..8] == MAGIC_V6;
+    if r.len() < 8 || (&r[..8] != MAGIC && !v5 && !v6) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "not a rapidfind index (or old version)",
@@ -494,6 +500,7 @@ pub fn load(path: &Path) -> io::Result<Index> {
     let recs: Vec<u32> = recs.into_iter().map(|r| r as u32).collect();
     ix.rebuild_rec_index(&recs);
     drop(recs);
+    ix.needs_rescan = v5 || v6;
     ix.fold_raw_names(&names);
     drop(names);
     ix.shrink();
@@ -560,6 +567,26 @@ mod tests {
         assert!(back.ranks_missing(), "ranks are rebuilt after load");
         back.compute_ranks();
         assert_eq!(back.ranks.by, ix.ranks.by);
+    }
+
+    #[test]
+    fn older_formats_ask_for_a_rescan_until_rebuilt() {
+        let p = std::env::temp_dir().join(format!("rapidfind-v6-{}.db", std::process::id()));
+        let mut ix = sample();
+        save(&mut ix, &p).unwrap();
+        assert_eq!(&std::fs::read(&p).unwrap()[..8], MAGIC);
+        assert!(!load(&p).unwrap().needs_rescan, "v7: clean");
+        // An index from a build that kept removed hard links (v6).
+        let mut data = std::fs::read(&p).unwrap();
+        data[..8].copy_from_slice(MAGIC_V6);
+        std::fs::write(&p, &data).unwrap();
+        let mut old = load(&p).unwrap();
+        assert!(old.needs_rescan);
+        // Saved again before the rescan: still marked.
+        save(&mut old, &p).unwrap();
+        assert_eq!(&std::fs::read(&p).unwrap()[..8], MAGIC_V6);
+        assert!(load(&p).unwrap().needs_rescan);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
