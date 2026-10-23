@@ -1464,6 +1464,7 @@ pub fn open(app: &App) {
             0,
             SWP_NOSIZE | SWP_NOZORDER,
         );
+        crate::theme::attach(hwnd, crate::theme::Surface::Face);
         ShowWindow(hwnd, SW_SHOW);
         SetFocus(item(hwnd, ID_HOTKEY));
     }

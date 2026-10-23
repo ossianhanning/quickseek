@@ -18,6 +18,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::theme;
 use crate::tree::signed_size;
 use crate::w::{self, px, wide};
 
@@ -443,20 +444,44 @@ fn text_width(hdc: HDC, s: &str) -> i32 {
     sz.cx
 }
 
-/// Layer colors: the Cove categorical order, then gray for "everything else".
-const LAYER_COLORS: [COLORREF; 5] = [
-    0x00D6_782A,
-    0x0034_68EB,
-    0x007A_AF1B,
-    0x0000_A1ED,
-    0x00A4_7BE8,
-];
-const OTHER: COLORREF = 0x00B7_C2C3;
-const INK: COLORREF = 0x0035_3535;
-const MUTED: COLORREF = 0x0081_8789;
-const GRID: COLORREF = 0x00D9_E0E1;
-const ACCENT: COLORREF = 0x00DD_8A37;
-const DANGER: COLORREF = 0x004A_4BE2;
+// Colours from the theme's palette (crate::theme): layers in the Cove
+// categorical order, then grey for "everything else"; growth (danger) red,
+// shrinkage (accent) blue.
+fn layer(i: usize) -> COLORREF {
+    let l = theme::p().layers;
+    l[i % l.len()]
+}
+fn other() -> COLORREF {
+    theme::p().other
+}
+fn ink() -> COLORREF {
+    theme::p().ink
+}
+fn muted() -> COLORREF {
+    theme::p().muted
+}
+fn grid() -> COLORREF {
+    theme::p().grid
+}
+fn accent() -> COLORREF {
+    theme::p().shrink
+}
+fn danger() -> COLORREF {
+    theme::p().grow
+}
+/// Growth and shrinkage as fills that carry white labels (deeper in dark).
+fn danger_fill() -> COLORREF {
+    theme::p().grow_fill
+}
+fn accent_fill() -> COLORREF {
+    theme::p().shrink_fill
+}
+fn neutral() -> COLORREF {
+    theme::p().neutral
+}
+fn window_brush() -> HBRUSH {
+    theme::brush(theme::p().window)
+}
 
 /// Time → x across the plot: proportional to time, so gaps show.
 fn x_of(times: &[i64], t: i64, x0: i32, x1: i32) -> i32 {
@@ -491,7 +516,7 @@ pub fn draw_strip(
     font: HFONT,
 ) {
     unsafe {
-        let bg = GetSysColorBrush(COLOR_WINDOW);
+        let bg = window_brush();
         FillRect(hdc, rc, bg);
         SelectObject(hdc, font as _);
     }
@@ -513,7 +538,7 @@ pub fn draw_strip(
                 bottom: rc.bottom,
             },
             DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
-            MUTED,
+            muted(),
         );
         return;
     };
@@ -562,16 +587,16 @@ pub fn draw_strip(
                 pr.top,
                 pr.right - xs[b],
                 pr.bottom - pr.top,
-                ACCENT,
+                accent(),
                 28,
             );
         }
         let (mut up, mut down) = (vec![0i64; n], vec![0i64; n]);
         for (li, l) in deltas.iter().enumerate() {
             let c = if li + 1 == deltas.len() {
-                OTHER
+                other()
             } else {
-                LAYER_COLORS[li % LAYER_COLORS.len()]
+                layer(li)
             };
             for positive in [true, false] {
                 let base = if positive { &up } else { &down };
@@ -606,7 +631,7 @@ pub fn draw_strip(
         let y0 = y_of(0);
         g.lines(
             &[Point { X: pr.left, Y: y0 }, Point { X: pr.right, Y: y0 }],
-            MUTED,
+            muted(),
             1.0,
             false,
         );
@@ -615,9 +640,9 @@ pub fn draw_strip(
             .zip(&total_delta)
             .map(|(&x, &v)| Point { X: x, Y: y_of(v) })
             .collect();
-        g.lines(&line, INK, 1.5, false);
+        g.lines(&line, ink(), 1.5, false);
         for &i in &d.save_points {
-            g.dot(xs[i], pr.top + px(hwnd, 3), px(hwnd, 3), INK);
+            g.dot(xs[i], pr.top + px(hwnd, 3), px(hwnd, 3), ink());
         }
         if let Some(b) = d.base {
             g.lines(
@@ -631,7 +656,7 @@ pub fn draw_strip(
                         Y: pr.bottom,
                     },
                 ],
-                ACCENT,
+                accent(),
                 2.0,
                 false,
             );
@@ -650,11 +675,11 @@ pub fn draw_strip(
                         Y: pr.bottom,
                     },
                 ],
-                INK,
+                ink(),
                 1.0,
                 true,
             );
-            g.dot(xs[i], y_of(total_delta[i]), px(hwnd, 3), INK);
+            g.dot(xs[i], y_of(total_delta[i]), px(hwnd, 3), ink());
         }
     }
     // Scale: the extremes, beside the plot.
@@ -670,7 +695,7 @@ pub fn draw_strip(
                     bottom: y + px(hwnd, 14),
                 },
                 DT_LEFT | DT_TOP,
-                MUTED,
+                muted(),
             );
         }
     }
@@ -690,7 +715,7 @@ pub fn draw_strip(
         &title,
         &top,
         DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
-        INK,
+        ink(),
     );
     let legend: Vec<String> = d.layers.iter().map(|l| l.label.clone()).collect();
     let mut lx = pr.right;
@@ -705,12 +730,12 @@ pub fn draw_strip(
             name,
             &RECT { left: x, ..top },
             DT_LEFT | DT_VCENTER,
-            MUTED,
+            muted(),
         );
         let c = if li + 1 == legend.len() {
-            OTHER
+            other()
         } else {
-            LAYER_COLORS[li % LAYER_COLORS.len()]
+            layer(li)
         };
         unsafe {
             let br = CreateSolidBrush(c);
@@ -741,9 +766,9 @@ pub fn draw_strip(
         &day(d.times[0], false),
         &bottom,
         DT_LEFT | DT_TOP,
-        MUTED,
+        muted(),
     );
-    text(hdc, "now", &bottom, DT_RIGHT | DT_TOP, MUTED);
+    text(hdc, "now", &bottom, DT_RIGHT | DT_TOP, muted());
     if let Some(b) = d.base {
         let label = format!("compared with {}", day(d.times[b], false));
         let w = text_width(hdc, &label);
@@ -753,7 +778,7 @@ pub fn draw_strip(
             &label,
             &RECT { left: x, ..bottom },
             DT_LEFT | DT_TOP,
-            ACCENT,
+            accent(),
         );
     }
     if let Some(hx) = hover_x
@@ -785,14 +810,14 @@ pub fn draw_strip(
             bottom: pr.top + px(hwnd, 20),
         };
         unsafe {
-            FillRect(hdc, &r, GetSysColorBrush(COLOR_WINDOW));
+            FillRect(hdc, &r, window_brush());
         }
         text(
             hdc,
             &label,
             &RECT { left: x, ..r },
             DT_LEFT | DT_VCENTER,
-            INK,
+            ink(),
         );
     }
 }
@@ -941,19 +966,25 @@ fn mix(a: COLORREF, b: COLORREF, t: f64) -> COLORREF {
     m(0) | m(8) | m(16)
 }
 
-const NEUTRAL: COLORREF = 0x00E6_E2DE;
-
 /// Red for growth, blue for shrinkage, stronger as the change nears the box's size.
 fn change_color(change: i64, area: u64) -> (COLORREF, bool) {
     if area == 0 || change == 0 {
-        return (NEUTRAL, false);
+        return (neutral(), false);
     }
     let t = ((change.unsigned_abs() as f64 / area as f64) * 3.0)
         .min(1.0)
         .sqrt()
         * 0.92;
     (
-        mix(NEUTRAL, if change > 0 { DANGER } else { ACCENT }, t),
+        mix(
+            neutral(),
+            if change > 0 {
+                danger_fill()
+            } else {
+                accent_fill()
+            },
+            t,
+        ),
         t > 0.55,
     )
 }
@@ -968,14 +999,14 @@ fn draw_map(
     font: HFONT,
 ) {
     if d.map.is_empty() {
-        text(hdc, "Nothing to map here.", area, DT_LEFT | DT_TOP, MUTED);
+        text(hdc, "Nothing to map here.", area, DT_LEFT | DT_TOP, muted());
         return;
     }
     let r = map_rect(hwnd, area);
     let boxes = map_layout(hwnd, &d.map, &r);
     let hovered = hover.and_then(|(x, y)| boxes.iter().rposition(|b| inside(&b.rect, x, y)));
     unsafe {
-        let gap = GetSysColorBrush(COLOR_WINDOW);
+        let gap = window_brush();
         for b in &boxes {
             let (c, dark) = change_color(b.item.change(), b.item.area());
             let br = CreateSolidBrush(c);
@@ -983,7 +1014,7 @@ fn draw_map(
             DeleteObject(br as _);
             FrameRect(hdc, &b.rect, gap);
             let (w, h) = (b.rect.right - b.rect.left, b.rect.bottom - b.rect.top);
-            let ink = if dark { 0x00FF_FFFF } else { INK };
+            let ink = if dark { theme::p().on_strong } else { ink() };
             let lr = RECT {
                 left: b.rect.left + px(hwnd, 4),
                 top: b.rect.top + px(hwnd, 1),
@@ -1038,7 +1069,7 @@ fn draw_map(
         }
         if let Some(i) = hovered {
             let b = &boxes[i];
-            let pen = CreatePen(PS_SOLID, px(hwnd, 2), INK);
+            let pen = CreatePen(PS_SOLID, px(hwnd, 2), ink());
             let old = SelectObject(hdc, pen as _);
             let oldb = SelectObject(hdc, GetStockObject(NULL_BRUSH));
             Rectangle(hdc, b.rect.left, b.rect.top, b.rect.right, b.rect.bottom);
@@ -1067,7 +1098,7 @@ fn draw_map(
                 &it.name,
                 &info,
                 DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
-                INK,
+                ink(),
             );
             unsafe { SelectObject(hdc, font as _) };
             let c = it.change();
@@ -1087,11 +1118,11 @@ fn draw_map(
                 &info2,
                 DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
                 if c > 0 {
-                    DANGER
+                    danger()
                 } else if c < 0 {
-                    ACCENT
+                    accent()
                 } else {
-                    MUTED
+                    muted()
                 },
             );
         }
@@ -1101,14 +1132,14 @@ fn draw_map(
                 "Box size: the bigger of then and now. Red grew, blue shrank.",
                 &info,
                 DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
-                MUTED,
+                muted(),
             );
             text(
                 hdc,
                 "Click a folder to open it, right-click to go up.",
                 &info2,
                 DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
-                MUTED,
+                muted(),
             );
         }
     }
@@ -1233,10 +1264,10 @@ fn draw_calendar(
                     bottom: r.bottom + px(hwnd, 2),
                 },
                 DT_LEFT | DT_VCENTER,
-                MUTED,
+                muted(),
             );
         }
-        let empty = CreatePen(PS_SOLID, 1, GRID);
+        let empty = CreatePen(PS_SOLID, 1, grid());
         let oldp = SelectObject(hdc, empty as _);
         let oldb = SelectObject(hdc, GetStockObject(NULL_BRUSH));
         let mut last_month = 0;
@@ -1256,7 +1287,7 @@ fn draw_calendar(
                             bottom: area.top + px(hwnd, 16),
                         },
                         DT_LEFT | DT_TOP,
-                        MUTED,
+                        muted(),
                     );
                 }
                 last_month = m;
@@ -1271,11 +1302,15 @@ fn draw_calendar(
                     Some(c) => {
                         let t = (c.delta.unsigned_abs() as f64 / max as f64).sqrt();
                         let col = if c.delta == 0 {
-                            NEUTRAL
+                            neutral()
                         } else {
                             mix(
-                                NEUTRAL,
-                                if c.delta > 0 { DANGER } else { ACCENT },
+                                neutral(),
+                                if c.delta > 0 {
+                                    danger_fill()
+                                } else {
+                                    accent_fill()
+                                },
                                 0.15 + 0.85 * t,
                             )
                         };
@@ -1290,7 +1325,7 @@ fn draw_calendar(
                                 right: r.right - px(hwnd, 2),
                                 bottom: r.top + px(hwnd, 5),
                             };
-                            FillRect(hdc, &dot, GetSysColorBrush(COLOR_WINDOW));
+                            FillRect(hdc, &dot, theme::brush(theme::p().on_strong));
                         }
                     }
                     None => {
@@ -1298,7 +1333,7 @@ fn draw_calendar(
                     }
                 }
                 if Some(day) == hovered {
-                    let pen = CreatePen(PS_SOLID, px(hwnd, 2), INK);
+                    let pen = CreatePen(PS_SOLID, px(hwnd, 2), ink());
                     let o = SelectObject(hdc, pen as _);
                     Rectangle(hdc, r.left - 1, r.top - 1, r.right + 1, r.bottom + 1);
                     SelectObject(hdc, o);
@@ -1328,7 +1363,7 @@ fn draw_calendar(
     };
     if let Some(h) = hovered {
         unsafe { SelectObject(hdc, bold as _) };
-        text(hdc, &date(h), &row(y), DT_LEFT | DT_TOP, INK);
+        text(hdc, &date(h), &row(y), DT_LEFT | DT_TOP, ink());
         unsafe { SelectObject(hdc, font as _) };
         y += line;
         let (msg, col) = match by_day.get(&h) {
@@ -1343,14 +1378,14 @@ fn draw_calendar(
                     }
                 ),
                 if c.delta > 0 {
-                    DANGER
+                    danger()
                 } else if c.delta < 0 {
-                    ACCENT
+                    accent()
                 } else {
-                    MUTED
+                    muted()
                 },
             ),
-            None => ("no snapshot covers this day".to_string(), MUTED),
+            None => ("no snapshot covers this day".to_string(), muted()),
         };
         text(hdc, &msg, &row(y), DT_LEFT | DT_TOP | DT_END_ELLIPSIS, col);
         y += line;
@@ -1359,7 +1394,7 @@ fn draw_calendar(
             "Click to compare with this day",
             &row(y),
             DT_LEFT | DT_TOP,
-            MUTED,
+            muted(),
         );
         return;
     }
@@ -1369,7 +1404,7 @@ fn draw_calendar(
             "No daily history here yet.",
             &row(y),
             DT_LEFT | DT_TOP,
-            MUTED,
+            muted(),
         );
         return;
     }
@@ -1387,7 +1422,7 @@ fn draw_calendar(
             ),
             &row(y),
             DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
-            DANGER,
+            danger(),
         );
         y += line;
     }
@@ -1401,7 +1436,7 @@ fn draw_calendar(
             &format!("Biggest drop: {}  {}", date(c.start), signed_size(c.delta)),
             &row(y),
             DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
-            ACCENT,
+            accent(),
         );
         y += line;
     }
@@ -1415,7 +1450,7 @@ fn draw_calendar(
         &format!("Last 7 days: {}", signed_size(week)),
         &row(y),
         DT_LEFT | DT_TOP,
-        INK,
+        ink(),
     );
     y += line;
     if visible.iter().any(|c| c.estimated) {
@@ -1424,7 +1459,7 @@ fn draw_calendar(
             "White corner: a share of a longer gap between snapshots.",
             &row(y),
             DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
-            MUTED,
+            muted(),
         );
         y += line;
     }
@@ -1433,7 +1468,7 @@ fn draw_calendar(
         "Click a day to compare with it",
         &row(y),
         DT_LEFT | DT_TOP,
-        MUTED,
+        muted(),
     );
 }
 
@@ -1449,8 +1484,8 @@ pub fn draw_pane(
     bold: HFONT,
 ) {
     unsafe {
-        FillRect(hdc, rc, GetSysColorBrush(COLOR_WINDOW));
-        let pen = CreatePen(PS_SOLID, 1, GRID);
+        FillRect(hdc, rc, window_brush());
+        let pen = CreatePen(PS_SOLID, 1, grid());
         let old = SelectObject(hdc, pen as _);
         MoveToEx(hdc, rc.left, rc.top, null_mut());
         LineTo(hdc, rc.left, rc.bottom);
@@ -1471,7 +1506,7 @@ pub fn draw_pane(
             "Select a folder to see where its space went.",
             &inner,
             DT_LEFT | DT_TOP | DT_WORDBREAK,
-            MUTED,
+            muted(),
         );
         return;
     };
@@ -1485,7 +1520,7 @@ pub fn draw_pane(
             ..inner
         },
         DT_LEFT | DT_TOP | DT_PATH_ELLIPSIS,
-        INK,
+        ink(),
     );
     unsafe { SelectObject(hdc, font as _) };
     let change = d.now as i64 - d.before as i64;
@@ -1506,18 +1541,18 @@ pub fn draw_pane(
         },
         DT_LEFT | DT_TOP | DT_END_ELLIPSIS,
         if change > 0 {
-            DANGER
+            danger()
         } else if change < 0 {
-            ACCENT
+            accent()
         } else {
-            MUTED
+            muted()
         },
     );
     for (r, t) in pane_tabs(hwnd, rc) {
         let label = TABS[t as usize].0;
         unsafe {
             if t == tab {
-                FillRect(hdc, &r, GetSysColorBrush(COLOR_BTNFACE));
+                FillRect(hdc, &r, theme::brush(theme::p().face));
             }
             SelectObject(hdc, if t == tab { bold } else { font } as _);
         }
@@ -1526,7 +1561,7 @@ pub fn draw_pane(
             label,
             &r,
             DT_CENTER | DT_VCENTER,
-            if t == tab { INK } else { MUTED },
+            if t == tab { ink() } else { muted() },
         );
     }
     unsafe { SelectObject(hdc, font as _) };
@@ -1591,9 +1626,9 @@ fn draw_waterfall(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
         let y = area.top + i as i32 * row_h;
         let (l, r) = (xv(*a.min(b)), xv(*a.max(b)));
         let c = match kind {
-            0 => 0x0080_8788,
-            1 => DANGER,
-            _ => ACCENT,
+            0 => theme::p().ghost,
+            1 => danger(),
+            _ => accent(),
         };
         g.rect(
             l,
@@ -1609,7 +1644,13 @@ fn draw_waterfall(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
             right: x0 - px(hwnd, 6),
             bottom: y + row_h,
         };
-        text(hdc, name, &lr, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS, INK);
+        text(
+            hdc,
+            name,
+            &lr,
+            DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
+            ink(),
+        );
         // A part is shown as the folder's own change (in free-space mode it took that much free space).
         let v = if *kind == 0 {
             fmt::size(*b as u64)
@@ -1627,11 +1668,11 @@ fn draw_waterfall(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
             },
             DT_RIGHT | DT_VCENTER,
             if *kind == 1 {
-                DANGER
+                danger()
             } else if *kind == 2 {
-                ACCENT
+                accent()
             } else {
-                INK
+                ink()
             },
         );
     }
@@ -1640,7 +1681,7 @@ fn draw_waterfall(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
 /// The chain of folders that grew most, one bar per level, width = growth.
 fn draw_chain(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
     if d.chain.is_empty() {
-        text(hdc, "Nothing here grew.", area, DT_LEFT | DT_TOP, MUTED);
+        text(hdc, "Nothing here grew.", area, DT_LEFT | DT_TOP, muted());
         return;
     }
     let top = d.chain.iter().map(|c| c.1).max().unwrap_or(1).max(1);
@@ -1655,7 +1696,7 @@ fn draw_chain(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
             y + px(hwnd, 2),
             w.max(px(hwnd, 3)),
             row_h - px(hwnd, 4),
-            DANGER,
+            danger_fill(),
             shade,
         );
         let label = format!(
@@ -1674,9 +1715,9 @@ fn draw_chain(hwnd: HWND, hdc: HDC, area: &RECT, d: &PaneData) {
             },
             DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
             if w > text_width(hdc, &label) + px(hwnd, 12) {
-                0x00FF_FFFF
+                theme::p().on_strong
             } else {
-                INK
+                ink()
             },
         );
     }

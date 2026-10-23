@@ -34,6 +34,7 @@ use crate::preview::Preview;
 use crate::results::{BLOCK, Results};
 use crate::settings::{Settings, parse_hotkey};
 use crate::shell::{self, FileInfoCache, MenuChoice};
+use crate::theme;
 use crate::tree as tv;
 use crate::w::{self, px, send, wide};
 
@@ -94,6 +95,9 @@ pub const CMD_COMPARE_WEEK: u32 = 411;
 pub const CMD_COMPARE_MONTH: u32 = 412;
 pub const CMD_SAVE_POINT: u32 = 413;
 pub const CMD_STOP_COMPARE: u32 = 414;
+pub const CMD_THEME_SYSTEM: u32 = 420;
+pub const CMD_THEME_LIGHT: u32 = 421;
+pub const CMD_THEME_DARK: u32 = 422;
 const CMD_SYNTAX: u32 = 600;
 const CMD_ABOUT: u32 = 601;
 const CMD_SHOW: u32 = 700;
@@ -1083,12 +1087,10 @@ impl App {
                 .nodes
                 .get(cd.nmcd.dwItemSpec)
                 .is_some_and(|n| n.deleting);
-            cd.clrText = unsafe {
-                GetSysColor(if dim {
-                    COLOR_GRAYTEXT
-                } else {
-                    COLOR_WINDOWTEXT
-                })
+            cd.clrText = if dim {
+                theme::p().muted
+            } else {
+                theme::p().text
             };
             return CDRF_NEWFONT as LRESULT;
         }
@@ -2346,6 +2348,20 @@ impl App {
                 self.search(true);
             }
             CMD_REFRESH => self.search(true),
+            CMD_THEME_SYSTEM | CMD_THEME_LIGHT | CMD_THEME_DARK => {
+                let m = match id {
+                    CMD_THEME_LIGHT => theme::Mode::Light,
+                    CMD_THEME_DARK => theme::Mode::Dark,
+                    _ => theme::Mode::System,
+                };
+                {
+                    let mut s = self.settings.borrow_mut();
+                    s.theme = m.as_str().into();
+                    s.save();
+                }
+                theme::set_mode(m);
+                self.sync_menu();
+            }
             CMD_SORT_RUNS => self.set_sort(SortKey::RunCount),
             CMD_SORT_CREATED => self.set_sort(SortKey::Created),
             CMD_OPTIONS => crate::options::open(self),
@@ -2494,6 +2510,12 @@ impl App {
         w::check_menu(m, CMD_PATH, s.match_path);
         w::check_menu(m, CMD_REGEX, s.regex);
         w::check_menu(m, CMD_BACKGROUND, s.run_in_background);
+        let pick = match theme::Mode::parse(&s.theme) {
+            theme::Mode::System => CMD_THEME_SYSTEM,
+            theme::Mode::Light => CMD_THEME_LIGHT,
+            theme::Mode::Dark => CMD_THEME_DARK,
+        };
+        unsafe { CheckMenuRadioItem(m, CMD_THEME_SYSTEM, CMD_THEME_DARK, pick, MF_BYCOMMAND) };
         drop(s);
         w::check_menu(m, CMD_LOGIN, shell::start_on_login());
         let diacritics = self
@@ -2795,12 +2817,10 @@ impl App {
             && self
                 .row(cd.nmcd.dwItemSpec)
                 .is_some_and(|r| self.is_deleting(&r.full_path()));
-        cd.clrText = unsafe {
-            GetSysColor(if dim {
-                COLOR_GRAYTEXT
-            } else {
-                COLOR_WINDOWTEXT
-            })
+        cd.clrText = if dim {
+            theme::p().muted
+        } else {
+            theme::p().text
         };
         if cd.iSubItem > 1 || self.hl_terms.borrow().is_empty() {
             return CDRF_NEWFONT as LRESULT;
@@ -2837,22 +2857,21 @@ impl App {
                 send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
             let focused = GetFocus() == list;
             let classic_sel = selected && focused && !crate::themed();
+            let pal = theme::p();
             let bg: COLORREF = if classic_sel {
                 GetSysColor(COLOR_HIGHLIGHT)
             } else {
-                GetSysColor(COLOR_WINDOW)
+                pal.window
             };
             let fg: COLORREF = if classic_sel {
                 GetSysColor(COLOR_HIGHLIGHTTEXT)
             } else if dim {
-                GetSysColor(COLOR_GRAYTEXT)
+                pal.muted
             } else {
-                GetSysColor(COLOR_WINDOWTEXT)
+                pal.text
             };
             if !selected {
-                let br = CreateSolidBrush(bg);
-                FillRect(hdc, &rc, br);
-                DeleteObject(br as _);
+                FillRect(hdc, &rc, theme::brush(bg));
             }
             SetBkMode(hdc, TRANSPARENT as i32);
             SetTextColor(hdc, fg);
@@ -3351,6 +3370,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         RegisterClassExW(&wc);
 
         let settings = Settings::load();
+        theme::init(theme::Mode::parse(&settings.theme));
         let (tx, rx) = channel();
         let conn = Arc::new(Mutex::new(Conn { be, seq: 0, ver: 0 }));
         let app: &'static App = Box::leak(Box::new(App {
@@ -3460,6 +3480,10 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         w::menu_item(view, CMD_SAVE_POINT, "Take a &Save Point");
         w::menu_item(view, CMD_STOP_COMPARE, "Stop Compari&ng");
         w::menu_item(view, CMD_PREVIEW, "&Preview Pane\tAlt+P");
+        let themes = w::submenu(view, "T&heme");
+        w::menu_item(themes, CMD_THEME_SYSTEM, "&System (as Windows)");
+        w::menu_item(themes, CMD_THEME_LIGHT, "&Light");
+        w::menu_item(themes, CMD_THEME_DARK, "&Dark");
         w::menu_sep(view);
         w::menu_item(view, CMD_REFRESH, "&Refresh\tF5");
         let tools = w::submenu(bar, "&Tools");
@@ -3623,6 +3647,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         app.preview.create(hwnd);
 
         app.apply_fonts();
+        theme::attach(hwnd, theme::Surface::Window);
         app.layout();
         app.update_header();
         app.update_header_tree();

@@ -250,8 +250,9 @@ impl Preview {
         // Default look, then the highlights.
         let mut cf: CHARFORMAT2W = unsafe { std::mem::zeroed() };
         cf.Base.cbSize = size_of::<CHARFORMAT2W>() as u32;
-        cf.Base.dwMask = CFM_BACKCOLOR | CFM_BOLD;
+        cf.Base.dwMask = CFM_BACKCOLOR | CFM_BOLD | CFM_COLOR;
         cf.Base.dwEffects = CFE_AUTOBACKCOLOR;
+        cf.Base.crTextColor = windows::Win32::Foundation::COLORREF(crate::theme::p().text);
         send(
             edit,
             EM_SETCHARFORMAT,
@@ -259,7 +260,7 @@ impl Preview {
             &cf as *const _ as isize,
         );
         cf.Base.dwEffects = CFE_BOLD;
-        cf.crBackColor = windows::Win32::Foundation::COLORREF(0x0080E6FF); // amber (BGR)
+        cf.crBackColor = windows::Win32::Foundation::COLORREF(crate::theme::p().highlight); // amber
         for r in hits.iter().take(MAX_HIGHLIGHTS) {
             let cr = CHARRANGE {
                 cpMin: r.start as i32,
@@ -344,7 +345,7 @@ impl Preview {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
             let rc = w_::client_rect(hwnd);
-            FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW));
+            FillRect(hdc, &rc, crate::theme::brush(crate::theme::p().window));
             let b = self.bitmap.get();
             if !b.is_null() {
                 let mut bm: BITMAP = std::mem::zeroed();
@@ -382,7 +383,7 @@ impl Preview {
                     let old =
                         SelectObject(hdc, SendMessageW(GetParent(hwnd), WM_GETFONT, 0, 0) as _);
                     SetBkMode(hdc, TRANSPARENT as i32);
-                    SetTextColor(hdc, GetSysColor(COLOR_GRAYTEXT));
+                    SetTextColor(hdc, crate::theme::p().muted);
                     let t: Vec<u16> = m.encode_utf16().collect();
                     DrawTextW(
                         hdc,

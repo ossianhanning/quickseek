@@ -106,9 +106,9 @@ pub fn set_font(h: HWND, f: HFONT) {
     send(h, WM_SETFONT, f as usize, 1);
 }
 
+/// A message box in the app's theme (see `msgbox`).
 pub fn message_box(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
-    let (t, c) = (wide(text), wide(title));
-    unsafe { MessageBoxW(owner, t.as_ptr(), c.as_ptr(), flags) }
+    crate::msgbox::show(owner, text, title, flags)
 }
 
 pub fn loword(v: usize) -> u32 {

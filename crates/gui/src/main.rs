@@ -11,11 +11,13 @@ mod app;
 mod connect;
 mod growth;
 mod highlight;
+mod msgbox;
 mod options;
 mod preview;
 mod results;
 mod settings;
 mod shell;
+mod theme;
 mod tree;
 mod w;
 

@@ -39,6 +39,8 @@ pub struct Settings {
     pub content_binary: bool,
     /// Content search: read Office documents and PDFs through their IFilter.
     pub content_ifilter: bool,
+    /// View → Theme: system (Windows' app mode), light or dark.
+    pub theme: String,
 }
 
 impl Default for Settings {
@@ -64,6 +66,7 @@ impl Default for Settings {
             content_max_mb: 64,
             content_binary: false,
             content_ifilter: true,
+            theme: "system".into(),
         }
     }
 }

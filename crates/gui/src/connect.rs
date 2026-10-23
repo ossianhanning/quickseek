@@ -283,6 +283,7 @@ pub fn open(app: &App) {
             0,
             SWP_NOSIZE | SWP_NOZORDER,
         );
+        crate::theme::attach(h, crate::theme::Surface::Face);
         ShowWindow(h, SW_SHOW);
     }
 }

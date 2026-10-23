@@ -998,3 +998,202 @@ fn crate_group(n: u64) -> String {
     }
     out
 }
+
+/// A window's pixels as `PrintWindow` renders them (frame included), as
+/// 0x00RRGGBB, with its size.
+fn capture(h: HWND) -> (Vec<u32>, i32, i32) {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::*;
+    use windows_sys::Win32::Storage::Xps::PrintWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    unsafe {
+        let mut r: RECT = std::mem::zeroed();
+        GetWindowRect(h, &mut r);
+        let (w, ht) = (r.right - r.left, r.bottom - r.top);
+        let screen = GetDC(std::ptr::null_mut());
+        let mem = CreateCompatibleDC(screen);
+        let mut bi: BITMAPINFO = std::mem::zeroed();
+        bi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        bi.bmiHeader.biWidth = w;
+        bi.bmiHeader.biHeight = -ht; // top-down
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let dib = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        let old = SelectObject(mem, dib as _);
+        PrintWindow(h, mem, 2 /* PW_RENDERFULLCONTENT */);
+        let px = std::slice::from_raw_parts(bits as *const u32, (w * ht) as usize)
+            .iter()
+            .map(|p| p & 0x00FF_FFFF)
+            .collect();
+        SelectObject(mem, old);
+        DeleteObject(dib as _);
+        DeleteDC(mem);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        (px, w, ht)
+    }
+}
+
+/// Median luminance (0-255) of a region of a capture.
+fn median_luma(img: &(Vec<u32>, i32, i32), x0: i32, y0: i32, x1: i32, y1: i32) -> u8 {
+    let (px, w, h) = img;
+    let mut v: Vec<u8> = Vec::new();
+    for y in y0.max(0)..y1.min(*h) {
+        for x in x0.max(0)..x1.min(*w) {
+            let p = px[(y * w + x) as usize];
+            let (r, g, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
+            v.push(((2126 * r + 7152 * g + 722 * b) / 10_000) as u8);
+        }
+    }
+    v.sort_unstable();
+    v.get(v.len() / 2).copied().unwrap_or(0)
+}
+
+/// Every region of `top` (frame, menu bar, each visible child control) and
+/// its median luminance: the background, as text covers little of it.
+fn regions(top: HWND) -> Vec<(String, u8)> {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    let img = capture(top);
+    let mut wr: RECT = unsafe { std::mem::zeroed() };
+    let mut cr: RECT = unsafe { std::mem::zeroed() };
+    let mut origin = POINT { x: 0, y: 0 };
+    unsafe {
+        GetWindowRect(top, &mut wr);
+        GetClientRect(top, &mut cr);
+        windows_sys::Win32::Graphics::Gdi::ClientToScreen(top, &mut origin);
+    }
+    let (ox, oy) = (origin.x - wr.left, origin.y - wr.top);
+    let mut out = Vec::new();
+    // The title bar: the band above the client area (and menu bar), between
+    // the icon and the caption buttons.
+    let mut mbi: MENUBARINFO = unsafe { std::mem::zeroed() };
+    mbi.cbSize = size_of::<MENUBARINFO>() as u32;
+    let has_menu = unsafe { GetMenuBarInfo(top, OBJID_MENU, 0, &mut mbi) } != 0
+        && mbi.rcBar.bottom > mbi.rcBar.top;
+    let title_bottom = if has_menu { mbi.rcBar.top - wr.top } else { oy };
+    let w = wr.right - wr.left;
+    out.push((
+        "title bar".to_string(),
+        median_luma(&img, w / 3, 4, w * 2 / 3, title_bottom - 2),
+    ));
+    if has_menu {
+        let (t, b) = (mbi.rcBar.top - wr.top, mbi.rcBar.bottom - wr.top);
+        out.push((
+            "menu bar".to_string(),
+            median_luma(&img, ox + 2, t + 1, w - 4, b - 1),
+        ));
+    }
+    struct Acc {
+        top: HWND,
+        list: Vec<(HWND, String)>,
+    }
+    unsafe extern "system" fn each(h: HWND, l: isize) -> i32 {
+        let a = unsafe { &mut *(l as *mut Acc) };
+        let mut buf = [0u16; 64];
+        let n = unsafe { GetClassNameW(h, buf.as_mut_ptr(), 64) } as usize;
+        let visible = unsafe { IsWindowVisible(h) } != 0;
+        if visible && unsafe { GetAncestor(h, GA_ROOT) } == a.top {
+            a.list.push((h, String::from_utf16_lossy(&buf[..n])));
+        }
+        1
+    }
+    let mut acc = Acc {
+        top,
+        list: Vec::new(),
+    };
+    unsafe { EnumChildWindows(top, Some(each), &mut acc as *mut _ as isize) };
+    for (h, class) in acc.list {
+        let mut r: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(h, &mut r) };
+        if r.right - r.left < 8 || r.bottom - r.top < 8 {
+            continue;
+        }
+        let id = unsafe { GetDlgCtrlID(h) };
+        let (x0, y0) = (r.left - wr.left + 2, r.top - wr.top + 2);
+        let (x1, y1) = (r.right - wr.left - 2, r.bottom - wr.top - 2);
+        out.push((format!("{class} {id}"), median_luma(&img, x0, y0, x1, y1)));
+    }
+    out
+}
+
+/// View → Theme: dark leaves nothing light (title bar, menu bar, every
+/// control, the tree, charts, status bar, the options window), light
+/// leaves nothing dark, and System follows Windows' app mode.
+#[test]
+fn gui_theme_switch() {
+    const CMD_THEME_SYSTEM: usize = 420;
+    const CMD_THEME_LIGHT: usize = 421;
+    const CMD_THEME_DARK: usize = 422;
+    let engine = Arc::new(Engine::from_indexes(vec![common::sample_index('C', 2_000)]));
+    let hist = std::env::temp_dir().join(format!("rapidfind-uitest-theme-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&hist);
+    engine.enable_history(hist.clone());
+    common::seed_history(&engine);
+    let g = Gui::launch(engine);
+    g.command(CMD_TREE);
+    eventually("tree", Duration::from_secs(8), || {
+        (g.tree_rows() > 1).then_some(())
+    });
+    // Comparing shows the history strip and the growth pane too.
+    g.command(CMD_COMPARE_DAY);
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let check = |top: HWND, dark: bool, what: &str| {
+        let r = regions(top);
+        assert!(r.len() >= 4, "{what}: regions {r:?}");
+        let wrong: Vec<_> = r
+            .iter()
+            .filter(|(_, l)| if dark { *l > 90 } else { *l < 150 })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "{what} ({}): these regions aren't: {wrong:?} (all: {r:?})",
+            if dark { "dark" } else { "light" }
+        );
+    };
+    g.command(CMD_THEME_DARK);
+    std::thread::sleep(Duration::from_millis(1000));
+    check(g.hwnd, true, "main window, dark");
+    // A dialog opened while dark.
+    g.command(CMD_OPTIONS);
+    let pid = g.child.id();
+    let opt = eventually("options window", Duration::from_secs(5), || {
+        find_window(pid, "rapidfind.options")
+    });
+    std::thread::sleep(Duration::from_millis(800));
+    check(opt, true, "options, dark");
+    // Switching while it's open repaints it too.
+    g.command(CMD_THEME_LIGHT);
+    std::thread::sleep(Duration::from_millis(1000));
+    check(opt, false, "options, light");
+    unsafe {
+        PostMessageW(opt, 0x0010 /* WM_CLOSE */, 0, 0)
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    check(g.hwnd, false, "main window, light");
+
+    // System: as Windows' app mode says.
+    g.command(CMD_THEME_SYSTEM);
+    std::thread::sleep(Duration::from_millis(1000));
+    let out = Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "/v",
+            "AppsUseLightTheme",
+        ])
+        .output()
+        .unwrap();
+    let system_dark = String::from_utf8_lossy(&out.stdout).contains("0x0");
+    check(g.hwnd, system_dark, "main window, system");
+    let saved = std::fs::read_to_string(
+        std::env::temp_dir()
+            .join(format!("rapidfind-uitest-{}", std::process::id()))
+            .join("gui.json"),
+    )
+    .unwrap_or_default();
+    assert!(saved.contains("\"theme\": \"system\""), "{saved}");
+    drop(g);
+    let _ = std::fs::remove_dir_all(&hist);
+}

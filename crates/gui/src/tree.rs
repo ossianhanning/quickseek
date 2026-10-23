@@ -14,6 +14,7 @@ use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
 
 use crate::shell;
+use crate::theme;
 use crate::w::{self, px, send};
 
 pub const COLUMNS: [(&str, i32, bool); 8] = [
@@ -30,11 +31,6 @@ pub const COLUMNS: [(&str, i32, bool); 8] = [
 pub const COLUMN_ORDER: [i32; 8] = [0, 1, 6, 2, 7, 3, 4, 5];
 pub const COL_CHANGE: i32 = 6;
 pub const COL_TREND: i32 = 7;
-
-/// Growth (red) and shrinkage (blue), as COLORREF (0x00BBGGRR).
-pub const GROW: COLORREF = 0x004A_4BE2;
-pub const SHRINK: COLORREF = 0x00DD_8A37;
-const GHOST: COLORREF = 0x0080_8788;
 
 /// `+1.2 GB` / `−300.0 MB` / `0 B`.
 pub fn signed_size(d: i64) -> String {
@@ -333,31 +329,21 @@ pub struct Paint {
 }
 
 fn colors(p: &Paint) -> (COLORREF, COLORREF) {
-    unsafe {
-        if p.classic_sel {
+    let pal = theme::p();
+    if p.classic_sel {
+        unsafe {
             (
                 GetSysColor(COLOR_HIGHLIGHT),
                 GetSysColor(COLOR_HIGHLIGHTTEXT),
             )
-        } else {
-            (
-                GetSysColor(COLOR_WINDOW),
-                GetSysColor(if p.dim {
-                    COLOR_GRAYTEXT
-                } else {
-                    COLOR_WINDOWTEXT
-                }),
-            )
         }
+    } else {
+        (pal.window, if p.dim { pal.muted } else { pal.text })
     }
 }
 
 fn fill(hdc: HDC, rc: &RECT, c: COLORREF) {
-    unsafe {
-        let br = CreateSolidBrush(c);
-        FillRect(hdc, rc, br);
-        DeleteObject(br as _);
-    }
+    unsafe { FillRect(hdc, rc, theme::brush(c)) };
 }
 
 fn text_at(hdc: HDC, s: &str, x: i32, rc: &RECT, right_align: bool) -> i32 {
@@ -393,7 +379,11 @@ pub fn draw_name(list: HWND, p: &Paint, n: &Node, rc: RECT, icon: i32, image_lis
         if n.expandable() {
             let half = px(list, 4);
             let cx = (gx + gx2) / 2;
-            let pen = CreatePen(PS_SOLID, 1, if p.classic_sel { fg } else { 0x0080_8080 });
+            let pen = CreatePen(
+                PS_SOLID,
+                1,
+                if p.classic_sel { fg } else { theme::p().ghost },
+            );
             let old_pen = SelectObject(p.hdc, pen as _);
             let old_brush = SelectObject(p.hdc, GetStockObject(NULL_BRUSH));
             Rectangle(p.hdc, cx - half, cy - half, cx + half + 1, cy + half + 1);
@@ -433,7 +423,7 @@ pub fn draw_name(list: HWND, p: &Paint, n: &Node, rc: RECT, icon: i32, image_lis
         if n.deleting {
             text_at(p.hdc, "   deleting…", end, &text_rc, false);
         } else if n.row.capacity > 0 {
-            SetTextColor(p.hdc, if p.classic_sel { fg } else { 0x0070_7070 });
+            SetTextColor(p.hdc, if p.classic_sel { fg } else { theme::p().muted });
             let extra = format!(
                 "   {} free of {}",
                 fmt::size(n.row.free),
@@ -460,16 +450,17 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
             right: (rc.right - text_w).max(rc.left + pad * 2),
             bottom: rc.bottom - pad,
         };
-        fill(p.hdc, &track, 0x00EC_E8E4);
+        let pal = theme::p();
+        fill(p.hdc, &track, pal.track);
         let span = (track.right - track.left) as f64;
         let w = (span * n.fraction()).round() as i32;
         // Folders in a stronger blue than files; roots (share of the disk) in teal.
         let c: COLORREF = if n.row.capacity > 0 {
-            0x0098_8A00
+            pal.bar_root
         } else if n.row.is_dir {
-            0x00D7_7800
+            pal.bar_dir
         } else {
-            0x00F0_B060
+            pal.bar_file
         };
         match n.before_fraction() {
             // Comparing: solid bar up to the smaller of then and now, the
@@ -495,10 +486,10 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
                             right: track.left + w,
                             ..track
                         },
-                        GROW,
+                        pal.grow,
                     );
                 } else if bw > w {
-                    let pen = CreatePen(PS_DOT, 1, SHRINK);
+                    let pen = CreatePen(PS_DOT, 1, pal.shrink);
                     let old_pen = SelectObject(p.hdc, pen as _);
                     let old_brush = SelectObject(p.hdc, GetStockObject(NULL_BRUSH));
                     Rectangle(
@@ -514,7 +505,7 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
                 }
                 // The "then" edge as a thin mark.
                 if bw > 0 && bw != w {
-                    let pen = CreatePen(PS_SOLID, 1, GHOST);
+                    let pen = CreatePen(PS_SOLID, 1, pal.ghost);
                     let old_pen = SelectObject(p.hdc, pen as _);
                     MoveToEx(p.hdc, track.left + bw, track.top - 1, null_mut());
                     LineTo(p.hdc, track.left + bw, track.bottom + 1);
@@ -568,11 +559,11 @@ pub fn draw_change(list: HWND, p: &Paint, n: &Node, rc: RECT) {
             if p.classic_sel {
                 fg
             } else if d > 0 {
-                GROW
+                theme::p().grow
             } else if d < 0 {
-                SHRINK
+                theme::p().shrink
             } else {
-                0x0080_8080
+                theme::p().ghost
             },
         );
         let old = SelectObject(
@@ -638,11 +629,11 @@ pub fn draw_trend(list: HWND, p: &Paint, n: &Node, rc: RECT, series: Option<&[u6
             PS_SOLID,
             px(list, 2).max(1),
             if flat {
-                0x0080_8780
+                theme::p().ghost
             } else if rising {
-                GROW
+                theme::p().grow
             } else {
-                SHRINK
+                theme::p().shrink
             },
         );
         let old = SelectObject(p.hdc, pen as _);
