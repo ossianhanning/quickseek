@@ -1,4 +1,10 @@
-# Quickseek
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-dark.svg">
+    <img src="docs/images/icon.svg" width="44" height="44" alt="" align="top">
+  </picture>
+  Quickseek
+</h1>
 
 **Find any file on your Windows PC as you type, see where your disk space went, and let your AI
 assistant answer both.**
