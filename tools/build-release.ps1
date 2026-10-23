@@ -55,8 +55,11 @@ foreach ($m in Get-ChildItem $out -Filter *.yaml) {
   }
 }
 if (Get-Command winget -ErrorAction SilentlyContinue) {
-  winget validate --manifest $out
-  if ($LASTEXITCODE) { throw "winget validate failed" }
+  # An older winget (GitHub's runners) warns about schemas newer than it
+  # knows and exits non-zero; only a failed validation stops the build.
+  $v = @(winget validate --manifest $out 2>&1 | ForEach-Object { "$_" })
+  $v | ForEach-Object { Write-Output $_ }
+  if (-not ($v -match "Manifest validation succeeded")) { throw "winget validate failed" }
 } else {
   Write-Output "note: winget isn't installed here, so the manifests weren't validated (winget validate --manifest $out)"
 }
