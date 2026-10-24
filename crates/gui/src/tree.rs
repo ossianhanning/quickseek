@@ -323,9 +323,19 @@ pub struct Paint {
     pub font: HFONT,
     pub bold: HFONT,
     pub selected: bool,
+    /// Under the mouse: the list view's hover highlight shows through.
+    pub hot: bool,
     pub classic_sel: bool,
     /// Being deleted: grey text.
     pub dim: bool,
+}
+
+impl Paint {
+    /// Whether a cell paints its own background: not over the list view's
+    /// selection or hover highlight (classic selection is ours to draw).
+    pub fn fills(&self) -> bool {
+        self.classic_sel || !(self.selected || self.hot)
+    }
 }
 
 fn colors(p: &Paint) -> (COLORREF, COLORREF) {
@@ -371,7 +381,7 @@ fn text_at(hdc: HDC, s: &str, x: i32, rc: &RECT, right_align: bool) -> i32 {
 pub fn draw_name(list: HWND, p: &Paint, n: &Node, rc: RECT, icon: i32, image_list: isize) {
     let (bg, fg) = colors(p);
     unsafe {
-        if !p.selected || p.classic_sel {
+        if p.fills() {
             fill(p.hdc, &rc, bg);
         }
         let (gx, gx2) = glyph_span(list, &rc, n.depth);
@@ -439,7 +449,7 @@ pub fn draw_name(list: HWND, p: &Paint, n: &Node, rc: RECT, icon: i32, image_lis
 pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
     let (bg, fg) = colors(p);
     unsafe {
-        if !p.selected || p.classic_sel {
+        if p.fills() {
             fill(p.hdc, &rc, bg);
         }
         let pad = px(list, 3);
@@ -546,7 +556,7 @@ pub fn draw_bar(list: HWND, p: &Paint, n: &Node, rc: RECT) {
 pub fn draw_change(list: HWND, p: &Paint, n: &Node, rc: RECT) {
     let (bg, fg) = colors(p);
     unsafe {
-        if !p.selected || p.classic_sel {
+        if p.fills() {
             fill(p.hdc, &rc, bg);
         }
         if !n.row.has_before {
@@ -599,7 +609,7 @@ pub fn draw_change(list: HWND, p: &Paint, n: &Node, rc: RECT) {
 pub fn draw_trend(list: HWND, p: &Paint, n: &Node, rc: RECT, series: Option<&[u64]>) {
     let (bg, _) = colors(p);
     unsafe {
-        if !p.selected || p.classic_sel {
+        if p.fills() {
             fill(p.hdc, &rc, bg);
         }
         let Some(series) = series else { return };

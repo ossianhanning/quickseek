@@ -23,12 +23,16 @@ pub struct Settings {
     pub filter: usize,
     /// x, y, width, height in pixels.
     pub window: Option<(i32, i32, i32, i32)>,
+    /// Saved column widths (96-DPI pixels). Entries that aren't numbers
+    /// read as 0, which [`column_width`] replaces with the default.
+    #[serde(deserialize_with = "lenient_widths")]
     pub column_widths: Vec<i32>,
     /// Folder-size tree instead of the result list.
     pub tree_mode: bool,
     /// Tree sort: name, size, files, modified.
     pub tree_sort: String,
     pub tree_descending: bool,
+    #[serde(deserialize_with = "lenient_widths")]
     pub tree_column_widths: Vec<i32>,
     /// The preview pane is open, and its width (96-DPI pixels).
     pub preview: bool,
@@ -69,6 +73,34 @@ impl Default for Settings {
             theme: "system".into(),
         }
     }
+}
+
+/// A list of widths that doesn't fail the whole settings file when it's
+/// damaged: anything that isn't an integer becomes 0 (then the default).
+fn lenient_widths<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<i32>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::Array(a) => a
+            .iter()
+            .map(|x| x.as_i64().and_then(|n| i32::try_from(n).ok()).unwrap_or(0))
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+/// The width (96-DPI pixels) to give a column: the saved one when it's
+/// sensible, else `default`. Saved widths narrower than the column's header
+/// (`min`: zero, negative, a hidden column's) or absurdly wide are ignored.
+pub fn column_width(saved: Option<i32>, default: i32, min: i32) -> i32 {
+    match saved {
+        Some(w) if w >= min && w <= 4000 => w,
+        _ => default,
+    }
+}
+
+/// The narrowest a column with this header may be: its text and padding.
+pub fn min_column_width(header: &str) -> i32 {
+    (header.chars().count() as i32 * 7 + 24).max(40)
 }
 
 pub fn dir() -> PathBuf {
@@ -151,6 +183,42 @@ mod tests {
         assert_eq!(parse_hotkey("a"), None, "a bare letter would steal typing");
         assert_eq!(parse_hotkey("Ctrl+Banana"), None);
         assert_eq!(parse_hotkey(""), None);
+    }
+
+    /// A damaged gui.json: zero, negative, tiny, huge and non-number widths
+    /// give the default width, and the rest of the settings still load.
+    #[test]
+    fn corrupt_column_widths_fall_back_to_defaults() {
+        let s: Settings = serde_json::from_str(
+            r#"{"hotkey":"F12","tree_column_widths":[0,-40,3,"x",null,99999,150,200],"column_widths":"broken"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.hotkey, "F12", "the rest of the file still loads");
+        assert!(s.column_widths.is_empty());
+        let names = [
+            "Name",
+            "Size",
+            "% of Parent",
+            "Files",
+            "Online-only",
+            "Date Modified",
+            "Change",
+            "Trend",
+        ];
+        let defaults = [380, 110, 170, 100, 110, 140, 110, 110];
+        let got: Vec<i32> = (0..8)
+            .map(|c| {
+                column_width(
+                    s.tree_column_widths.get(c).copied(),
+                    defaults[c],
+                    min_column_width(names[c]),
+                )
+            })
+            .collect();
+        assert_eq!(got, vec![380, 110, 170, 100, 110, 140, 150, 200]);
+        assert_eq!(column_width(None, 110, min_column_width("Trend")), 110);
+        assert!(min_column_width("Trend") >= 40);
+        assert!(min_column_width("Date Modified") > min_column_width("Size"));
     }
 
     #[test]

@@ -57,6 +57,8 @@ pub const WM_APP_TREE: u32 = WM_APP + 5;
 pub const WM_APP_CONTENT: u32 = WM_APP + 6;
 /// A background delete finished (lparam: `Box<shell::DeleteDone>`).
 pub const WM_APP_DELETED: u32 = WM_APP + 7;
+/// A column was resized or moved by the user (wparam: its header).
+const WM_APP_COLUMNS: u32 = WM_APP + 21;
 const TIMER_POLL: usize = 1;
 const TIMER_PREVIEW: usize = 2;
 const TIMER_GROWTH: usize = 3;
@@ -294,6 +296,12 @@ pub struct App {
     /// The splitter left of the preview pane: its x, and the drag offset while dragging.
     split_x: Cell<i32>,
     split_drag: Cell<Option<i32>>,
+    /// The last column (in display order) of the list [0] and the tree [1]
+    /// stretches to the right edge, so the hover and selection highlight
+    /// span the row: which column that is and its own width (96 DPI).
+    filler: [Cell<(i32, i32)>; 2],
+    /// Set while we resize a column ourselves (not the user dragging it).
+    stretching: Cell<bool>,
 }
 
 thread_local! {
@@ -1100,6 +1108,10 @@ impl App {
         };
         let list = self.tree_list.get();
         let rc = tv::cell_rect(list, i, cd.iSubItem);
+        // A hidden (zero-width) or nearly hidden column: nothing to draw.
+        if rc.right - rc.left < px(list, 8) {
+            return CDRF_SKIPDEFAULT as LRESULT;
+        }
         let selected =
             send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
         let focused = unsafe { GetFocus() } == list;
@@ -1108,9 +1120,13 @@ impl App {
             font: self.font.get(),
             bold: self.bold.get(),
             selected,
+            hot: is_hot(list, i, cd),
             classic_sel: selected && focused && !crate::themed(),
             dim: node.deleting,
         };
+        // Everything stays inside its cell (sparklines, bars, long names).
+        let saved = unsafe { SaveDC(p.hdc) };
+        unsafe { IntersectClipRect(p.hdc, rc.left, rc.top, rc.right, rc.bottom) };
         if cd.iSubItem == 0 {
             let icon = self
                 .files
@@ -1139,6 +1155,7 @@ impl App {
         } else {
             tv::draw_bar(list, &p, &node, rc);
         }
+        unsafe { RestoreDC(p.hdc, saved) };
         CDRF_SKIPDEFAULT as LRESULT
     }
 
@@ -1563,6 +1580,11 @@ impl App {
     }
 
     fn show_growth_columns(&self, on: bool) {
+        self.show_growth_columns_raw(on);
+        self.stretch_last(1);
+    }
+
+    fn show_growth_columns_raw(&self, on: bool) {
         let (tl, hwnd) = (self.tree_list.get(), self.hwnd.get());
         for c in [tv::COL_CHANGE, tv::COL_TREND] {
             let w = tv::COLUMNS[c as usize].1;
@@ -2700,6 +2722,97 @@ impl App {
             ShowWindow(self.strip.get(), if tree { SW_SHOW } else { SW_HIDE });
             ShowWindow(self.gpane.get(), if pane_w > 0 { SW_SHOW } else { SW_HIDE });
         }
+        self.stretch_last(0);
+        self.stretch_last(1);
+    }
+
+    /// The list (0) or tree (1) view.
+    fn view(&self, which: usize) -> HWND {
+        if which == 0 {
+            self.list.get()
+        } else {
+            self.tree_list.get()
+        }
+    }
+
+    /// The last column in display order.
+    fn last_column(list: HWND) -> i32 {
+        let header = send(list, LVM_GETHEADER, 0, 0) as HWND;
+        let n = send(header, HDM_GETITEMCOUNT, 0, 0);
+        if n <= 0 {
+            return -1;
+        }
+        send(header, HDM_ORDERTOINDEX, (n - 1) as usize, 0) as i32
+    }
+
+    /// Widens the last column to the view's right edge (never narrower than
+    /// its own width), so a row's hover and selection highlight reach it.
+    fn stretch_last(&self, which: usize) {
+        let list = self.view(which);
+        let hwnd = self.hwnd.get();
+        let last = Self::last_column(list);
+        if last < 0 {
+            return;
+        }
+        let (mut col, mut base) = self.filler[which].get();
+        if col != last {
+            // Another column is last now (reordered): give the old one its
+            // own width back, and take the new one's as it is.
+            self.stretching.set(true);
+            if col >= 0 {
+                send(
+                    list,
+                    LVM_SETCOLUMNWIDTH,
+                    col as usize,
+                    px(hwnd, base) as isize,
+                );
+            }
+            self.stretching.set(false);
+            col = last;
+            base = send(list, LVM_GETCOLUMNWIDTH, last as usize, 0) as i32 * 96 / w::dpi(hwnd);
+            self.filler[which].set((col, base));
+        }
+        let header = send(list, LVM_GETHEADER, 0, 0) as HWND;
+        let n = send(header, HDM_GETITEMCOUNT, 0, 0).max(0) as usize;
+        let others: i32 = (0..n)
+            .filter(|&c| c as i32 != last)
+            .map(|c| send(list, LVM_GETCOLUMNWIDTH, c, 0) as i32)
+            .sum();
+        let want = px(hwnd, base).max(w::client_rect(list).right - others);
+        if send(list, LVM_GETCOLUMNWIDTH, last as usize, 0) as i32 != want {
+            self.stretching.set(true);
+            send(list, LVM_SETCOLUMNWIDTH, last as usize, want as isize);
+            self.stretching.set(false);
+        }
+    }
+
+    /// A column's width changed (the user dragging a divider): the last
+    /// column's own width follows the user, then it fills again.
+    fn column_resized(&self, header: HWND) {
+        if self.stretching.get() {
+            return;
+        }
+        for which in 0..2 {
+            let list = self.view(which);
+            if send(list, LVM_GETHEADER, 0, 0) as HWND != header {
+                continue;
+            }
+            let last = Self::last_column(list);
+            let (col, _) = self.filler[which].get();
+            if col == last && last >= 0 {
+                let hwnd = self.hwnd.get();
+                let now = send(list, LVM_GETCOLUMNWIDTH, last as usize, 0) as i32;
+                let others: i32 = (0..send(header, HDM_GETITEMCOUNT, 0, 0).max(0) as usize)
+                    .filter(|&c| c as i32 != last)
+                    .map(|c| send(list, LVM_GETCOLUMNWIDTH, c, 0) as i32)
+                    .sum();
+                // Only a width the user picked, not the filled one.
+                if now < w::client_rect(list).right - others {
+                    self.filler[which].set((col, (now * 96 / w::dpi(hwnd)).max(40)));
+                }
+            }
+            self.stretch_last(which);
+        }
     }
 
     /// Over the gap between the list and the preview pane.
@@ -2871,6 +2984,7 @@ impl App {
                 send(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
             let focused = GetFocus() == list;
             let classic_sel = selected && focused && !crate::themed();
+            let hot = is_hot(list, i, cd);
             let pal = theme::p();
             let bg: COLORREF = if classic_sel {
                 GetSysColor(COLOR_HIGHLIGHT)
@@ -2884,7 +2998,8 @@ impl App {
             } else {
                 pal.text
             };
-            if !selected {
+            // Not over the list view's selection or hover highlight.
+            if classic_sel || !(selected || hot) {
                 FillRect(hdc, &rc, theme::brush(bg));
             }
             SetBkMode(hdc, TRANSPARENT as i32);
@@ -2986,6 +3101,15 @@ impl App {
                 }
                 Some(0)
             }
+            HDN_ENDTRACKW | HDN_DIVIDERDBLCLICKW | HDN_ENDDRAG => {
+                let header = nm.hwndFrom;
+                let hwnd = self.hwnd.get();
+                // After the header has applied the change.
+                unsafe {
+                    PostMessageW(hwnd, WM_APP_COLUMNS, header as usize, 0);
+                }
+                None
+            }
             LVN_ODCACHEHINT => {
                 let h = unsafe { &*(lparam as *const NMLVCACHEHINT) };
                 self.fetch_blocks(h.iFrom.max(0) as usize, h.iTo.max(0) as usize);
@@ -3060,14 +3184,20 @@ impl App {
             let r = wp.rcNormalPosition;
             s.window = Some((r.left, r.top, r.right - r.left, r.bottom - r.top));
         }
-        s.column_widths = (0..COLUMNS.len())
-            .map(|c| send(self.list.get(), LVM_GETCOLUMNWIDTH, c, 0) as i32 * 96 / w::dpi(hwnd))
-            .collect();
-        s.tree_column_widths = (0..tv::COLUMNS.len())
-            .map(|c| {
-                send(self.tree_list.get(), LVM_GETCOLUMNWIDTH, c, 0) as i32 * 96 / w::dpi(hwnd)
-            })
-            .collect();
+        let widths = |which: usize, n: usize| -> Vec<i32> {
+            let (col, base) = self.filler[which].get();
+            (0..n)
+                .map(|c| {
+                    if c as i32 == col {
+                        base
+                    } else {
+                        send(self.view(which), LVM_GETCOLUMNWIDTH, c, 0) as i32 * 96 / w::dpi(hwnd)
+                    }
+                })
+                .collect()
+        };
+        s.column_widths = widths(0, COLUMNS.len());
+        s.tree_column_widths = widths(1, tv::COLUMNS.len());
         if let Ok(i) = usize::try_from(send(self.combo.get(), CB_GETCURSEL, 0, 0)) {
             s.filter = i;
         }
@@ -3320,6 +3450,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             app.toggle();
             0
         }
+        WM_APP_COLUMNS => {
+            app.column_resized(w as HWND);
+            0
+        }
         WM_APP_SHOW => {
             app.show();
             0
@@ -3434,6 +3568,8 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             scan_stats: RefCell::new(None),
             split_x: Cell::new(0),
             split_drag: Cell::new(None),
+            filler: [Cell::new((-1, 0)), Cell::new((-1, 0))],
+            stretching: Cell::new(false),
         }));
         APP.with(|a| *a.borrow_mut() = Some(app));
 
@@ -3585,12 +3721,11 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             let mut col: LVCOLUMNW = std::mem::zeroed();
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
             col.fmt = if *right { LVCFMT_RIGHT } else { LVCFMT_LEFT };
-            let saved = settings
-                .column_widths
-                .get(c)
-                .copied()
-                .filter(|&w| w > 10)
-                .unwrap_or(*width);
+            let saved = crate::settings::column_width(
+                settings.column_widths.get(c).copied(),
+                *width,
+                crate::settings::min_column_width(name),
+            );
             col.cx = px(hwnd, saved);
             col.pszText = wname.as_ptr() as *mut u16;
             send(list, LVM_INSERTCOLUMNW, c, &col as *const _ as isize);
@@ -3627,12 +3762,11 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             let mut col: LVCOLUMNW = std::mem::zeroed();
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
             col.fmt = if *right { LVCFMT_RIGHT } else { LVCFMT_LEFT };
-            let saved = settings
-                .tree_column_widths
-                .get(c)
-                .copied()
-                .filter(|&w| w > 10)
-                .unwrap_or(*width);
+            let saved = crate::settings::column_width(
+                settings.tree_column_widths.get(c).copied(),
+                *width,
+                crate::settings::min_column_width(name),
+            );
             col.cx = px(hwnd, saved);
             col.pszText = wname.as_ptr() as *mut u16;
             send(tl, LVM_INSERTCOLUMNW, c, &col as *const _ as isize);
@@ -3690,6 +3824,11 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
         }
         app
     }
+}
+
+/// Whether row `i` is under the mouse (the list view's hover highlight).
+fn is_hot(list: HWND, i: usize, cd: &NMLVCUSTOMDRAW) -> bool {
+    cd.nmcd.uItemState & CDIS_HOT != 0 || send(list, LVM_GETHOTITEM, 0, 0) == i as isize
 }
 
 /// Keyboard shortcuts that work anywhere in the main window.
