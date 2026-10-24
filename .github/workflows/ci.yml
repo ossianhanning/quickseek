@@ -31,7 +31,7 @@ jobs:
       # The release programs run without the Visual C++ Redistributable (the
       # C runtime is linked statically, .cargo/config.toml): check none came back.
       - name: Release build
-        run: cargo build --release --locked
+        run: cargo build --release --workspace --locked
       - name: No C runtime DLLs imported
         run: python tools/check-imports.py target/release/quickseek.exe target/release/quickseek-gui.exe target/release/quickseek-mcp.exe target/release/quickseek-setup.exe
       - name: Third-party notices are current
