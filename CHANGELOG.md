@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- License: Apache-2.0 only (19.9.0 and earlier were MIT OR Apache-2.0).
+
 ## 19.9.0 (2026-10-24)
 
 The first public release.

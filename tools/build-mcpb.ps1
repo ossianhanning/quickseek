@@ -20,7 +20,7 @@ $manifest = [ordered]@{
   description = "Instant file search and disk-space cleanup over the Quickseek index of every file on your drives."
   long_description = "Finds files by name, path wildcards, size, dates and contents instantly (no disk scan), breaks down which folders use the most space, lists cleanup candidates (temp files, build output, caches, old downloads, duplicates) and deletes to the Recycle Bin on request. Needs the Quickseek service (quickseek service install)."
   author = [ordered]@{ name = "Ossian Hanning" }
-  license = "MIT OR Apache-2.0"
+  license = "Apache-2.0"
   keywords = @("search", "files", "disk space", "cleanup", "everything", "ntfs")
   server = [ordered]@{
     type = "binary"

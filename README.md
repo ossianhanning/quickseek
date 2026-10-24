@@ -171,5 +171,6 @@ settings in `%ProgramData%\quickseek` stay, for a later reinstall; `quickseek-se
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+Licensed under the [Apache License 2.0](LICENSE) ([NOTICE](NOTICE)). Releases up to 19.9.0 were
+dual-licensed MIT OR Apache-2.0.
 Third-party licenses are in [THIRD-PARTY.md](THIRD-PARTY.md). Releases are built and signed only by CI ([code signing policy](CODE_SIGNING.md)).

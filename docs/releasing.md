@@ -44,7 +44,7 @@ Unsigned installers trigger SmartScreen warnings, and some winget reviewers and 
 binaries. [SignPath Foundation](https://signpath.org) signs open-source projects for free. What it
 asks for, and how to apply:
 
-1. **Requirements** (from SignPath Foundation's terms): an OSI-approved license (MIT OR Apache-2.0
+1. **Requirements** (from SignPath Foundation's terms): an OSI-approved license (Apache-2.0
    qualifies), a public repository, release builds made by CI from that repository, a code signing
    policy on the project's site ([CODE_SIGNING.md](../CODE_SIGNING.md)), the project is maintained
    and has some users or activity, and no malware, adware or potentially unwanted behaviour. A
