@@ -1,5 +1,14 @@
 # Changelog
 
+## 19.9.1 (2026-10-24)
+
+- **No longer needs the Visual C++ runtime.** The programs and the installer link the C runtime
+  statically. On a Windows without the Visual C++ Redistributable, 19.9.0's installer stopped at a
+  "VCRUNTIME140.dll was not found" error, which also blocked unattended installs (winget).
+- **Silent installs can't hang.** The steps the installer runs (installing the service, connecting
+  Claude Code through its `claude` command) are ended if they don't finish in time; the error goes
+  to the log and the exit code.
+
 ## 19.9.0 (2026-10-24)
 
 The first public release.

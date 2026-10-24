@@ -47,7 +47,7 @@ admin rights), the window with a Start menu entry and a global hotkey (`Ctrl+Alt
 
 Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
 [SignPath Foundation](https://signpath.org) ([code signing policy](CODE_SIGNING.md)). Signing is
-waiting for SignPath's approval: 19.9.0 is not signed yet, so Windows SmartScreen may warn when you
+waiting for SignPath's approval: releases aren't signed yet, so Windows SmartScreen may warn when you
 run the installer.
 
 ## A quick tour

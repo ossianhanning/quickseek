@@ -484,12 +484,14 @@ fn claude(args: &[&str]) -> Result<String, String> {
     // Windows would open one per call (`claude.cmd` runs through cmd.exe).
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = Command::new(&cli)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("running {}: {e}", cli.display()))?;
+    // Its own updater or a login prompt could make it wait: two minutes.
+    let out = quickseek_core::upgrade::output_with_timeout(
+        Command::new(&cli)
+            .args(args)
+            .creation_flags(CREATE_NO_WINDOW),
+        std::time::Duration::from_secs(120),
+    )
+    .map_err(|e| format!("running {}: {e}", cli.display()))?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),

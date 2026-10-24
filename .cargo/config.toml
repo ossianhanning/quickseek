@@ -1,0 +1,5 @@
+# Link the C runtime statically: the programs and the installer then run on a
+# clean Windows without the Visual C++ Redistributable (winget's validation
+# machines have none). tools/check-imports.py checks no CRT DLL is imported.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

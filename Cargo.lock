@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek"
-version = "19.9.0"
+version = "19.9.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-core"
-version = "19.9.0"
+version = "19.9.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-gui"
-version = "19.9.0"
+version = "19.9.1"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-mcp"
-version = "19.9.0"
+version = "19.9.1"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-setup"
-version = "19.9.0"
+version = "19.9.1"
 dependencies = [
  "embed-resource",
  "quickseek-core",

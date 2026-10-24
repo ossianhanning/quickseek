@@ -3,7 +3,7 @@
 Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
 [SignPath Foundation](https://signpath.org).
 
-**Status:** applied for; until SignPath Foundation approves the project, releases (19.9.0 included)
+**Status:** applied for; until SignPath Foundation approves the project, releases
 are built by the same workflow but not signed.
 
 ## What is signed

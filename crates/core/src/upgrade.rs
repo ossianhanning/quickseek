@@ -55,6 +55,52 @@ pub fn install_dir() -> Option<std::path::PathBuf> {
     .filter(|p| p.join("quickseek.exe").exists())
 }
 
+/// Runs `cmd` to completion with its output captured, like
+/// `Command::output`, but ends it after `limit`: an installer must never
+/// wait forever on a program (a silent install has nobody to notice).
+/// Stdin is closed, so nothing can wait for input either.
+pub fn output_with_timeout(
+    cmd: &mut std::process::Command,
+    limit: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let read = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = r.read_to_end(&mut v);
+            v
+        })
+    };
+    let out = read(Box::new(child.stdout.take().unwrap()));
+    let err = read(Box::new(child.stderr.take().unwrap()));
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        if start.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no answer after {} s, ended", limit.as_secs()),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
 pub fn same_dir(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(x), Ok(y)) => x == y,
@@ -166,6 +212,20 @@ pub fn retire_old_programs(dir: &Path) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn programs_that_hang_are_ended() {
+        let mut slow = std::process::Command::new("cmd");
+        slow.args(["/c", "ping -n 30 127.0.0.1 >nul"]);
+        let t = std::time::Instant::now();
+        let e = output_with_timeout(&mut slow, std::time::Duration::from_millis(500)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < std::time::Duration::from_secs(10));
+        let mut quick = std::process::Command::new("cmd");
+        quick.args(["/c", "echo hi"]);
+        let o = output_with_timeout(&mut quick, std::time::Duration::from_secs(30)).unwrap();
+        assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("hi"));
+    }
 
     /// A running "MCP server" (a copy of ping.exe) is moved aside, ended and cleaned up.
     #[test]

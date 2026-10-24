@@ -28,5 +28,11 @@ jobs:
         # The GUI's end-to-end test (tests/ui.rs) needs an interactive desktop
         # it can click in: run it locally (see docs/development.md).
         run: cargo test -p quickseek-gui --bins --test demo --locked
+      # The release programs run without the Visual C++ Redistributable (the
+      # C runtime is linked statically, .cargo/config.toml): check none came back.
+      - name: Release build
+        run: cargo build --release --locked
+      - name: No C runtime DLLs imported
+        run: python tools/check-imports.py target/release/quickseek.exe target/release/quickseek-gui.exe target/release/quickseek-mcp.exe target/release/quickseek-setup.exe
       - name: Third-party notices are current
         run: python tools/third-party.py --check

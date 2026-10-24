@@ -86,9 +86,13 @@ fn cli(dir: &Path, args: &[&str]) -> Result<String, String> {
     let exe = dir.join("quickseek.exe");
     // We put every program in place ourselves (maybe in a new --dir): the CLI
     // mustn't copy itself into the previous install's folder.
-    let out = sys::hidden(Command::new(&exe).args(args).env(upgrade::NO_SYNC_ENV, "1"))
-        .output()
-        .map_err(|e| format!("running {}: {e}", exe.display()))?;
+    // Installing or updating the service takes seconds (it doesn't wait for
+    // the first scan); ten minutes is a hang, not a slow machine.
+    let out = upgrade::output_with_timeout(
+        sys::hidden(Command::new(&exe).args(args).env(upgrade::NO_SYNC_ENV, "1")),
+        std::time::Duration::from_secs(600),
+    )
+    .map_err(|e| format!("running {} {}: {e}", exe.display(), args.join(" ")))?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
