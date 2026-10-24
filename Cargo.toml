@@ -5,7 +5,7 @@ members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp", "crates/setu
 default-members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp"]
 
 [workspace.package]
-version = "19.9.1"
+version = "19.9.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Ossian Hanning"]

@@ -1,14 +1,5 @@
 # Changelog
 
-## 19.9.1 (2026-10-24)
-
-- **No longer needs the Visual C++ runtime.** The programs and the installer link the C runtime
-  statically. On a Windows without the Visual C++ Redistributable, 19.9.0's installer stopped at a
-  "VCRUNTIME140.dll was not found" error, which also blocked unattended installs (winget).
-- **Silent installs can't hang.** The steps the installer runs (installing the service, connecting
-  Claude Code through its `claude` command) are ended if they don't finish in time; the error goes
-  to the log and the exit code.
-
 ## 19.9.0 (2026-10-24)
 
 The first public release.
@@ -58,6 +49,12 @@ Measured on one PC with about 6.9 million files on three drives. The details and
 Times are the median round trip of 41 runs.
 
 ### Notes
+
+- **Assets replaced on 2026-10-24: no longer needs the Visual C++ runtime.** The first build of
+  19.9.0 linked the C runtime dynamically, so on a Windows without the Visual C++ Redistributable
+  its installer stopped at a "VCRUNTIME140.dll was not found" error. The installer and programs
+  were rebuilt under the same version with the C runtime linked statically, and a silent install's
+  steps now have time limits.
 
 - **Unsigned.** This release is not code-signed yet (signing with SignPath Foundation is pending),
   so Windows SmartScreen may warn when you run the installer.
