@@ -12,7 +12,7 @@ use quickseek_core::content::{self, ContentOptions, ContentQuery, Scan, Stats};
 use quickseek_core::fmt;
 use quickseek_core::fold::FoldMode;
 use quickseek_core::history::SnapInfo;
-use quickseek_core::ipc::{Backend, Page, Row, StatusInfo};
+use quickseek_core::ipc::{self, Backend, Page, Row, StatusInfo};
 use quickseek_core::query::{FILTERS, Query, SearchFlags};
 use quickseek_core::search::SortKey;
 use quickseek_core::tree::{TreeLevel, TreeSort};
@@ -57,6 +57,9 @@ pub const WM_APP_TREE: u32 = WM_APP + 5;
 pub const WM_APP_CONTENT: u32 = WM_APP + 6;
 /// A background delete finished (lparam: `Box<shell::DeleteDone>`).
 pub const WM_APP_DELETED: u32 = WM_APP + 7;
+/// The service connection broke (wparam 0) or is back (1; lparam: a boxed
+/// Option<String>, the service's build).
+const WM_APP_CONN: u32 = WM_APP + 22;
 /// A column was resized or moved by the user (wparam: its header).
 const WM_APP_COLUMNS: u32 = WM_APP + 21;
 const TIMER_POLL: usize = 1;
@@ -261,6 +264,8 @@ pub struct App {
     test_mode: bool,
     tray_icon: Cell<HICON>,
     taskbar_created: u32,
+    /// [`upgrade::CLOSE_FOR_UPDATE`]: an updater is about to replace us.
+    close_for_update: u32,
     pub tree_btn: Cell<HWND>,
     pub tree_list: Cell<HWND>,
     tree: RefCell<tv::Model>,
@@ -338,6 +343,7 @@ fn worker(conn: Arc<Mutex<Conn>>, rx: Receiver<Job>, hwnd: isize) {
     let post = |msg: u32, w: usize, l: isize| unsafe {
         PostMessageW(hwnd as HWND, msg, w, l);
     };
+    let mut lost = false;
     while let Ok(job) = rx.recv() {
         // Coalesce: typing fast queues searches; only the newest matters.
         let mut job = job;
@@ -395,6 +401,17 @@ fn worker(conn: Arc<Mutex<Conn>>, rx: Receiver<Job>, hwnd: isize) {
         if poll && let Some(s) = conn.lock().be.status() {
             post(WM_APP_STATUS, 0, Box::into_raw(Box::new(s)) as isize);
         }
+        // The service went away (restarted, updated) or came back.
+        let (now_lost, back) = {
+            let mut c = conn.lock();
+            (c.be.connection_lost(), c.be.take_reconnected())
+        };
+        if let Some(build) = back {
+            post(WM_APP_CONN, 1, Box::into_raw(Box::new(build)) as isize);
+        } else if now_lost && !lost {
+            post(WM_APP_CONN, 0, 0);
+        }
+        lost = now_lost;
     }
 }
 
@@ -2122,6 +2139,12 @@ impl App {
     }
 
     fn set_status_left(&self, s: &str) {
+        // "service connection: Reconnecting…" reads as just that.
+        let s = if s.contains(ipc::RECONNECTING) {
+            ipc::RECONNECTING
+        } else {
+            s
+        };
         let w = wide(s);
         send(self.status.get(), SB_SETTEXTW, 0, w.as_ptr() as isize);
     }
@@ -2724,6 +2747,83 @@ impl App {
         }
         self.stretch_last(0);
         self.stretch_last(1);
+    }
+
+    /// The service is back after the connection broke: refresh what's shown.
+    /// A service of another build means Quickseek was updated under this
+    /// window: offer to restart it with the new version.
+    fn on_reconnected(&self, build: Option<String>) {
+        if let Some(b) = build.filter(|b| b != ipc::BUILD)
+            && !self.test_mode
+        {
+            log::info!("the service is now {b}, this window is {}", ipc::BUILD);
+            let hwnd = self.hwnd.get();
+            if crate::msgbox::ask(
+                hwnd,
+                "Quickseek was updated. Restart this window to use the new version.",
+                "Quickseek",
+                "Restart",
+            ) {
+                self.restart_window();
+                return;
+            }
+        }
+        self.search(true);
+        self.update_status();
+    }
+
+    /// Starts this window's program anew (the updated file, not this
+    /// process's old one) and closes this one.
+    fn restart_window(&self) {
+        if let Some(exe) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("quickseek-gui.exe")))
+        {
+            let _ = std::process::Command::new(exe).spawn();
+        }
+        self.quit();
+    }
+
+    /// An updater (process `pid`) is about to replace our program: start
+    /// again once it's done (a hidden helper waits for it; started by us, so
+    /// unelevated), as we are now (in the tray or not), and close.
+    fn close_for_update(&self, pid: u32) {
+        let visible = unsafe { IsWindowVisible(self.hwnd.get()) } != 0;
+        if !self.test_mode
+            && let Some(exe) = std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(|d| d.join("quickseek-gui.exe")))
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let path = exe.to_string_lossy().replace('\'', "''");
+            let args = if visible {
+                ""
+            } else {
+                " -ArgumentList '--background'"
+            };
+            let script = format!(
+                "Wait-Process -Id {pid} -Timeout 900 -ErrorAction SilentlyContinue; \
+                 Start-Sleep -Milliseconds 500; Start-Process -FilePath '{path}'{args}"
+            );
+            let _ = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    &script,
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
+        self.quit();
+    }
+
+    /// Closes the window and ends the program, tray or not.
+    fn quit(&self) {
+        unsafe { DestroyWindow(self.hwnd.get()) };
     }
 
     /// The list (0) or tree (1) view.
@@ -3450,6 +3550,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             app.toggle();
             0
         }
+        WM_APP_CONN => {
+            if w == 0 {
+                app.set_status_left(ipc::RECONNECTING);
+            } else {
+                let build = unsafe { Box::from_raw(l as *mut Option<String>) };
+                app.on_reconnected(*build);
+            }
+            0
+        }
         WM_APP_COLUMNS => {
             app.column_resized(w as HWND);
             0
@@ -3487,6 +3596,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
                 PostQuitMessage(0);
             }
             0
+        }
+        m if m == app.close_for_update && m != 0 => {
+            app.close_for_update(w as u32);
+            1
         }
         m if m == app.taskbar_created && m != 0 => {
             app.add_tray(); // Explorer restarted
@@ -3543,6 +3656,9 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             test_mode,
             tray_icon: Cell::new(crate::app_icon_small()),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+            close_for_update: RegisterWindowMessageW(
+                wide(quickseek_core::upgrade::CLOSE_FOR_UPDATE).as_ptr(),
+            ),
             tree_btn: Cell::new(null_mut()),
             tree_list: Cell::new(null_mut()),
             tree: RefCell::new(tv::Model::default()),

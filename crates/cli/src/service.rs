@@ -71,6 +71,16 @@ fn sync_install_dir() -> anyhow::Result<bool> {
     if upgrade::same_dir(src, &dir) {
         return Ok(false);
     }
+    let gui = "quickseek-gui.exe";
+    if std::fs::read(src.join(gui))
+        .ok()
+        .is_some_and(|new| std::fs::read(dir.join(gui)).ok() != Some(new))
+    {
+        let closed = upgrade::close_windows_for_update(&dir);
+        if closed > 0 {
+            println!("closed {closed} Quickseek window(s); they start again when this ends");
+        }
+    }
     let mut any = false;
     for name in upgrade::PROGRAMS {
         let (from, to) = (src.join(name), dir.join(name));

@@ -133,6 +133,90 @@ pub fn delete_on_reboot(p: &Path) {
 /// Ends running copies of these programs started from `dir` (also ones whose
 /// file was moved aside since) and waits briefly for them to exit. Returns
 /// how many it ended.
+/// The message the installer and `quickseek service update` send each
+/// Quickseek window before replacing its program; wparam is the updater's
+/// process id. The window arranges to start again once that process has
+/// exited (unelevated, as itself), then closes.
+pub const CLOSE_FOR_UPDATE: &str = "Quickseek.CloseForUpdate";
+
+/// Asks the Quickseek windows (`quickseek.main`) running from `dir` to close
+/// for an update, and waits up to 10 s for them to exit. Returns how many
+/// closed; each starts again by itself after this process ends.
+pub fn close_windows_for_update(dir: &Path) -> usize {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowThreadProcessId, RegisterWindowMessageW,
+        SMTO_ABORTIFHUNG, SendMessageTimeoutW,
+    };
+    let mut prefix = dir.to_string_lossy().to_lowercase();
+    if !prefix.ends_with('\\') {
+        prefix.push('\\');
+    }
+    struct Found(Vec<(HWND, u32)>);
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> i32 {
+        let f = unsafe { &mut *(l as *mut Found) };
+        let mut buf = [0u16; 32];
+        let n = unsafe { GetClassNameW(h, buf.as_mut_ptr(), 32) } as usize;
+        if String::from_utf16_lossy(&buf[..n]) == "quickseek.main" {
+            let mut pid = 0;
+            unsafe { GetWindowThreadProcessId(h, &mut pid) };
+            f.0.push((h, pid));
+        }
+        1
+    }
+    let mut found = Found(Vec::new());
+    unsafe { EnumWindows(Some(each), &mut found as *mut Found as LPARAM) };
+    let msg = unsafe { RegisterWindowMessageW(wide(CLOSE_FOR_UPDATE).as_ptr()) };
+    let mut waiting = Vec::new();
+    for (h, pid) in found.0 {
+        let p = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if p.is_null() {
+            continue;
+        }
+        let mut buf = [0u16; MAX_PATH as usize * 2];
+        let mut len = buf.len() as u32;
+        let ours = unsafe {
+            QueryFullProcessImageNameW(p, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
+        } != 0
+            && String::from_utf16_lossy(&buf[..len as usize])
+                .to_lowercase()
+                .starts_with(&prefix);
+        let mut answer = 0usize;
+        if ours
+            && unsafe {
+                SendMessageTimeoutW(
+                    h,
+                    msg,
+                    std::process::id() as usize,
+                    0,
+                    SMTO_ABORTIFHUNG,
+                    3000,
+                    &mut answer,
+                )
+            } != 0
+            && answer == 1
+        {
+            waiting.push(p);
+        } else {
+            unsafe { CloseHandle(p) };
+        }
+    }
+    let n = waiting.len();
+    for p in waiting {
+        unsafe {
+            WaitForSingleObject(p, 10_000);
+            CloseHandle(p);
+        }
+    }
+    n
+}
+
 pub fn kill_in(dir: &Path, names: &[&str]) -> usize {
     let mut prefix = dir.to_string_lossy().to_lowercase();
     if !prefix.ends_with('\\') {

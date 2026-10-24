@@ -72,7 +72,7 @@ fn load_icon(metric: _LI_METRIC) -> isize {
 fn connect(local: bool) -> Result<Box<dyn Backend>, String> {
     if !local {
         match ipc::Client::connect() {
-            Ok(c) => return Ok(Box::new(ipc::Remote(c))),
+            Ok(c) => return Ok(Box::new(ipc::Remote::new(c))),
             Err(e) if ipc::is_version_mismatch(&e) => {
                 return Err(format!(
                     "{e}.\n\nUpdate or reinstall Quickseek (quickseek-setup.exe) so they match."

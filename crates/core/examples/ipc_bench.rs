@@ -36,7 +36,7 @@ fn main() {
         runs = args[i + 1].parse().expect("--runs <n>");
         args.drain(i..=i + 1);
     }
-    let mut c = Remote(Client::connect().expect("the Quickseek service isn't running"));
+    let mut c = Remote::new(Client::connect().expect("the Quickseek service isn't running"));
     for q in &args {
         let (mut wall, mut server) = (Vec::new(), Vec::new());
         let mut total = 0;

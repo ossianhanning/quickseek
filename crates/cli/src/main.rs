@@ -274,7 +274,7 @@ fn open_backend(cli: &Cli, verbose: bool) -> anyhow::Result<Box<dyn Backend>> {
     // The service indexes everything; a volume filter means local mode.
     if !cli.local && cli.volume.is_empty() {
         match ipc::Client::connect() {
-            Ok(c) => return Ok(Box::new(ipc::Remote(c))),
+            Ok(c) => return Ok(Box::new(ipc::Remote::new(c))),
             Err(e) => log::info!("service not reachable ({e}); using a local index"),
         }
     }
@@ -313,7 +313,7 @@ fn edit_config(
     if !cli.local
         && let Ok(c) = ipc::Client::connect()
     {
-        let mut be = ipc::Remote(c);
+        let mut be = ipc::Remote::new(c);
         let mut cfg = be.get_config().map_err(anyhow::Error::msg)?;
         f(&mut cfg)?;
         return be.set_config(&cfg).map_err(anyhow::Error::msg);
@@ -333,7 +333,7 @@ fn show_config(cli: &Cli) -> anyhow::Result<quickseek_core::config::Config> {
     if !cli.local
         && let Ok(c) = ipc::Client::connect()
     {
-        return ipc::Remote(c).get_config().map_err(anyhow::Error::msg);
+        return ipc::Remote::new(c).get_config().map_err(anyhow::Error::msg);
     }
     Ok(quickseek_core::config::Config::load(
         &persist::db_dir().join("config.json"),

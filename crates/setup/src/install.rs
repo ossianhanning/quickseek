@@ -112,6 +112,15 @@ pub fn install(o: &Options, log: &mut dyn FnMut(&str)) -> Result<(), String> {
         return Err("this quickseek-setup.exe was built without the program files; build it with tools\\build-release.ps1".into());
     }
     std::fs::create_dir_all(&o.dir).map_err(|e| format!("creating {}: {e}", o.dir.display()))?;
+    // Windows running the old program close now and start again, updated,
+    // when this installer ends.
+    let closed = upgrade::close_windows_for_update(&o.dir);
+    if closed > 0 {
+        log(&format!(
+            "Closed {closed} Quickseek window{} (it starts again when setup ends)",
+            if closed == 1 { "" } else { "s" }
+        ));
+    }
     log(&format!("Copying files to {}", o.dir.display()));
     for (name, z) in &PAYLOAD {
         let data = zstd::decode_all(*z).map_err(|e| format!("unpacking {name}: {e}"))?;

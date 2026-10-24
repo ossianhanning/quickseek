@@ -21,11 +21,14 @@ const CLASS: &str = "quickseek_msgbox";
 
 thread_local! {
     static ICON: Cell<HICON> = const { Cell::new(null_mut()) };
+    /// The button that closed it (IDCANCEL for the close box and Esc).
+    static RESULT: Cell<i32> = const { Cell::new(IDCANCEL) };
 }
 
 unsafe extern "system" fn proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_COMMAND if matches!(w::loword(wp) as i32, IDOK | IDCANCEL) => {
+            RESULT.with(|r| r.set(w::loword(wp) as i32));
             unsafe { DestroyWindow(h) };
             0
         }
@@ -67,6 +70,24 @@ fn icon_size(h: HWND) -> i32 {
 /// Shows `text` with an OK button; returns IDOK. `flags` picks the icon
 /// (MB_ICONINFORMATION, MB_ICONWARNING, MB_ICONERROR), as MessageBoxW's.
 pub fn show(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
+    run(owner, text, title, flags, "OK", None);
+    IDOK
+}
+
+/// Asks with two buttons, `yes` (the default) and "Later"; true for `yes`.
+pub fn ask(owner: HWND, text: &str, title: &str, yes: &str) -> bool {
+    run(owner, text, title, MB_ICONINFORMATION, yes, Some("Later")) == IDOK
+}
+
+fn run(
+    owner: HWND,
+    text: &str,
+    title: &str,
+    flags: u32,
+    ok_label: &str,
+    cancel: Option<&str>,
+) -> i32 {
+    RESULT.with(|r| r.set(IDCANCEL));
     let icon_kind = flags & 0xF0;
     unsafe {
         let class = wide(CLASS);
@@ -99,7 +120,12 @@ pub fn show(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
         );
         if h.is_null() {
             let b = wide(text);
-            return MessageBoxW(owner, b.as_ptr(), t.as_ptr(), flags);
+            let f = if cancel.is_some() {
+                flags | MB_OKCANCEL
+            } else {
+                flags
+            };
+            return MessageBoxW(owner, b.as_ptr(), t.as_ptr(), f);
         }
         let font = w::ui_font(h, false);
         let stock = match icon_kind {
@@ -156,12 +182,28 @@ pub fn show(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
         let ok = w::child(
             h,
             "Button",
-            "OK",
+            ok_label,
             WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
             0,
             IDOK,
         );
-        w::move_to(ok, cw - margin - bw, ch - px(h, 14) - bh, bw, bh);
+        let by = ch - px(h, 14) - bh;
+        match cancel {
+            Some(label) => {
+                let c = w::child(
+                    h,
+                    "Button",
+                    label,
+                    WS_TABSTOP | BS_PUSHBUTTON as u32,
+                    0,
+                    IDCANCEL,
+                );
+                w::move_to(c, cw - margin - bw, by, bw, bh);
+                w::set_font(c, font);
+                w::move_to(ok, cw - margin - 2 * bw - px(h, 8), by, bw, bh);
+            }
+            None => w::move_to(ok, cw - margin - bw, by, bw, bh),
+        }
         w::set_font(ok, font);
 
         // Size the frame for that client area, centred on the owner.
@@ -224,6 +266,10 @@ pub fn show(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
                 DestroyIcon(i);
             }
         });
-        IDOK
+        if cancel.is_some() {
+            RESULT.with(Cell::get)
+        } else {
+            IDOK
+        }
     }
 }

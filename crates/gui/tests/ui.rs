@@ -105,12 +105,17 @@ impl Gui {
         let n = LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let pipe = format!(r"\\.\pipe\quickseek-uitest-{}-{n}", std::process::id());
         common::serve(&pipe, engine.clone());
+        Self::launch_on(&pipe, engine)
+    }
+
+    /// The GUI talking to whatever serves `pipe`.
+    fn launch_on(pipe: &str, engine: Arc<Engine>) -> Gui {
         let settings =
             std::env::temp_dir().join(format!("quickseek-uitest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&settings);
         let child = Command::new(env!("CARGO_BIN_EXE_quickseek-gui"))
             .arg("--test")
-            .env("QUICKSEEK_PIPE", &pipe)
+            .env("QUICKSEEK_PIPE", pipe)
             .env("QUICKSEEK_GUI_DIR", &settings)
             .spawn()
             .expect("launching quickseek-gui");
@@ -1221,4 +1226,74 @@ fn gui_theme_switch() {
     assert!(saved.contains("\"theme\": \"system\""), "{saved}");
     drop(g);
     let _ = std::fs::remove_dir_all(&hist);
+}
+
+/// The example mock service (a separate process, so a test can stop and
+/// restart it the way the real service restarts on an update).
+fn start_mock(pipe: &str) -> Child {
+    let exe = std::path::Path::new(env!("CARGO_BIN_EXE_quickseek-gui"))
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("mock_service.exe");
+    assert!(
+        exe.exists(),
+        "{} is missing: run the whole suite (cargo test -p quickseek-gui) so the examples are built",
+        exe.display()
+    );
+    let child = Command::new(exe)
+        .args(["--pipe", pipe, "--files", "2000"])
+        .spawn()
+        .expect("starting the mock service");
+    eventually("mock service", Duration::from_secs(30), || {
+        quickseek_core::ipc::Client::connect_to(pipe).ok()
+    });
+    child
+}
+
+/// The service goes away (restarted, updated) under a connected window:
+/// it says it's reconnecting, then comes back by itself with results.
+#[test]
+fn gui_reconnects_after_service_restart() {
+    let pipe = format!(r"\\.\pipe\quickseek-uitest-restart-{}", std::process::id());
+    let mut mock = start_mock(&pipe);
+    let g = Gui::launch_on(&pipe, Arc::new(Engine::from_indexes(Vec::new())));
+    eventually("first results", Duration::from_secs(15), || {
+        (g.rows() > 0).then_some(())
+    });
+    let _ = mock.kill();
+    let _ = mock.wait();
+    // Searching while the service is away.
+    g.set_query("file");
+    eventually("reconnecting shown", Duration::from_secs(15), || {
+        g.status().contains("Reconnecting").then_some(())
+    });
+    let mut mock = start_mock(&pipe);
+    eventually("back with results", Duration::from_secs(20), || {
+        let st = g.status();
+        (!st.contains("Reconnecting") && !st.contains("service connection") && g.rows() > 0)
+            .then_some(())
+    });
+    drop(g);
+    let _ = mock.kill();
+    let _ = mock.wait();
+}
+
+/// An updater asks the windows running from the folder it's about to
+/// replace to close; they do (and, outside tests, start again after it).
+#[test]
+fn gui_closes_for_update() {
+    let g = Gui::launch(Arc::new(Engine::from_indexes(vec![common::sample_index(
+        'C', 200,
+    )])));
+    let dir = std::path::Path::new(env!("CARGO_BIN_EXE_quickseek-gui"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let closed = quickseek_core::upgrade::close_windows_for_update(&dir);
+    assert!(closed >= 1, "closed {closed}");
+    let mut g = g;
+    eventually("window process exits", Duration::from_secs(10), || {
+        g.child.try_wait().ok().flatten()
+    });
 }

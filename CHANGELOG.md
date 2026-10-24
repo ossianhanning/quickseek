@@ -3,6 +3,12 @@
 ## Unreleased
 
 - License: Apache-2.0 only (19.9.0 and earlier were MIT OR Apache-2.0).
+- The window reconnects by itself when the service restarts (it shows "Reconnecting to the service…"
+  meanwhile), and offers a restart when the service was updated under it.
+- Setup and `quickseek service update` close running windows before replacing the program and start
+  them again afterwards.
+- List and tree: hover highlights the whole row; the last column reaches the right edge; column
+  widths can't be saved broken.
 
 ## 19.9.0 (2026-10-24)
 

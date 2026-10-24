@@ -1391,6 +1391,8 @@ pub fn serve_frames(name: &str, answer: fn(&[u8]) -> Vec<u8>) {
 
 pub struct Client {
     pipe: File,
+    /// The pipe it connected to, for reconnecting.
+    name: String,
     /// Protocol version agreed on in the hello.
     ver: u8,
     service_build: Option<String>,
@@ -1436,6 +1438,7 @@ impl Client {
                 Ok(pipe) => {
                     return Ok(Client {
                         pipe,
+                        name: pipe_name.to_string(),
                         ver: PROTOCOL,
                         service_build: None,
                     });
@@ -1448,6 +1451,11 @@ impl Client {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    /// The pipe this client talks to.
+    pub fn pipe_name(&self) -> &str {
+        &self.name
     }
 
     /// The protocol version in use.
@@ -1484,6 +1492,14 @@ pub trait Backend: Send {
     /// Called before exit (the local engine saves if worthwhile).
     fn finish(&mut self) -> anyhow::Result<()> {
         Ok(())
+    }
+    /// The connection to the service is down and being retried.
+    fn connection_lost(&self) -> bool {
+        false
+    }
+    /// After a reconnect (once): the service's build, if it says.
+    fn take_reconnected(&mut self) -> Option<Option<String>> {
+        None
     }
 
     fn search(
@@ -1686,14 +1702,101 @@ impl Backend for Local {
     }
 }
 
-pub struct Remote(pub Client);
+/// What a call answers while the connection is being re-established.
+pub const RECONNECTING: &str = "Reconnecting to the service…";
+
+/// The service over its pipe. When the connection breaks (the service
+/// restarted, was updated, or the pipe closed), the next call reconnects
+/// and is retried once; while the service is away calls fail fast with
+/// [`RECONNECTING`], trying again after 0.5 s, then up to every 5 s.
+pub struct Remote {
+    client: Option<Client>,
+    pipe: String,
+    next_try: Instant,
+    backoff: Duration,
+    reconnected: Option<Option<String>>,
+}
+
+const BACKOFF_MIN: Duration = Duration::from_millis(500);
+const BACKOFF_MAX: Duration = Duration::from_secs(5);
+
+/// Errors that mean the connection is gone (not a refused request).
+pub fn is_disconnect(e: &io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(2 | 109 | 231 | 232 | 233 | 535 | 536)
+    ) || matches!(
+        e.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+    )
+}
+
+impl Remote {
+    pub fn new(c: Client) -> Remote {
+        Remote {
+            pipe: c.pipe_name().to_string(),
+            client: Some(c),
+            next_try: Instant::now(),
+            backoff: BACKOFF_MIN,
+            reconnected: None,
+        }
+    }
+
+    pub fn client(&self) -> Option<&Client> {
+        self.client.as_ref()
+    }
+
+    fn reconnect(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        if now < self.next_try {
+            return Err(io::Error::new(io::ErrorKind::NotConnected, RECONNECTING));
+        }
+        match Client::connect_to(&self.pipe) {
+            Ok(c) => {
+                self.reconnected = Some(c.service_build().map(String::from));
+                self.client = Some(c);
+                self.backoff = BACKOFF_MIN;
+                Ok(())
+            }
+            Err(e) if is_version_mismatch(&e) => Err(e),
+            Err(_) => {
+                self.next_try = now + self.backoff;
+                self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
+                Err(io::Error::new(io::ErrorKind::NotConnected, RECONNECTING))
+            }
+        }
+    }
+}
 
 impl Backend for Remote {
     fn call(&mut self, req: &Request) -> io::Result<Response> {
-        self.0.call(req)
+        if self.client.is_none() {
+            self.reconnect()?;
+        }
+        match self.client.as_mut().unwrap().call(req) {
+            Err(e) if is_disconnect(&e) => {
+                // Try at once (a restarted service is usually back), then back off.
+                self.client = None;
+                self.next_try = Instant::now();
+                self.backoff = BACKOFF_MIN;
+                self.reconnect()?;
+                self.client.as_mut().unwrap().call(req)
+            }
+            r => r,
+        }
     }
     fn label(&self) -> &'static str {
         "service"
+    }
+    fn connection_lost(&self) -> bool {
+        self.client.is_none()
+    }
+    fn take_reconnected(&mut self) -> Option<Option<String>> {
+        self.reconnected.take()
     }
 }
 
