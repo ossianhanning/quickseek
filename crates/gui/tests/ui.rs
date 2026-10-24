@@ -248,7 +248,12 @@ impl Gui {
 
     /// The status bar's left part.
     fn status(&self) -> String {
-        let bar = self.by_id("103");
+        // By handle: searching from the window walks every list row first.
+        let h = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(self.hwnd, 103) };
+        let bar = self
+            .ua
+            .element_from_handle(windows::Win32::Foundation::HWND(h).into())
+            .expect("status bar");
         let parts = self
             .ua
             .create_matcher()
@@ -1230,7 +1235,17 @@ fn gui_theme_switch() {
 
 /// The example mock service (a separate process, so a test can stop and
 /// restart it the way the real service restarts on an update).
-fn start_mock(pipe: &str) -> Child {
+/// Killed when dropped, so a failing test doesn't leave it running.
+struct Mock(Child);
+
+impl Drop for Mock {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn start_mock(pipe: &str) -> Mock {
     let exe = std::path::Path::new(env!("CARGO_BIN_EXE_quickseek-gui"))
         .parent()
         .unwrap()
@@ -1241,14 +1256,22 @@ fn start_mock(pipe: &str) -> Child {
         "{} is missing: run the whole suite (cargo test -p quickseek-gui) so the examples are built",
         exe.display()
     );
+    // No console window of its own, and not holding the test's output open.
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let child = Command::new(exe)
         .args(["--pipe", pipe, "--files", "2000"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .expect("starting the mock service");
+    let mock = Mock(child);
     eventually("mock service", Duration::from_secs(30), || {
         quickseek_core::ipc::Client::connect_to(pipe).ok()
     });
-    child
+    mock
 }
 
 /// The service goes away (restarted, updated) under a connected window:
@@ -1256,27 +1279,31 @@ fn start_mock(pipe: &str) -> Child {
 #[test]
 fn gui_reconnects_after_service_restart() {
     let pipe = format!(r"\\.\pipe\quickseek-uitest-restart-{}", std::process::id());
-    let mut mock = start_mock(&pipe);
+    let mock = start_mock(&pipe);
     let g = Gui::launch_on(&pipe, Arc::new(Engine::from_indexes(Vec::new())));
     eventually("first results", Duration::from_secs(15), || {
         (g.rows() > 0).then_some(())
     });
-    let _ = mock.kill();
-    let _ = mock.wait();
+    drop(mock);
     // Searching while the service is away.
     g.set_query("file");
     eventually("reconnecting shown", Duration::from_secs(15), || {
         g.status().contains("Reconnecting").then_some(())
     });
-    let mut mock = start_mock(&pipe);
-    eventually("back with results", Duration::from_secs(20), || {
-        let st = g.status();
-        (!st.contains("Reconnecting") && !st.contains("service connection") && g.rows() > 0)
-            .then_some(())
-    });
+    let _mock = start_mock(&pipe);
+    let t = Instant::now();
+    loop {
+        let (st, rows) = (g.status(), g.rows());
+        if !st.contains("Reconnecting") && !st.contains("service connection") && rows > 0 {
+            break;
+        }
+        assert!(
+            t.elapsed() < Duration::from_secs(20),
+            "not back after the restart: status {st:?}, {rows} rows"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     drop(g);
-    let _ = mock.kill();
-    let _ = mock.wait();
 }
 
 /// An updater asks the windows running from the folder it's about to
