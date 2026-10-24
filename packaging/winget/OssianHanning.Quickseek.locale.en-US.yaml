@@ -9,7 +9,7 @@ Author: Ossian Hanning
 PackageName: Quickseek
 PackageUrl: {REPO}
 License: Apache-2.0
-LicenseUrl: {REPO}/blob/main/LICENSE
+LicenseUrl: {REPO}/blob/v{VERSION}/LICENSE
 Copyright: Copyright (c) 2026 Ossian Hanning
 ShortDescription: Instant file search for all your drives, folder sizes with history, and an MCP server for AI assistants.
 Description: |-

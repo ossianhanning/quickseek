@@ -1,15 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- License: Apache-2.0 only (19.9.0 and earlier were MIT OR Apache-2.0).
-- The window reconnects by itself when the service restarts (it shows "Reconnecting to the service…"
-  meanwhile), and offers a restart when the service was updated under it.
-- Setup and `quickseek service update` close running windows before replacing the program and start
-  them again afterwards.
-- List and tree: hover highlights the whole row; the last column reaches the right edge; column
-  widths can't be saved broken.
-
 ## 19.9.0 (2026-10-24)
 
 The first public release.
@@ -65,6 +55,11 @@ Times are the median round trip of 41 runs.
   its installer stopped at a "VCRUNTIME140.dll was not found" error. The installer and programs
   were rebuilt under the same version with the C runtime linked statically, and a silent install's
   steps now have time limits.
+- **Assets replaced again on 2026-10-24.** The window now reconnects by itself when the service
+  restarts and offers a restart when the service was updated under it; setup and
+  `quickseek service update` close running windows before replacing the program and start them
+  again afterwards; hover highlights the whole row and the last column reaches the right edge.
+  Quickseek is now licensed under Apache-2.0 only (the first build said MIT OR Apache-2.0).
 
 - **Unsigned.** This release is not code-signed yet (signing with SignPath Foundation is pending),
   so Windows SmartScreen may warn when you run the installer.
