@@ -114,11 +114,20 @@ jobs:
         with:
           name: winget-manifests-${{ env.VERSION }}
           path: target/dist/winget
-      - name: Draft the GitHub release
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          generate_release_notes: true
-          files: |
-            target/dist/quickseek-setup-${{ env.VERSION }}-x64.exe
-            target/dist/quickseek-${{ env.VERSION }}.mcpb
+      # A new tag: a draft release to check and publish. A tag moved to a
+      # rebuilt commit (its release already published): replace the files in
+      # place, leaving the release as it is.
+      - name: Draft the GitHub release, or replace its files
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $files = "target/dist/quickseek-setup-$env:VERSION-x64.exe", "target/dist/quickseek-$env:VERSION.mcpb"
+          gh release view $tag --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber --repo "${{ github.repository }}"
+          } else {
+            gh release create $tag @files --draft --generate-notes --title "Quickseek $env:VERSION" --repo "${{ github.repository }}"
+          }
+          if ($LASTEXITCODE) { throw "gh release failed" }
