@@ -65,6 +65,8 @@ pub struct Share {
     /// (empty when the share isn't indexed through btrfs).
     #[cfg(target_os = "linux")]
     pub subvols: Mutex<Vec<crate::btrfs::Subvol>>,
+    /// One save at a time (they share a temporary file).
+    saving: Mutex<()>,
 }
 
 /// What a batch did to the folders a watcher has to follow.
@@ -93,6 +95,7 @@ impl Share {
             changed: Condvar::new(),
             #[cfg(target_os = "linux")]
             subvols: Mutex::new(Vec::new()),
+            saving: Mutex::new(()),
         }
     }
 
@@ -117,6 +120,7 @@ impl Share {
     /// Returns the seq saved.
     pub fn save(&self, dir: &Path) -> std::io::Result<u64> {
         use quickseek_remote::wire::{put, put_str};
+        let _one = self.saving.lock().unwrap();
         let mut body = Vec::new();
         let seq = {
             let st = self.state.lock().unwrap();
