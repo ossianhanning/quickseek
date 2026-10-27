@@ -67,3 +67,12 @@ jobs:
         run: sudo -E env "PATH=$PATH" CARGO_TARGET_DIR=/tmp/root-target TMPDIR=/mnt/btrfs/share cargo test -p quickseek-agent --test live --locked
       - name: Docker image
         run: docker build -f packaging/agent/Dockerfile -t quickseek-agent:ci . && docker run --rm quickseek-agent:ci version
+
+  # The release publishes the image for arm64 too, built on an arm runner;
+  # check that build here (pushing to GHCR only happens for version tags).
+  agent-image-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Docker image (linux/arm64)
+        run: docker build -f packaging/agent/Dockerfile -t quickseek-agent:ci . && docker run --rm quickseek-agent:ci version
