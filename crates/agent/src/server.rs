@@ -64,16 +64,22 @@ impl Agent {
     }
 
     /// Stops accepting and cuts every open connection.
-    pub fn shut_down(&self, port: u16) {
+    pub fn shut_down(&self, listening: std::net::SocketAddr) {
         self.stop.store(true, Ordering::Relaxed);
         for (_, s) in self.socks.lock().unwrap().drain(..) {
             let _ = s.shutdown(std::net::Shutdown::Both);
         }
-        // Wake the accept loop so it sees the flag.
-        let _ = TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            Duration::from_secs(1),
-        );
+        // Wake the accept loop so it sees the flag (a wildcard address is
+        // reached on loopback).
+        let mut to = listening;
+        if to.ip().is_unspecified() {
+            to.set_ip(if to.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        let _ = TcpStream::connect_timeout(&to, Duration::from_secs(1));
     }
 
     pub fn share_infos(&self) -> Vec<ShareInfo> {

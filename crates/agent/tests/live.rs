@@ -37,6 +37,8 @@ fn settle() {
 }
 
 fn start(d: &Path, watch: Kind) -> Running {
+    // The agent's log, when RUST_LOG asks for it.
+    let _ = env_logger::builder().is_test(true).try_init();
     quickseek_agent::start(Options {
         shares: vec![("share".into(), d.join("share"))],
         config: d.join("config"),
@@ -190,7 +192,13 @@ fn live_changes(watch: Kind, expect: &str) {
             |o| matches!(o, Op::Move { id, name, .. } if *id == new_id && name == "renamed"),
         );
     } else {
-        until(&mut s, created("renamed"));
+        // A re-walk sees a new folder; on btrfs the catch-up after a re-read
+        // recognises the folder by its inode and moves it (keeping its id).
+        until(&mut s, |o| match o {
+            Op::Create(r) => r.name == "renamed",
+            Op::Move { id, name, .. } => *id == new_id && name == "renamed",
+            _ => false,
+        });
     }
     std::fs::remove_file(share.join("b.bin")).unwrap();
     if !watched {

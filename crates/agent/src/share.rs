@@ -231,7 +231,9 @@ impl Share {
     pub fn rewalk(&self, pool: &rayon::ThreadPool) -> DirChanges {
         let t0 = std::time::Instant::now();
         let fresh = walk(&self.root, pool);
-        self.merge_walk(fresh, t0.elapsed())
+        let ch = self.merge_walk(fresh, t0.elapsed());
+        self.set_ready();
+        ch
     }
 
     /// Merges a walk of the whole share (made without the lock, while
@@ -264,13 +266,22 @@ impl Share {
             ops.len()
         );
         self.commit(&mut st, ops);
-        st.ready = true;
         let (c, f) = disk_space(&self.root);
         (st.capacity, st.free) = (c, f);
-        st.status = "ready".into();
         self.changed.notify_all();
         let added = added.into_iter().map(|d| (d, st.tree.path(d))).collect();
         DirChanges { added, removed }
+    }
+
+    /// The share is worth sending: indexed, and its folders followed, so
+    /// whatever changes from now on reaches the PCs.
+    pub fn set_ready(&self) {
+        let mut st = self.state.lock().unwrap();
+        if !st.ready || st.status != "ready" {
+            st.ready = true;
+            st.status = "ready".into();
+            self.changed.notify_all();
+        }
     }
 
     /// Applies a batch of change events (already filtered to this share).

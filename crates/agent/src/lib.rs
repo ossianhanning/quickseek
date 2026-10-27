@@ -102,11 +102,17 @@ pub struct Running {
     pub stop: Arc<AtomicBool>,
     /// Lets tests ask for a re-walk (watchers off).
     pub rewalk_now: Arc<AtomicBool>,
+    listening: std::net::SocketAddr,
+    server: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Running {
+    /// Stops serving; the port is free again when this returns.
     fn drop(&mut self) {
-        self.agent.shut_down(self.port);
+        self.agent.shut_down(self.listening);
+        if let Some(h) = self.server.take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -147,7 +153,8 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
     }
     let listener = TcpListener::bind((opts.listen.as_str(), opts.port))
         .with_context(|| format!("listening on {}:{}", opts.listen, opts.port))?;
-    let port = listener.local_addr()?.port();
+    let listening = listener.local_addr()?;
+    let port = listening.port();
     log::info!(
         "{} serving {} on port {port}; certificate {}",
         server::BUILD,
@@ -168,7 +175,7 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
         stop.clone(),
     ));
     let a = agent.clone();
-    std::thread::Builder::new()
+    let server = std::thread::Builder::new()
         .name("server".into())
         .spawn(move || a.serve(listener))?;
     let rewalk_now = Arc::new(AtomicBool::new(false));
@@ -183,6 +190,8 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
         agent,
         stop,
         rewalk_now,
+        listening,
+        server: Some(server),
     })
 }
 
@@ -472,6 +481,9 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
                 // followed yet: the generations were read first.
                 catch_up(sh, i, &pool, &mut w);
             }
+            // Only now: its folders are followed, so from here on every
+            // change reaches the PCs.
+            sh.set_ready();
             if !first_done[i] {
                 first_done[i] = true;
                 save(&mut saved_seq, false);
