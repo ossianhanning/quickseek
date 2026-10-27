@@ -178,6 +178,27 @@ fn nas_share_as_a_volume() {
         h.list()
     );
 
+    // A local alias: the volume is keyed by it and paths start with it; the
+    // SMB folder of the UNC root stays replaced. Then back to the UNC root.
+    let alias = r"\\localhost\share";
+    let r = quickseek_core::remote::action(
+        &e,
+        &format!(r#"{{"op":"alias","unc":{KEY:?},"alias":{alias:?}}}"#),
+    )
+    .unwrap();
+    assert!(r.contains("localhost"), "{r}");
+    e.sync_volumes();
+    wait_for("the alias", || {
+        paths(&e, "beach") == [format!(r"{alias}\Photos\beach.jpg")]
+    });
+    assert_eq!(e.status().len(), 1, "{:?}", e.status());
+    quickseek_core::remote::action(&e, &format!(r#"{{"op":"alias","unc":{KEY:?},"alias":""}}"#))
+        .unwrap();
+    e.sync_volumes();
+    wait_for("the UNC root again", || {
+        paths(&e, "beach") == [format!(r"{KEY}\Photos\beach.jpg")]
+    });
+
     // The service restarts while the agent runs: it resumes from the saved
     // copy without a full transfer, and says it's live again.
     e.save_all(0).unwrap();

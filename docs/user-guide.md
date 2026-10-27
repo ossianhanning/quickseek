@@ -66,7 +66,7 @@ quickseek history list | save "before cleanup"
 quickseek folders add \\nas\photos --rescan-minutes 60
 quickseek folders list | remove <path>
 quickseek remotes add hearth.local --pair K7QF-3MZD   # a NAS running quickseek-agent
-quickseek remotes list | remove <host> | enable <unc> --on false
+quickseek remotes list | remove <host> | enable <unc> --on false | alias <unc> H:
 quickseek config show | set config.json | exclude-folder node_modules | exclude-files "*.tmp"
 quickseek scan                 # build/refresh a local index (admin)
 quickseek bench "*.dll"        # (admin)
@@ -243,6 +243,16 @@ and Options → NAS:
 | agent: walking | the agent is (re)walking its shares |
 | pairing needed | the agent doesn't know this PC (revoked, or its config was reset): pair again |
 | certificate changed: pair again | the agent presented another certificate than the one pinned when pairing; nothing is exchanged until you pair again |
+
+**Local path (alias).** If you reach a share another way, for example as the
+mapped drive `H:`, `quickseek remotes alias \\hearth.local\data H:` (or the
+Local path field in Options → NAS) indexes it under that path: results, the
+tree and the MCP tools show `H:\…`, and files open through it. The path is
+checked from your session (a drive letter must map to that share and be
+reachable, since the service can't see your mapped drives); `quickseek remotes
+add` points out mapped drives that fit. `quickseek remotes alias
+\\hearth.local\data` goes back to the UNC root. Changing it fetches the share
+again under the new path; growth history from before stays under the old one.
 
 The PC keeps the agent's token in the service's index folder, not in
 `config.json`. On the NAS, `quickseek-agent clients` lists paired PCs and

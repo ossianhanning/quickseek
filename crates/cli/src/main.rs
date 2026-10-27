@@ -273,6 +273,14 @@ enum RemoteCmd {
     },
     /// Forget an agent; a folder index of the same share comes back if you had one.
     Remove { host: String },
+    /// Show a share under a local path instead of its UNC root, e.g. a mapped
+    /// drive (H:); files then open through it. Checked from this session.
+    Alias {
+        /// The share's UNC root (\\host\share) or its current alias.
+        unc: String,
+        /// The local path (H:, or another \\server\share name); leave out to go back to the UNC root.
+        alias: Option<String>,
+    },
     /// Turn one share of an agent off or on (by its UNC root).
     Enable {
         unc: String,
@@ -344,9 +352,13 @@ fn remotes(cli: &Cli, action: &RemoteCmd) -> anyhow::Result<()> {
                     st(&r, "fingerprint")
                 );
                 for sh in r["shares"].as_array().into_iter().flatten() {
+                    let path = match st(sh, "alias").as_str() {
+                        "" => st(sh, "unc"),
+                        a => format!("{a} ({})", st(sh, "unc")),
+                    };
                     println!(
                         "  {:<28} {:<20} {:>10} entries  {}",
-                        st(sh, "unc"),
+                        path,
                         st(sh, "state"),
                         sh["entries"].as_u64().unwrap_or(0),
                         st(sh, "root")
@@ -373,17 +385,33 @@ fn remotes(cli: &Cli, action: &RemoteCmd) -> anyhow::Result<()> {
                 r["agent"].as_str().unwrap_or("?")
             );
             for sh in r["shares"].as_array().into_iter().flatten() {
-                println!(
-                    "  {}  ←  {}",
-                    sh["unc"].as_str().unwrap_or(""),
-                    sh["root"].as_str().unwrap_or("")
-                );
+                let unc = sh["unc"].as_str().unwrap_or("");
+                println!("  {unc}  ←  {}", sh["root"].as_str().unwrap_or(""));
+                if sh["alias"].as_str().unwrap_or("").is_empty() {
+                    for d in quickseek_core::remote::mapped_drives_for(unc) {
+                        println!(
+                            "    {d} maps here: `quickseek remotes alias {unc} {d}` shows it as {d}\\"
+                        );
+                    }
+                }
             }
             println!("`quickseek remotes list` shows when they're ready.");
         }
         RemoteCmd::Remove { host } => {
             call(&mut be, json!({ "op": "remove", "host": host }))?;
             println!("removed {host} (`quickseek-agent revoke` on the NAS forgets this PC there)");
+        }
+        RemoteCmd::Alias { unc, alias } => {
+            let alias = quickseek_core::remote::check_alias(unc, alias.as_deref().unwrap_or(""))
+                .map_err(anyhow::Error::msg)?;
+            let r = call(
+                &mut be,
+                json!({ "op": "alias", "unc": unc, "alias": alias }),
+            )?;
+            println!(
+                "{unc} is now indexed as {} (fetched again under that path)",
+                r["path"].as_str().unwrap_or("?")
+            );
         }
         RemoteCmd::Enable { unc, on } => {
             call(

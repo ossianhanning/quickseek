@@ -569,7 +569,7 @@ fn desired(cfg: &Config, only: &[char]) -> Vec<(String, char, VolumeKind, Option
         }
         for r in &cfg.remotes {
             for s in r.shares.iter().filter(|s| s.enabled) {
-                let key = folder::root_name(&s.unc);
+                let key = s.key();
                 if !key.is_empty() && !out.iter().any(|o| o.0.eq_ignore_ascii_case(&key)) {
                     out.push((key, '\\', VolumeKind::Remote, None));
                 }

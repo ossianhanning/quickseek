@@ -119,10 +119,54 @@ pub fn pair_with(host: &str, port: u16, code: &str) -> Result<RemoteConfig, Stri
                 unc: default_unc(host, &s.name),
                 name: s.name,
                 root: s.root,
+                alias: String::new(),
                 enabled: true,
             })
             .collect(),
     })
+}
+
+/// Checks, in the caller's session, that `alias` reaches the share at
+/// `unc` from this PC: a mapped drive must map to that share, and the path
+/// must be reachable. Returns it normalized (`H:`, `\\server\share`).
+pub fn check_alias(unc: &str, alias: &str) -> Result<String, String> {
+    let alias = crate::folder::root_name(alias.trim());
+    if alias.is_empty() {
+        return Ok(alias);
+    }
+    let unc = crate::folder::root_name(unc);
+    let bytes = alias.as_bytes();
+    let drive = bytes.len() == 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic();
+    if drive {
+        let mapped =
+            crate::folder::root_name(&crate::ntfs::win::universal_path(&format!("{alias}\\")));
+        if mapped.eq_ignore_ascii_case(&alias) {
+            return Err(format!("{alias} isn't a mapped network drive here"));
+        }
+        if !mapped.eq_ignore_ascii_case(&unc) {
+            return Err(format!("{alias} maps to {mapped}, not {unc}"));
+        }
+    } else if !alias.starts_with("\\\\") {
+        return Err(format!(
+            "{alias}: give a drive letter (H:) or a UNC path (\\\\server\\share)"
+        ));
+    }
+    if !std::path::Path::new(&format!("{alias}\\")).is_dir() {
+        return Err(format!("{alias} isn't reachable from this PC right now"));
+    }
+    Ok(alias)
+}
+
+/// Mapped drives of this session that point at `unc` (to suggest as aliases).
+pub fn mapped_drives_for(unc: &str) -> Vec<String> {
+    let unc = crate::folder::root_name(unc);
+    (b'A'..=b'Z')
+        .map(|c| format!("{}:", c as char))
+        .filter(|d| {
+            crate::folder::root_name(&crate::ntfs::win::universal_path(&format!("{d}\\")))
+                .eq_ignore_ascii_case(&unc)
+        })
+        .collect()
 }
 
 /// Forgets an agent's token (the config entry is removed by the caller).
@@ -157,9 +201,10 @@ pub fn action(eng: &crate::engine::Engine, json: &str) -> Result<String, String>
                             .map(|sh| {
                                 let st = status
                                     .iter()
-                                    .find(|v| v.key.eq_ignore_ascii_case(&sh.unc));
+                                    .find(|v| v.key.eq_ignore_ascii_case(&sh.key()));
                                 json!({
                                     "name": sh.name, "root": sh.root, "unc": sh.unc,
+                                    "alias": sh.alias, "path": sh.key(),
                                     "enabled": sh.enabled,
                                     "state": st.map_or(if sh.enabled { "starting" } else { "off" }, |v| v.state.as_str()),
                                     "entries": st.map_or(0, |v| v.entries),
@@ -194,6 +239,7 @@ pub fn action(eng: &crate::engine::Engine, json: &str) -> Result<String, String>
                 for sh in &mut rc.shares {
                     if let Some(o) = old.shares.iter().find(|o| o.name == sh.name) {
                         sh.unc = o.unc.clone();
+                        sh.alias = o.alias.clone();
                         sh.enabled = o.enabled;
                     }
                 }
@@ -216,7 +262,7 @@ pub fn action(eng: &crate::engine::Engine, json: &str) -> Result<String, String>
             eng.set_config(cfg).map_err(|e| format!("{e:#}"))?;
             forget(&host);
             for sh in &old.shares {
-                let _ = std::fs::remove_file(cache_path(&sh.unc));
+                let _ = std::fs::remove_file(cache_path(&sh.key()));
             }
             json!({ "removed": old.host })
         }
@@ -227,11 +273,38 @@ pub fn action(eng: &crate::engine::Engine, json: &str) -> Result<String, String>
                 .remotes
                 .iter_mut()
                 .flat_map(|r| r.shares.iter_mut())
-                .find(|sh| sh.unc.eq_ignore_ascii_case(unc))
+                .find(|sh| sh.is_root(unc))
                 .ok_or_else(|| format!("{unc} isn't a NAS share here"))?;
             sh.enabled = on;
             eng.set_config(cfg).map_err(|e| format!("{e:#}"))?;
             json!({ "unc": unc, "enabled": on })
+        }
+        "alias" => {
+            // Checked by the caller in the user's session ([`check_alias`]):
+            // the service can't see mapped drives.
+            let unc = s("unc");
+            let alias = crate::folder::root_name(s("alias"));
+            let taken = |k: &str| {
+                eng.status().iter().any(|v| v.key.eq_ignore_ascii_case(k))
+                    && cfg.remote_share(k).is_none_or(|(_, sh)| !sh.is_root(unc))
+            };
+            if !alias.is_empty() && taken(&alias) {
+                return Err(format!("{alias} is already indexed as another volume"));
+            }
+            let sh = cfg
+                .remotes
+                .iter_mut()
+                .flat_map(|r| r.shares.iter_mut())
+                .find(|sh| sh.is_root(unc))
+                .ok_or_else(|| format!("{unc} isn't a NAS share here"))?;
+            let old = sh.key();
+            sh.alias = alias.clone();
+            let new = sh.key();
+            eng.set_config(cfg).map_err(|e| format!("{e:#}"))?;
+            if !old.eq_ignore_ascii_case(&new) {
+                let _ = std::fs::remove_file(cache_path(&old));
+            }
+            json!({ "unc": unc, "alias": alias, "path": new })
         }
         op => return Err(format!("unknown NAS agent action {op:?}")),
     };
@@ -707,6 +780,19 @@ mod tests {
         ));
         assert_eq!(paths(&back, "mkv").len(), 2);
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn aliases_are_checked() {
+        assert_eq!(check_alias(r"\\nas\data", "").unwrap(), "");
+        assert!(check_alias(r"\\nas\data", "data").is_err());
+        // A free drive letter maps to nothing.
+        let free = (b'D'..=b'Z')
+            .map(|c| format!("{}:", c as char))
+            .find(|d| !std::path::Path::new(&format!("{d}\\")).exists())
+            .unwrap();
+        assert!(check_alias(r"\\nas\data", &free).is_err());
+        assert!(mapped_drives_for(r"\\no-such-host-quickseek\x").is_empty());
     }
 
     #[test]

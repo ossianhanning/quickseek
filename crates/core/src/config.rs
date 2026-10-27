@@ -78,10 +78,33 @@ pub struct RemoteShare {
     pub name: String,
     /// Its path on the NAS (`/volume1/data`), for display.
     pub root: String,
-    /// Where Windows reaches it (`\\hearth.local\data`): the volume's key and
-    /// the start of every path in it.
+    /// The share's UNC root (`\\hearth.local\data`): it replaces a folder
+    /// index of this root, and is the volume's key unless `alias` is set.
     pub unc: String,
+    /// How this PC reaches the share instead (`H:` for a mapped drive, or
+    /// another name for the server): the volume's key and the start of every
+    /// path in it, so files open through it. Empty: `unc`.
+    pub alias: String,
     pub enabled: bool,
+}
+
+impl RemoteShare {
+    /// The volume's key and path root: the alias, else the UNC root.
+    pub fn key(&self) -> String {
+        crate::folder::root_name(if self.alias.trim().is_empty() {
+            &self.unc
+        } else {
+            &self.alias
+        })
+    }
+
+    /// Whether `key` (a volume key or folder path) is this share's root,
+    /// as its UNC root or its alias.
+    pub fn is_root(&self, key: &str) -> bool {
+        let key = key.trim_end_matches('\\');
+        self.unc.trim_end_matches('\\').eq_ignore_ascii_case(key)
+            || self.key().eq_ignore_ascii_case(key)
+    }
 }
 
 impl Default for RemoteShare {
@@ -90,6 +113,7 @@ impl Default for RemoteShare {
             name: String::new(),
             root: String::new(),
             unc: String::new(),
+            alias: String::new(),
             enabled: true,
         }
     }
@@ -211,11 +235,10 @@ impl Config {
 
     /// The enabled remote share whose UNC root is `key`.
     pub fn remote_share(&self, key: &str) -> Option<(&RemoteConfig, &RemoteShare)> {
-        let key = key.trim_end_matches('\\');
         self.remotes.iter().find_map(|r| {
             r.shares
                 .iter()
-                .find(|s| s.enabled && s.unc.trim_end_matches('\\').eq_ignore_ascii_case(key))
+                .find(|s| s.enabled && s.is_root(key))
                 .map(|s| (r, s))
         })
     }
@@ -412,6 +435,11 @@ mod tests {
         };
         assert!(c.folder_replaced_by(r"\\hearth.local\data").is_some());
         assert!(c.folder_replaced_by(r"\\hearth.local\media").is_none());
+        // With an alias the volume is keyed by it, and still replaces the folder.
+        c.remotes[0].shares[0].alias = "H:".into();
+        assert_eq!(c.remotes[0].shares[0].key(), "H:");
+        assert!(c.folder_replaced_by(r"\\hearth.local\data").is_some());
+        assert!(c.remote_share(r"H:\").is_some());
         // A share turned off gives the root back to the folder.
         c.remotes[0].shares[0].enabled = false;
         assert!(c.folder_replaced_by(r"\\hearth.local\data").is_none());

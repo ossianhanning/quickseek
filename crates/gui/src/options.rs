@@ -66,6 +66,8 @@ pub const ID_NAS_PAIR: i32 = 973;
 pub const ID_NAS_REMOVE: i32 = 974;
 pub const ID_NAS_TOGGLE: i32 = 975;
 pub const ID_NAS_STATE: i32 = 976;
+pub const ID_NAS_ALIAS: i32 = 977;
+pub const ID_NAS_SET_ALIAS: i32 = 978;
 
 const TABS: [&str; 7] = [
     "General", "Volumes", "Folders", "Exclude", "Index", "Shares", "NAS",
@@ -390,11 +392,15 @@ fn fill_nas(app: &App) {
             );
             o.nas_rows.push((host.clone(), None));
             for sh in r["shares"].as_array().into_iter().flatten() {
+                let path = match st(sh, "alias").as_str() {
+                    "" => st(sh, "unc"),
+                    a => format!("{a}  ({})", st(sh, "unc")),
+                };
                 lb_add(
                     lb,
                     &format!(
                         "      {}   {}{}   {}",
-                        st(sh, "unc"),
+                        path,
                         st(sh, "state"),
                         match sh["entries"].as_u64() {
                             Some(n) if n > 0 => format!(", {} entries", shell::group(n)),
@@ -767,6 +773,54 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     show_tab(t);
                 }
                 ID_FOLDERS if code == LBN_SELCHANGE => on_folder_select(),
+                ID_NAS_LIST if code == LBN_SELCHANGE => OPT.with(|o| {
+                    let b = o.borrow();
+                    let o = b.as_ref().unwrap();
+                    let row = lb_sel(item(o.hwnd, ID_NAS_LIST)).and_then(|i| o.nas_rows.get(i));
+                    let alias = match row {
+                        Some((_, Some(unc))) => o
+                            .cfg
+                            .remotes
+                            .iter()
+                            .flat_map(|r| &r.shares)
+                            .find(|s| s.is_root(unc))
+                            .map(|s| s.alias.clone())
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    w::set_text(item(o.hwnd, ID_NAS_ALIAS), &alias);
+                }),
+                ID_NAS_SET_ALIAS => {
+                    let row = OPT.with(|o| {
+                        let b = o.borrow();
+                        let o = b.as_ref().unwrap();
+                        lb_sel(item(o.hwnd, ID_NAS_LIST)).and_then(|i| o.nas_rows.get(i).cloned())
+                    });
+                    match row {
+                        Some((_, Some(unc))) => {
+                            // Checked here, in the user's session: the service
+                            // can't see mapped drives.
+                            let typed = w::get_text(ctl(ID_NAS_ALIAS));
+                            match quickseek_core::remote::check_alias(&unc, &typed) {
+                                Ok(alias) => nas_action(
+                                    app,
+                                    serde_json::json!({ "op": "alias", "unc": unc, "alias": alias }),
+                                ),
+                                Err(e) => {
+                                    w::message_box(hwnd, &e, "quickseek", MB_OK | MB_ICONWARNING);
+                                }
+                            }
+                        }
+                        _ => {
+                            w::message_box(
+                                hwnd,
+                                "Select one of the agent's shares first.",
+                                "quickseek",
+                                MB_OK | MB_ICONINFORMATION,
+                            );
+                        }
+                    }
+                }
                 ID_NAS_PAIR => {
                     let host = w::get_text(ctl(ID_NAS_HOST)).trim().to_string();
                     let code = w::get_text(ctl(ID_NAS_CODE)).trim().to_string();
@@ -1801,6 +1855,43 @@ pub fn open(app: &App) {
             Some(6),
             x0 + full - 120,
             y0 + 94,
+            120,
+            28,
+        );
+        add(
+            "Static",
+            "Local path for the selected share (e.g. a mapped drive):",
+            0,
+            0,
+            -1,
+            Some(6),
+            x0 + full - 120,
+            y0 + 132,
+            120,
+            48,
+        );
+        let alias = add(
+            "Edit",
+            "",
+            edit_style,
+            WS_EX_CLIENTEDGE,
+            ID_NAS_ALIAS,
+            Some(6),
+            x0 + full - 120,
+            y0 + 184,
+            120,
+            24,
+        );
+        send(alias, EM_SETCUEBANNER, 1, wide("H:").as_ptr() as isize);
+        add(
+            "Button",
+            "Set Path",
+            btn,
+            0,
+            ID_NAS_SET_ALIAS,
+            Some(6),
+            x0 + full - 120,
+            y0 + 214,
             120,
             28,
         );
