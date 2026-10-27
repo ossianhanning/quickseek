@@ -45,9 +45,9 @@ pub struct Options {
     /// Shown on the PC (default: the host name).
     pub name: String,
     /// After the first walk, walker threads read at idle I/O priority: they
-    /// only get the disks when nothing else wants them. The first walk runs
-    /// at normal priority (on a busy NAS an idle one took ~4x as long), and
-    /// the live changes' few reads never wait.
+    /// only get the disks when nothing else wants them. The first walk (which
+    /// the PC waits for) runs at normal priority, and the live changes' few
+    /// reads never wait.
     pub idle_walks: bool,
 }
 

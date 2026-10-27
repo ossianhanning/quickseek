@@ -201,10 +201,11 @@ comparisons and series then cover the NAS even across weeks the PC was off.
 - CPU: the walk uses at most 4 threads (`--threads`, default min(4, cores)); live tracking is one
   thread mostly asleep. Compose sets `cpus: 1.0` and the process runs at `nice 10`. Walks after
   the first read at idle I/O priority (`ioprio_set` class idle, per walker thread), so Plex and
-  Samba win any contention; the first walk and the reads behind live changes use normal priority.
-  On Hearth, with the disks saturated by a cloud sync (I/O pressure 80-90 %), an idle-priority
-  first walk managed about 200 entries a second under mq-deadline, a quarter of a normal one, and
-  an idle-priority `lstat` behind a live change could wait for mq-deadline's 10 s aging.
+  Samba win any contention; the first walk (a one-time cost, which the PC is waiting for) and the
+  reads behind live changes use normal priority. Under mq-deadline an idle-class read waits until
+  the disk is otherwise free or for its 10 s aging, so on a NAS whose disks are saturated (Hearth
+  during a cloud sync: I/O pressure 80-90 %) an idle first walk crawls and an idle `lstat` would
+  delay live changes by seconds.
 - I/O: the safety re-walk runs once a day (configurable, 0 = never); there is no polling.
 - Network: one TLS connection per share and PC; idle traffic is a ping every 30 s.
 - Privileges: `CAP_SYS_ADMIN` (fanotify) and `CAP_DAC_READ_SEARCH` (read every directory), a
