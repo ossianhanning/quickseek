@@ -229,8 +229,25 @@ enum FolderCmd {
         /// Don't watch for changes (rely on rescans).
         #[arg(long)]
         no_watch: bool,
+        /// Sign in to the share as this user (DOMAIN\name, name@domain, or a
+        /// name on the server); asks for the password.
+        #[arg(long)]
+        user: Option<String>,
     },
+    /// Remove a folder (and its login).
     Remove {
+        path: String,
+    },
+    /// Sign in to a share with its own user name and password (asked for,
+    /// never on the command line), instead of yours.
+    Login {
+        path: String,
+        /// DOMAIN\name, name@domain, or a name on the server.
+        #[arg(long)]
+        user: String,
+    },
+    /// Forget a share's login (it's reached as you again).
+    Logout {
         path: String,
     },
 }
@@ -327,6 +344,69 @@ fn edit_config(
         path.display()
     );
     Ok(())
+}
+
+/// The service (folder logins are kept only there).
+fn service(cli: &Cli) -> anyhow::Result<ipc::Remote> {
+    if cli.local {
+        bail!("folder logins are kept by the Quickseek service; leave out --local");
+    }
+    let c = ipc::Client::connect()
+        .context("folder logins are kept by the Quickseek service, which isn't running")?;
+    Ok(ipc::Remote::new(c))
+}
+
+/// Asks for `user`'s password and has the service sign in to `path` with it.
+fn folder_login(cli: &Cli, path: &str, user: &str) -> anyhow::Result<()> {
+    let mut be = service(cli)?;
+    let password = read_password(&format!("Password for {user} on {path}: "))?;
+    be.folder_login(path, user, password)
+        .map_err(anyhow::Error::msg)?;
+    println!("{path}: signs in as {user}");
+    Ok(())
+}
+
+/// Reads a line from the console without showing it.
+fn read_password(prompt: &str) -> anyhow::Result<quickseek_core::credstore::Secret> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "the password is typed into the console: run this in PowerShell, Command Prompt \
+             or Windows Terminal (from Git Bash: winpty quickseek ...)"
+        );
+    }
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+    crossterm::terminal::enable_raw_mode()?;
+    let mut pw = String::new();
+    let result = loop {
+        match read() {
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match k.code {
+                KeyCode::Enter => break Ok(()),
+                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    break Err(anyhow::anyhow!("cancelled"));
+                }
+                KeyCode::Esc => break Err(anyhow::anyhow!("cancelled")),
+                KeyCode::Backspace => {
+                    pw.pop();
+                }
+                KeyCode::Char(c) => pw.push(c),
+                _ => {}
+            },
+            Ok(Event::Paste(t)) => pw.push_str(&t),
+            Ok(_) => {}
+            Err(e) => break Err(e.into()),
+        }
+    };
+    let _ = crossterm::terminal::disable_raw_mode();
+    eprintln!();
+    let pw = quickseek_core::credstore::Secret::new(pw);
+    result?;
+    if pw.is_empty() {
+        bail!("no password given");
+    }
+    Ok(pw)
 }
 
 fn show_config(cli: &Cli) -> anyhow::Result<quickseek_core::config::Config> {
@@ -744,8 +824,9 @@ fn main() -> anyhow::Result<()> {
         Cmd::Folders { ref action } => match action {
             FolderCmd::List => {
                 for f in show_config(&cli)?.folders {
+                    let user = f.user.map(|u| format!(" user={u}")).unwrap_or_default();
                     println!(
-                        "{}  watch={} rescan={}min",
+                        "{}  watch={} rescan={}min{user}",
                         f.path, f.watch, f.rescan_minutes
                     );
                 }
@@ -754,6 +835,7 @@ fn main() -> anyhow::Result<()> {
                 path,
                 rescan_minutes,
                 no_watch,
+                user,
             } => {
                 let unc = win::universal_path(path);
                 let path = quickseek_core::folder::root_name(&unc);
@@ -767,6 +849,7 @@ fn main() -> anyhow::Result<()> {
                     path: path.clone(),
                     watch: !no_watch,
                     rescan_minutes: *rescan_minutes,
+                    user: None,
                 };
                 edit_config(&cli, |c| {
                     c.folders.retain(|f| !f.path.eq_ignore_ascii_case(&path));
@@ -774,6 +857,20 @@ fn main() -> anyhow::Result<()> {
                     Ok(())
                 })?;
                 println!("added {path}");
+                if let Some(user) = user {
+                    folder_login(&cli, &path, user)?;
+                }
+            }
+            FolderCmd::Login { path, user } => {
+                let path = quickseek_core::folder::root_name(&win::universal_path(path));
+                folder_login(&cli, &path, user)?;
+            }
+            FolderCmd::Logout { path } => {
+                let path = quickseek_core::folder::root_name(&win::universal_path(path));
+                service(&cli)?
+                    .folder_login(&path, "", Default::default())
+                    .map_err(anyhow::Error::msg)?;
+                println!("{path}: login removed");
             }
             FolderCmd::Remove { path } => {
                 let path = quickseek_core::folder::root_name(&win::universal_path(path));

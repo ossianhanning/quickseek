@@ -2,6 +2,7 @@
 //! scan → catch up), live watcher threads, volumes appearing/disappearing,
 //! configuration, run history and multi-volume search.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -261,6 +262,10 @@ pub struct VolumeStatus {
 /// a connecting client; `None` = this process's own identity).
 pub type TokenSlot = Arc<RwLock<Option<Arc<crate::ntfs::win::Token>>>>;
 
+/// Network folders with a login of their own ([`Engine::set_folder_login`]):
+/// signed-in tokens by [`crate::credstore::key`]. They win over [`TokenSlot`].
+pub type LoginSlot = Arc<RwLock<HashMap<String, Arc<crate::ntfs::win::Token>>>>;
+
 type Reporter = Box<dyn Fn(&str, &anyhow::Result<LoadReport>) + Send + Sync>;
 
 #[derive(Default)]
@@ -284,6 +289,10 @@ pub struct Engine {
     opts: EngineOptions,
     stop: Arc<AtomicBool>,
     net_token: TokenSlot,
+    logins: LoginSlot,
+    /// The stored logins (with passwords), as saved in the service's
+    /// credential file.
+    login_store: Mutex<crate::credstore::Logins>,
     /// Index options changed in a way that needs fresh data (date created on).
     rescan_requested: AtomicBool,
     /// Folder-size snapshots (the service and in-process GUI keep them).
@@ -565,7 +574,7 @@ impl Engine {
             .as_deref()
             .map(RunHistory::load)
             .unwrap_or_default();
-        Engine {
+        let e = Engine {
             volumes: RwLock::new(Vec::new()),
             loading: Mutex::new(Vec::new()),
             config: RwLock::new(config),
@@ -576,10 +585,120 @@ impl Engine {
             opts,
             stop: Arc::new(AtomicBool::new(false)),
             net_token: Arc::new(RwLock::new(None)),
+            logins: Arc::new(RwLock::new(HashMap::new())),
+            login_store: Mutex::new(crate::credstore::Logins::new()),
             rescan_requested: AtomicBool::new(false),
             history: std::sync::OnceLock::new(),
             snap_try: Mutex::new(None),
+        };
+        e.load_logins();
+        e
+    }
+
+    /// The service keeps folder logins; other processes use their own
+    /// identity (and the user's mapped connections).
+    fn login_file(&self) -> Option<PathBuf> {
+        std::env::var_os("QUICKSEEK_SERVICE")?;
+        self.opts
+            .config_path
+            .as_deref()
+            .map(crate::credstore::path_beside)
+    }
+
+    fn load_logins(&self) {
+        let Some(file) = self.login_file() else {
+            return;
+        };
+        let mut store = crate::credstore::load(&file);
+        let cfg = self.config.read();
+        store.retain(|k, _| {
+            cfg.folders
+                .iter()
+                .any(|f| crate::credstore::key(&f.path) == *k)
+        });
+        let mut logins = self.logins.write();
+        for (k, l) in &store {
+            match win::Token::logon_network(&l.user, l.password.expose(), &server_name(k)) {
+                Ok(t) => {
+                    logins.insert(k.clone(), Arc::new(t));
+                }
+                Err(e) => log::warn!("{k}: signing in as {} failed: {e}", l.user),
+            }
         }
+        drop((logins, cfg));
+        if !store.is_empty() {
+            log::info!("{} network folder login(s) loaded", store.len());
+        }
+        *self.login_store.lock() = store;
+    }
+
+    /// From now on the service reaches the network folder `path` as `user`
+    /// (like `runas /netonly`), not as the connecting client; an empty
+    /// `user` forgets the login. The password is checked against the share
+    /// first when it's reachable, and kept encrypted ([`crate::credstore`]).
+    pub fn set_folder_login(
+        &self,
+        path: &str,
+        user: &str,
+        password: &crate::credstore::Secret,
+    ) -> Result<(), String> {
+        use crate::credstore::{Login, key};
+        let file = self.login_file().ok_or(
+            "folder logins are kept by the Quickseek service, and it isn't the one answering",
+        )?;
+        let root = folder::root_name(path);
+        folder::check_root(&root)?;
+        if !win::is_network_path(&root) {
+            return Err(format!(
+                "{root} isn't a network share; only shares take a login"
+            ));
+        }
+        let k = key(&root);
+        if !self.config.read().folders.iter().any(|f| key(&f.path) == k) {
+            return Err(format!("{root} isn't an indexed folder; add it first"));
+        }
+        let user = user.trim();
+        let mut store = self.login_store.lock();
+        if user.is_empty() {
+            store.remove(&k);
+            self.logins.write().remove(&k);
+            log::info!("{root}: login removed");
+        } else {
+            if password.is_empty() {
+                return Err("a password is needed".into());
+            }
+            let tok = win::Token::logon_network(user, password.expose(), &server_name(&k))
+                .map_err(|e| format!("signing in as {user}: {e}"))?;
+            // Windows only checks the password when the share is opened.
+            match probe_as(&root, &tok) {
+                Err(e) if e.raw_os_error().is_some_and(is_login_error) => {
+                    return Err(format!(
+                        "{root} refused the user name or password ({e}); nothing was saved"
+                    ));
+                }
+                Err(e) => log::info!("{root}: not reachable to check the login now ({e})"),
+                Ok(()) => {}
+            }
+            store.insert(
+                k.clone(),
+                Login {
+                    user: user.to_string(),
+                    password: password.clone(),
+                },
+            );
+            self.logins.write().insert(k.clone(), Arc::new(tok));
+            log::info!("{root}: signs in as {user}");
+        }
+        crate::credstore::save(&file, &store)
+            .map_err(|e| format!("saving the login in {}: {e}", file.display()))?;
+        drop(store);
+        // Show the user name in the config, and walk the share again with it.
+        self.set_config(self.config())
+            .map_err(|e| format!("{e:#}"))?;
+        for v in self.volumes.read().iter().filter(|v| key(&v.key) == k) {
+            v.rewalk.store(true, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// Keep folder-size snapshots in `dir` (see [`crate::history`]).
@@ -900,9 +1019,10 @@ impl Engine {
                 // Shares can trust their cache at startup (until the rescan interval).
                 let walk_now = !had_cache || stale || !network || cfg.share_rewalk_on_start;
                 let (vv, stop, tok) = (v.clone(), self.stop.clone(), self.net_token.clone());
+                let logins = self.logins.clone();
                 std::thread::Builder::new()
                     .name(format!("dir-{letter}"))
-                    .spawn(move || watch_folder(vv, fcfg, stop, tok, walk_now))?;
+                    .spawn(move || watch_folder(vv, fcfg, stop, tok, logins, walk_now))?;
                 Ok((v, rep))
             }
         }
@@ -1018,6 +1138,25 @@ impl Engine {
     /// Applies and saves a new configuration. Rules and diacritic mode take
     /// effect immediately; volume/folder changes on the next sync.
     pub fn set_config(&self, c: Config) -> anyhow::Result<()> {
+        let mut c = c;
+        if let Some(file) = self.login_file() {
+            // Logins go with their folder; the user names shown come from them.
+            use crate::credstore::key;
+            let mut store = self.login_store.lock();
+            let before = store.len();
+            store.retain(|k, _| c.folders.iter().any(|f| key(&f.path) == *k));
+            self.logins.write().retain(|k, _| store.contains_key(k));
+            if store.len() != before {
+                crate::credstore::save(&file, &store)?;
+                log::info!(
+                    "{} folder login(s) removed with their folders",
+                    before - store.len()
+                );
+            }
+            for f in &mut c.folders {
+                f.user = store.get(&key(&f.path)).map(|l| l.user.clone());
+            }
+        }
         if let Some(p) = &self.opts.config_path {
             c.save(p)?;
         }
@@ -1326,10 +1465,49 @@ fn waiting_state(error: Option<String>) -> String {
     }
 }
 
-/// Sleeps up to `d`, waking early when the volume is dropped.
+/// Windows errors that mean the server refused who we are (a wrong user
+/// name or password, a locked or expired account, no access).
+fn is_login_error(code: i32) -> bool {
+    matches!(
+        code,
+        5 | 86 | 1326 | 1327 | 1328 | 1329 | 1330 | 1331 | 1907 | 1909 | 2202
+    )
+}
+
+/// The server of a share key (`\\nas.local\data` -> `nas`), the domain a bare
+/// user name is sent with: a NAS's local accounts.
+fn server_name(key: &str) -> String {
+    let server = key
+        .trim_start_matches('\\')
+        .split('\\')
+        .next()
+        .unwrap_or("");
+    server.split('.').next().unwrap_or(server).to_string()
+}
+
+/// Opens `root` as `tok` (on a thread of its own, which acts as it).
+fn probe_as(root: &str, tok: &win::Token) -> std::io::Result<()> {
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            tok.impersonate();
+            let r = std::fs::metadata(format!("{root}\\")).map(|_| ());
+            win::Token::revert();
+            r
+        })
+        .join()
+        .unwrap_or_else(|_| Err(std::io::Error::other("probe thread panicked")))
+    })
+}
+
+/// Sleeps up to `d`, waking early when the volume is dropped or asked to
+/// walk again.
 fn nap(v: &Volume, stop: &AtomicBool, d: Duration) {
     let t = Instant::now();
-    while t.elapsed() < d && v.alive.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+    while t.elapsed() < d
+        && v.alive.load(Ordering::Relaxed)
+        && !stop.load(Ordering::Relaxed)
+        && !v.rewalk.load(Ordering::Relaxed)
+    {
         std::thread::sleep(Duration::from_millis(200));
     }
 }
@@ -1341,6 +1519,7 @@ fn watch_folder(
     cfg: FolderConfig,
     stop: Arc<AtomicBool>,
     token: TokenSlot,
+    logins: LoginSlot,
     walk_now: bool,
 ) {
     let root = PathBuf::from(format!("{}\\", v.key));
@@ -1353,8 +1532,18 @@ fn watch_folder(
     let mut watcher: Option<Watcher> = None;
     let mut pending_old = None;
     while !stop.load(Ordering::Relaxed) && v.alive.load(Ordering::Relaxed) {
-        // The service reaches shares as the user who last connected.
-        let tok = if network { token.read().clone() } else { None };
+        // The service reaches shares with the folder's own login, or else as
+        // the user who last connected.
+        let login = if network {
+            logins.read().get(&crate::credstore::key(&v.key)).cloned()
+        } else {
+            None
+        };
+        let tok = match &login {
+            Some(t) => Some(t.clone()),
+            None if network => token.read().clone(),
+            None => None,
+        };
         match &tok {
             Some(t) => {
                 t.impersonate();
@@ -1383,15 +1572,37 @@ fn watch_folder(
             if !root.is_dir() {
                 let running_as_service = std::env::var_os("QUICKSEEK_SERVICE").is_some();
                 let waiting = network && tok.is_none() && running_as_service;
+                let denied = network
+                    && !waiting
+                    && std::fs::metadata(&root)
+                        .err()
+                        .and_then(|e| e.raw_os_error())
+                        .is_some_and(is_login_error);
                 if waiting {
                     v.set_state(&waiting_state(crate::ipc::token_error()));
+                } else if denied && login.is_some() {
+                    v.set_state("access denied: check the user name and password");
+                } else if denied {
+                    v.set_state(
+                        "access denied: set a user name and password for this share \
+                         (quickseek folders login)",
+                    );
                 } else {
                     v.set_state("offline");
                 }
                 watcher = None;
                 needs_walk = true;
-                // Credentials come with the next client: look again soon.
-                nap(&v, &stop, Duration::from_secs(if waiting { 2 } else { 30 }));
+                // Credentials come with the next client: look again soon. A
+                // refused login isn't retried often (the server might lock
+                // the account); a new one wakes this up (rewalk).
+                let wait = if waiting {
+                    5
+                } else if denied {
+                    300
+                } else {
+                    30
+                };
+                nap(&v, &stop, Duration::from_secs(wait));
                 continue;
             }
             if v.state.lock().as_str() != "cached" {
@@ -1448,6 +1659,38 @@ fn watch_folder(
 mod tests {
     use super::*;
     use crate::index::tests::sample;
+
+    /// A bare user name goes to the server as its domain (a NAS's own
+    /// accounts); logins are only kept by the service.
+    #[test]
+    fn folder_logins() {
+        assert_eq!(server_name(r"\\hearth.local\data"), "hearth");
+        assert_eq!(server_name(r"\\nas\media\sub"), "nas");
+        assert!(is_login_error(1326) && is_login_error(86) && !is_login_error(53));
+        let e = Engine::new(EngineOptions::default());
+        let err = e
+            .set_folder_login(
+                r"\\nas\data",
+                "me",
+                &crate::credstore::Secret::new("x".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("service"), "{err}");
+    }
+
+    /// Signing in for the network only: no server is asked, and the token
+    /// can be acted as.
+    #[test]
+    fn network_logon_token() {
+        let t = win::Token::logon_network("quickseek-test", "not-a-password", "nowhere").unwrap();
+        assert_eq!(t.level(), Some(2));
+        std::thread::spawn(move || {
+            assert!(t.impersonate());
+            win::Token::revert();
+        })
+        .join()
+        .unwrap();
+    }
 
     /// A save that fails shows in the status (and leaves no temporary file);
     /// after a disk-full failure, saves wait for room; the next good save clears it.
@@ -1610,6 +1853,7 @@ mod tests {
                 path: key.clone(),
                 watch: true,
                 rescan_minutes: 0,
+                user: None,
             }],
             ..Default::default()
         };
@@ -1728,6 +1972,7 @@ mod unc_tests {
                 path: unc.clone(),
                 watch: true,
                 rescan_minutes: 0,
+                user: None,
             }],
             ..Default::default()
         }
@@ -1795,6 +2040,7 @@ mod unc_tests {
                 path: unc.clone(),
                 watch: true,
                 rescan_minutes: 0,
+                user: None,
             }],
             ..Default::default()
         };

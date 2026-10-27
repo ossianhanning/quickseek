@@ -175,6 +175,20 @@ diacritics" (Search → Match Diacritics off) to make `Angstrom` find
   shares show "waiting for credentials" and serve the cached index; if the
   identity can't be borrowed, the status says why ("no credentials: …"). An
   unreachable share shows "offline", keeps its last index and is retried.
+- **Shares with their own login.** When a share takes a different user name
+  and password than your Windows account (a NAS account, say), give it a
+  login: `quickseek folders login \\nas\data --user nasuser` (or
+  `folders add … --user nasuser`, or Options → Folders → Sign in as). The
+  password is asked for and typed into the console (never on the command
+  line); the service checks it against the share, keeps it encrypted for its
+  own account only (`%ProgramData%\quickseek\credentials.bin`, DPAPI), and
+  signs in with it like `runas /netonly`, also after a reboot with nobody
+  logged on. A bare user name is sent with the server's name as its domain;
+  `DOMAIN\name` or `name@domain` choose another. A refused login shows
+  "access denied: check the user name and password" and is retried only
+  every five minutes, so the server doesn't lock the account.
+  `quickseek folders logout \\nas\data` forgets it; removing the folder
+  does too.
   Shares added in the GUI default to watching plus an hourly rescan, in case
   change notifications get lost over a WAN link.
 - **Drives coming and going** are noticed within a few seconds (the service

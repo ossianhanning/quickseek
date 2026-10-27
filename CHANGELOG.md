@@ -6,6 +6,11 @@
   before reading from the pipe, which Windows refuses (error 1368), so shares stayed at "waiting
   for credentials" forever. The status now says what it's waiting for, or why borrowing the
   identity failed.
+- **Shares with their own user name and password.** `quickseek folders login <share> --user
+  <name>` (or `folders add … --user`, or Options → Folders) asks for the password; the service
+  checks it, keeps it encrypted for its own account only, and signs in to that share with it, so a
+  NAS with its own accounts is indexed after a reboot too. A refused login shows "access denied:
+  check the user name and password". Protocol v5.
 - `quickseek folders add` and Options reject a path that isn't a drive path or `\\server\share`
   (Git Bash turns an unquoted `\\server\share` into `\server\share`).
 - A query error stays in the status bar instead of being replaced by "0 objects" within a second.

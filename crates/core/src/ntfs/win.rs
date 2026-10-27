@@ -419,6 +419,62 @@ impl Token {
         }
     }
 
+    /// A token that is this process locally but `user` (with `password`)
+    /// on the network, like `runas /netonly`: LOGON32_LOGON_NEW_CREDENTIALS.
+    /// Windows doesn't check the password here; a wrong one shows when the
+    /// share is opened (error 1326). `user` is `DOMAIN\name`, `name@domain` or
+    /// a bare name, which is sent with `default_domain` (the server's name).
+    pub fn logon_network(
+        user: &str,
+        password: &str,
+        default_domain: &str,
+    ) -> Result<Token, String> {
+        use windows_sys::Win32::Security::{
+            DuplicateTokenEx, LOGON32_LOGON_NEW_CREDENTIALS, LOGON32_PROVIDER_WINNT50, LogonUserW,
+            SecurityImpersonation, TOKEN_ALL_ACCESS, TokenImpersonation,
+        };
+        let (domain, name) = match user.split_once('\\') {
+            Some((d, n)) => (Some(d), n),
+            None if user.contains('@') => (None, user),
+            None => (Some(default_domain), user),
+        };
+        let name_w = wide(name);
+        let domain_w = domain.map(wide);
+        let mut pw = wide(password);
+        let mut t: HANDLE = null_mut();
+        let ok = unsafe {
+            LogonUserW(
+                name_w.as_ptr(),
+                domain_w.as_ref().map_or(null(), |d| d.as_ptr()),
+                pw.as_ptr(),
+                LOGON32_LOGON_NEW_CREDENTIALS,
+                LOGON32_PROVIDER_WINNT50,
+                &mut t,
+            )
+        };
+        pw.fill(0);
+        if ok == 0 {
+            return Err(format!("LogonUser: {}", io::Error::last_os_error()));
+        }
+        let mut dup: HANDLE = null_mut();
+        let ok = unsafe {
+            DuplicateTokenEx(
+                t,
+                TOKEN_ALL_ACCESS,
+                null(),
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut dup,
+            )
+        };
+        let err = (ok == 0).then(|| format!("DuplicateTokenEx: {}", io::Error::last_os_error()));
+        unsafe { CloseHandle(t) };
+        match err {
+            Some(e) => Err(e),
+            None => Ok(Token(dup)),
+        }
+    }
+
     /// The current thread acts as this user until [`Token::revert`].
     pub fn impersonate(&self) -> bool {
         unsafe { windows_sys::Win32::System::Threading::SetThreadToken(null(), self.0) != 0 }

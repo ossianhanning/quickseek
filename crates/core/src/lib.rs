@@ -11,6 +11,7 @@
 
 pub mod config;
 pub mod content;
+pub mod credstore;
 pub mod date;
 pub mod engine;
 pub mod fmt;

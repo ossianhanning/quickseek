@@ -59,8 +59,8 @@ use crate::tree::{NodeRef, Tree, TreeLevel, TreeRow, TreeSort};
 
 pub const PIPE_NAME: &str = r"\\.\pipe\quickseek";
 const MAX_FRAME: u32 = 64 << 20;
-/// Newest protocol version this build speaks.
-pub const PROTOCOL: u8 = 4;
+/// Newest protocol version this build speaks (5: folder logins).
+pub const PROTOCOL: u8 = 5;
 /// Oldest version it still serves and speaks (3: before folder-size history).
 pub const MIN_PROTOCOL: u8 = 3;
 /// First byte of a hello and of its answer (no protocol version is 0).
@@ -144,6 +144,14 @@ pub enum Request {
     /// Sizes of these folders in every snapshot.
     Series {
         paths: Vec<String>,
+    },
+    /// Sign in to the network folder `path` as `user` with `password` from
+    /// now on (the service keeps them encrypted); an empty `user` forgets
+    /// the folder's login.
+    FolderLogin {
+        path: String,
+        user: String,
+        password: crate::credstore::Secret,
     },
 }
 
@@ -305,7 +313,11 @@ pub fn sort_from_u8(v: u8) -> io::Result<SortKey> {
 
 /// Whether protocol `ver` (a supported one) has request kind `kind`.
 fn request_known(ver: u8, kind: u8) -> bool {
-    ver >= 4 || kind <= 11
+    match kind {
+        ..=11 => true,
+        12..=15 => ver >= 4,
+        _ => ver >= 5,
+    }
 }
 
 impl Request {
@@ -392,6 +404,16 @@ impl Request {
                 for p in paths {
                     w.str(p);
                 }
+            }
+            Request::FolderLogin {
+                path,
+                user,
+                password,
+            } => {
+                w.u8(16);
+                w.str(path);
+                w.str(user);
+                w.str(password.expose());
             }
             Request::Snapshot { offset, count } => {
                 w.u8(10);
@@ -493,6 +515,11 @@ impl Request {
                     count: r.u32()?,
                 },
                 12 => Request::History,
+                16 => Request::FolderLogin {
+                    path: r.str()?,
+                    user: r.str()?,
+                    password: crate::credstore::Secret::new(r.str()?),
+                },
                 13 => Request::SavePoint { name: r.str()? },
                 14 => Request::Compare { id: r.str()? },
                 15 => {
@@ -1100,6 +1127,14 @@ impl Session {
             Request::GetConfig => {
                 Response::Config(serde_json::to_string_pretty(&eng.config()).unwrap())
             }
+            Request::FolderLogin {
+                path,
+                user,
+                password,
+            } => match eng.set_folder_login(path, user, password) {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error(e),
+            },
             Request::SetConfig(json) => match serde_json::from_str::<Config>(json) {
                 Ok(c) => match eng.set_config(c) {
                     Ok(()) => Response::Ok,
@@ -1211,10 +1246,10 @@ impl Session {
 // ---- server -------------------------------------------------------------------
 
 /// A security descriptor parsed from SDDL, freed on drop.
-struct Sd(PSECURITY_DESCRIPTOR);
+pub(crate) struct Sd(PSECURITY_DESCRIPTOR);
 
 impl Sd {
-    fn new(sddl: &str) -> io::Result<Sd> {
+    pub(crate) fn new(sddl: &str) -> io::Result<Sd> {
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
         let s = wide(sddl);
         let ok = unsafe {
@@ -1231,7 +1266,7 @@ impl Sd {
             Ok(Sd(sd))
         }
     }
-    fn attrs(&self) -> SECURITY_ATTRIBUTES {
+    pub(crate) fn attrs(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: self.0,
@@ -1609,6 +1644,26 @@ pub trait Backend: Send {
         }
     }
 
+    /// See [`Request::FolderLogin`].
+    fn folder_login(
+        &mut self,
+        path: &str,
+        user: &str,
+        password: crate::credstore::Secret,
+    ) -> Result<(), String> {
+        let req = Request::FolderLogin {
+            path: path.into(),
+            user: user.into(),
+            password,
+        };
+        match self.call(&req) {
+            Ok(Response::Ok) => Ok(()),
+            Ok(Response::Error(e)) => Err(e),
+            Ok(_) => Err("unexpected response".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     fn record_run(&mut self, path: &str) -> Option<u32> {
         match self.call(&Request::RecordRun(path.into())) {
             Ok(Response::Count(n)) => Some(n),
@@ -1971,9 +2026,31 @@ mod tests {
             Request::Series {
                 paths: vec![r"C:\Users".into(), "D:".into()],
             },
+            Request::FolderLogin {
+                path: r"\\nas\data".into(),
+                user: r"NAS\me".into(),
+                password: crate::credstore::Secret::new("pässword".into()),
+            },
         ] {
             assert_eq!(Request::decode(&req.encode()).unwrap(), req);
         }
+    }
+
+    /// Logins need protocol 5, and never print their password.
+    #[test]
+    fn folder_login_request() {
+        let req = Request::FolderLogin {
+            path: r"\\nas\data".into(),
+            user: "me".into(),
+            password: crate::credstore::Secret::new("hunter2".into()),
+        };
+        assert!(req.encode_for(4).is_err(), "a v4 service doesn't know it");
+        assert!(req.encode_for(5).is_ok());
+        assert!(!format!("{req:?}").contains("hunter2"));
+        // Older kinds still go to older services.
+        assert!(Request::History.encode_for(4).is_ok());
+        assert!(Request::History.encode_for(3).is_err());
+        assert!(Request::Status.encode_for(3).is_ok());
     }
 
     #[test]

@@ -1324,3 +1324,78 @@ fn gui_closes_for_update() {
         g.child.try_wait().ok().flatten()
     });
 }
+
+/// Options > Folders: a share gets user name and password fields (a local
+/// folder doesn't). The test service isn't the real one, so setting a login
+/// is refused with a message saying the service keeps them.
+#[test]
+fn gui_folder_login_fields() {
+    let g = Gui::launch(Arc::new(Engine::from_indexes(vec![common::sample_index(
+        'C', 200,
+    )])));
+    g.command(CMD_OPTIONS);
+    let pid = g.child.id();
+    let opt_hwnd = eventually("options window", Duration::from_secs(5), || {
+        find_window(pid, "quickseek.options")
+    });
+    let opt =
+        g.ua.element_from_handle(windows::Win32::Foundation::HWND(opt_hwnd).into())
+            .unwrap();
+    g.ua.create_matcher()
+        .from_ref(&opt)
+        .control_type(ControlType::TabItem)
+        .name("Folders")
+        .timeout(5000)
+        .find_first()
+        .unwrap()
+        .click()
+        .unwrap();
+    let find = |id: &str| {
+        let id = id.to_string();
+        g.ua.create_matcher()
+            .from_ref(&opt)
+            .timeout(5000)
+            .filter_fn(Box::new(move |e: &UIElement| {
+                Ok(e.get_automation_id().map(|a| a == id).unwrap_or(false))
+            }))
+            .find_first()
+            .unwrap()
+    };
+    let add_path = |p: &str| {
+        find("935")
+            .get_pattern::<UIValuePattern>()
+            .unwrap()
+            .set_value(p)
+            .unwrap();
+        find("936")
+            .get_pattern::<UIInvokePattern>()
+            .unwrap()
+            .invoke()
+            .unwrap();
+    };
+    add_path(r"D:\local");
+    assert!(
+        !find("938").is_enabled().unwrap(),
+        "a local folder has no login"
+    );
+    add_path(r"\\nas\share");
+    eventually(
+        "login fields on for a share",
+        Duration::from_secs(5),
+        || find("938").is_enabled().unwrap().then_some(()),
+    );
+    assert!(find("939").is_enabled().unwrap() && find("951").is_enabled().unwrap());
+    assert!(!find("952").is_enabled().unwrap(), "no login to clear yet");
+    if let Ok(dir) = std::env::var("QUICKSEEK_SHOT_DIR") {
+        // For looking at the layout: tools/shot.ps1 on the options window.
+        let _ = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-File",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/shot.ps1"),
+            ])
+            .args(["-ClassName", "quickseek.options", "-Out"])
+            .arg(format!("{dir}/options-folders.png"))
+            .status();
+    }
+}

@@ -36,6 +36,11 @@ pub struct FolderConfig {
     pub watch: bool,
     /// Full rescan interval in minutes (0 = never; only on watch overflow).
     pub rescan_minutes: u32,
+    /// The user name the service signs in to this share with, when one is
+    /// set (`quickseek folders login`). Shown only: the service fills it in
+    /// from its credential store, which also holds the password.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 impl Default for FolderConfig {
@@ -44,6 +49,7 @@ impl Default for FolderConfig {
             path: String::new(),
             watch: true,
             rescan_minutes: 0,
+            user: None,
         }
     }
 }

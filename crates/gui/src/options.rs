@@ -35,6 +35,10 @@ pub const ID_WATCH: i32 = 934;
 pub const ID_FOLDER_PATH: i32 = 935;
 pub const ID_FOLDER_ADD_PATH: i32 = 936;
 pub const ID_FOLDER_STATE: i32 = 937;
+pub const ID_FOLDER_USER: i32 = 938;
+pub const ID_FOLDER_PASSWORD: i32 = 939;
+pub const ID_FOLDER_LOGIN: i32 = 951;
+pub const ID_FOLDER_LOGOUT: i32 = 952;
 pub const ID_EX_HIDDEN: i32 = 940;
 pub const ID_EX_SYSTEM: i32 = 941;
 pub const ID_EX_FOLDERS: i32 = 942;
@@ -183,6 +187,9 @@ fn folder_label(f: &FolderConfig) -> String {
     }
     if f.rescan_minutes > 0 {
         extra.push(format!("rescan every {} min", f.rescan_minutes));
+    }
+    if let Some(u) = &f.user {
+        extra.push(format!("signs in as {u}"));
     }
     if !extra.is_empty() {
         s.push_str(&format!("   ({})", extra.join(", ")));
@@ -458,12 +465,91 @@ fn on_folder_select() {
             EnableWindow(re, sel.is_some() as i32);
             EnableWindow(wa, sel.is_some() as i32);
         }
-        if let Some(f) = sel {
+        if let Some(f) = &sel {
             w::set_text(re, &f.rescan_minutes.to_string());
             send(wa, BM_SETCHECK, f.watch as usize, 0);
         }
+        // Logins are for shares only.
+        let share = sel
+            .as_ref()
+            .is_some_and(|f| ntwin::is_network_path(&f.path));
+        for id in [ID_FOLDER_USER, ID_FOLDER_PASSWORD, ID_FOLDER_LOGIN] {
+            unsafe { EnableWindow(item(o.hwnd, id), share as i32) };
+        }
+        let has_login = sel.as_ref().is_some_and(|f| f.user.is_some());
+        unsafe { EnableWindow(item(o.hwnd, ID_FOLDER_LOGOUT), (share && has_login) as i32) };
+        let user = sel.and_then(|f| f.user).unwrap_or_default();
+        w::set_text(item(o.hwnd, ID_FOLDER_USER), &user);
+        w::set_text(item(o.hwnd, ID_FOLDER_PASSWORD), "");
         o.filling = false;
     });
+}
+
+/// Gives the selected share its own login (`set`) or forgets it, through
+/// the service. Pending changes are applied first: the service only keeps
+/// logins for folders it indexes.
+fn set_folder_login(app: &App, set: bool) {
+    let (hwnd, path) = OPT.with(|o| {
+        let b = o.borrow();
+        let o = b.as_ref().unwrap();
+        let path = lb_sel(item(o.hwnd, ID_FOLDERS))
+            .and_then(|i| o.cfg.folders.get(i))
+            .map(|f| f.path.clone());
+        (o.hwnd, path)
+    });
+    let Some(path) = path else { return };
+    let user = if set {
+        w::get_text(item(hwnd, ID_FOLDER_USER)).trim().to_string()
+    } else {
+        String::new()
+    };
+    let password =
+        quickseek_core::credstore::Secret::new(w::get_text(item(hwnd, ID_FOLDER_PASSWORD)));
+    w::set_text(item(hwnd, ID_FOLDER_PASSWORD), "");
+    if set && (user.is_empty() || password.is_empty()) {
+        crate::msgbox::show(
+            hwnd,
+            "Type the user name and password the share expects.",
+            "Quickseek",
+            MB_ICONWARNING,
+        );
+        return;
+    }
+    if !apply(app) {
+        return;
+    }
+    let res = app.conn.lock().be.folder_login(&path, &user, password);
+    match res {
+        Ok(()) => {
+            OPT.with(|o| {
+                let mut b = o.borrow_mut();
+                let o = b.as_mut().unwrap();
+                if let Some(f) = o.cfg.folders.iter_mut().find(|f| f.path == path) {
+                    f.user = set.then(|| user.clone());
+                }
+            });
+            OPT.with(|o| {
+                let mut b = o.borrow_mut();
+                let o = b.as_mut().unwrap();
+                let lb = item(o.hwnd, ID_FOLDERS);
+                let sel = lb_sel(lb);
+                fill_lists(o);
+                if let Some(i) = sel {
+                    send(lb, LB_SETCURSEL, i, 0);
+                }
+            });
+            on_folder_select();
+            let text = if set {
+                format!("Quickseek now signs in to {path} as {user}.")
+            } else {
+                format!("{path} is reached as you again.")
+            };
+            crate::msgbox::show(hwnd, &text, "Quickseek", MB_ICONINFORMATION);
+        }
+        Err(e) => {
+            crate::msgbox::show(hwnd, &e, "Quickseek", MB_ICONERROR);
+        }
+    }
 }
 
 fn add_folder(path: String) {
@@ -497,6 +583,7 @@ fn add_folder(path: String) {
                 } else {
                     0
                 },
+                user: None,
             });
         }
         fill_lists(o);
@@ -580,6 +667,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             .include_only = list;
                     }
                 }),
+                ID_FOLDER_LOGIN => set_folder_login(app, true),
+                ID_FOLDER_LOGOUT => set_folder_login(app, false),
                 ID_FOLDER_ADD => {
                     if let Some(p) = shell::pick_folder(hwnd) {
                         add_folder(p);
@@ -1074,6 +1163,79 @@ pub fn open(app: &App) {
             full,
             22,
         );
+        // A share's own login (the service keeps the password).
+        add(
+            "Static",
+            "Sign in as:",
+            0x200, /* SS_CENTERIMAGE */
+            0,
+            -1,
+            Some(2),
+            x0,
+            y0 + 300,
+            72,
+            24,
+        );
+        add(
+            "Edit",
+            "",
+            edit_style,
+            WS_EX_CLIENTEDGE,
+            ID_FOLDER_USER,
+            Some(2),
+            x0 + 76,
+            y0 + 300,
+            130,
+            24,
+        );
+        add(
+            "Static",
+            "Password:",
+            0x200, /* SS_CENTERIMAGE */
+            0,
+            -1,
+            Some(2),
+            x0 + 214,
+            y0 + 300,
+            62,
+            24,
+        );
+        add(
+            "Edit",
+            "",
+            edit_style | ES_PASSWORD as u32,
+            WS_EX_CLIENTEDGE,
+            ID_FOLDER_PASSWORD,
+            Some(2),
+            x0 + 280,
+            y0 + 300,
+            120,
+            24,
+        );
+        add(
+            "Button",
+            "Set Login",
+            btn,
+            0,
+            ID_FOLDER_LOGIN,
+            Some(2),
+            x0 + 408,
+            y0 + 298,
+            80,
+            28,
+        );
+        add(
+            "Button",
+            "Clear",
+            btn,
+            0,
+            ID_FOLDER_LOGOUT,
+            Some(2),
+            x0 + 492,
+            y0 + 298,
+            70,
+            28,
+        );
         add(
             "Static",
             "",
@@ -1082,15 +1244,21 @@ pub fn open(app: &App) {
             ID_FOLDER_STATE,
             Some(2),
             x0,
-            y0 + 300,
+            y0 + 336,
             full,
-            120,
+            84,
         );
         send(
             item(hwnd, ID_FOLDER_PATH),
             EM_SETCUEBANNER,
             1,
             wide(r"\\server\share\folder").as_ptr() as isize,
+        );
+        send(
+            item(hwnd, ID_FOLDER_USER),
+            EM_SETCUEBANNER,
+            1,
+            wide("user on the share").as_ptr() as isize,
         );
 
         // Exclude
