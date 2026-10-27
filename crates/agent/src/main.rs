@@ -28,8 +28,9 @@ Options (environment variable in brackets):
   --threads N         walker threads [QUICKSEEK_THREADS, default min(4, cores)]
   --rewalk-hours N    safety re-walk interval, 0 = never [QUICKSEEK_REWALK_HOURS, default 24]
   --name NAME         shown on the PC [QUICKSEEK_NAME, default the host name]
-  --walk-io KIND      I/O priority of walks: idle (only when the disks are otherwise free) or
-                      normal [QUICKSEEK_WALK_IO, default idle]; live changes always read at normal
+  --walk-io KIND      I/O priority of walks after the first: idle (only when the disks are otherwise
+                      free) or normal [QUICKSEEK_WALK_IO, default idle]; the first walk and live
+                      changes read at normal
 ";
 
 fn env(name: &str) -> Option<String> {

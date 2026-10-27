@@ -44,8 +44,10 @@ pub struct Options {
     pub rewalk_hours: u64,
     /// Shown on the PC (default: the host name).
     pub name: String,
-    /// Walker threads read at idle I/O priority: they only get the disks
-    /// when nothing else wants them (the live changes' few reads don't wait).
+    /// After the first walk, walker threads read at idle I/O priority: they
+    /// only get the disks when nothing else wants them. The first walk runs
+    /// at normal priority (on a busy NAS an idle one took ~4x as long), and
+    /// the live changes' few reads never wait.
     pub idle_walks: bool,
 }
 
@@ -160,15 +162,9 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
 fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &AtomicBool) {
     let shares = &agent.shares;
     let hist = agent.store.history_dir();
-    let idle = opts.idle_walks;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(opts.threads.max(1))
         .thread_name(|i| format!("walk-{i}"))
-        .start_handler(move |_| {
-            if idle {
-                idle_io();
-            }
-        })
         .build()
         .expect("thread pool");
     let marks: Vec<std::path::PathBuf> = if opts.marks.is_empty() {
@@ -195,6 +191,10 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
     // didn't follow yet during the first (it's fast: the metadata is cached).
     rewalk_all(&mut w);
     rewalk_all(&mut w);
+    if opts.idle_walks {
+        // I/O priority is per thread: every walker sets its own.
+        pool.broadcast(|_| idle_io());
+    }
     let mut last_walk = Instant::now();
     let mut last_disk = Instant::now();
     let mut last_snap = Instant::now() - Duration::from_secs(3600);
