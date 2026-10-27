@@ -31,6 +31,36 @@ pub fn root_name(path: &str) -> String {
     path.trim_end_matches(['\\', '/']).replace('/', "\\")
 }
 
+/// Checks that `root` (as [`root_name`] gives it) is a folder that can be
+/// indexed: `X:\\path` or `\\\\server\\share[\\path]`. A single leading backslash
+/// is what Git Bash makes of an unquoted `\\\\server\\share`, and would mean
+/// the root of the current drive.
+pub fn check_root(root: &str) -> Result<(), String> {
+    let b = root.as_bytes();
+    let drive = b.len() >= 2
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b.len() == 2 || b[2] == b'\\');
+    let unc = root
+        .strip_prefix("\\\\")
+        .and_then(|r| r.split_once('\\'))
+        .is_some_and(|(server, share)| {
+            !server.is_empty() && !share.is_empty() && !share.starts_with('\\')
+        });
+    if drive || unc {
+        return Ok(());
+    }
+    if root.starts_with('\\') && !root.starts_with("\\\\") {
+        return Err(format!(
+            "{root} isn't a full path. A network share is \\\\server\\share; from Git Bash, \
+             quote it ('\\\\server\\share') or write //server/share"
+        ));
+    }
+    Err(format!(
+        "{root} isn't a full path: use a drive path (D:\\folder) or a network share (\\\\server\\share)"
+    ))
+}
+
 fn meta_of(m: &std::fs::Metadata) -> Meta {
     let attrs = m.file_attributes();
     Meta {
@@ -451,6 +481,20 @@ impl Drop for Watcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roots_must_be_full_paths() {
+        for ok in [r"D:\", r"D:\data", r"\\nas\share", r"\\nas.local\data\sub"] {
+            assert_eq!(check_root(&root_name(ok)), Ok(()), "{ok}");
+        }
+        assert_eq!(root_name("//nas/share"), r"\\nas\share");
+        // Git Bash's take on an unquoted \\nas\share.
+        let e = check_root(r"\nas.local\data").unwrap_err();
+        assert!(e.contains("Git Bash"), "{e}");
+        for bad in ["data", r"\\nas", r"\\nas\", r"\\\nas\share", "D:data"] {
+            assert!(check_root(&root_name(bad)).is_err(), "{bad}");
+        }
+    }
     use crate::query::Query;
     use crate::search::{SearchOptions, search};
 

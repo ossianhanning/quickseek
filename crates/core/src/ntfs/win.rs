@@ -292,6 +292,12 @@ pub fn is_elevated() -> bool {
         .unwrap_or(false)
 }
 
+/// How clients open the service's pipe: SECURITY_SQOS_PRESENT |
+/// SECURITY_IMPERSONATION, so the service can act as the user (it reaches
+/// network shares with the user's credentials). Without it the server may
+/// only get an identification-level token, useless for SMB.
+pub const CLIENT_QOS: u32 = windows_sys::Win32::Storage::FileSystem::SECURITY_IMPERSONATION;
+
 /// An impersonation token (a pipe client's identity), used by the service to
 /// reach network shares with the user's credentials instead of LocalSystem's.
 pub struct Token(HANDLE);
@@ -306,8 +312,10 @@ impl Drop for Token {
 }
 
 impl Token {
-    /// Captures the identity of the client connected to `pipe`.
-    pub fn from_pipe_client(pipe: &std::fs::File) -> Option<Token> {
+    /// Captures the identity of the client connected to `pipe`. The error
+    /// says which step failed and why (the client must open the pipe
+    /// allowing impersonation: [`CLIENT_QOS`]).
+    pub fn from_pipe_client(pipe: &std::fs::File) -> Result<Token, String> {
         use std::os::windows::io::AsRawHandle;
         let pipe = pipe.as_raw_handle();
         use windows_sys::Win32::Security::{
@@ -316,9 +324,10 @@ impl Token {
         };
         use windows_sys::Win32::System::Pipes::ImpersonateNamedPipeClient;
         use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+        let fail = |step: &str| format!("{step}: {}", io::Error::last_os_error());
         unsafe {
             if ImpersonateNamedPipeClient(pipe) == 0 {
-                return None;
+                return Err(fail("ImpersonateNamedPipeClient"));
             }
             let mut t: HANDLE = null_mut();
             let ok = OpenThreadToken(
@@ -327,9 +336,10 @@ impl Token {
                 1,
                 &mut t,
             );
+            let err = (ok == 0).then(|| fail("OpenThreadToken"));
             RevertToSelf();
-            if ok == 0 {
-                return None;
+            if let Some(e) = err {
+                return Err(e);
             }
             let mut dup: HANDLE = null_mut();
             let ok = DuplicateTokenEx(
@@ -340,8 +350,72 @@ impl Token {
                 TokenImpersonation,
                 &mut dup,
             );
+            let err = (ok == 0).then(|| fail("DuplicateTokenEx"));
             CloseHandle(t);
-            (ok != 0).then_some(Token(dup))
+            match err {
+                Some(e) => Err(e),
+                None => Ok(Token(dup)),
+            }
+        }
+    }
+
+    /// The token's impersonation level (SECURITY_IMPERSONATION_LEVEL:
+    /// 0 anonymous, 1 identification, 2 impersonation, 3 delegation).
+    pub fn level(&self) -> Option<i32> {
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenImpersonationLevel};
+        let mut level = 0i32;
+        let mut len = 0u32;
+        let ok = unsafe {
+            GetTokenInformation(
+                self.0,
+                TokenImpersonationLevel,
+                &mut level as *mut i32 as *mut c_void,
+                4,
+                &mut len,
+            )
+        };
+        (ok != 0).then_some(level)
+    }
+
+    /// The account the token is for, `DOMAIN\user`.
+    pub fn user(&self) -> Option<String> {
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_USER, TokenUser,
+        };
+        let mut buf = vec![0u64; 64];
+        let mut len = 0u32;
+        unsafe {
+            if GetTokenInformation(
+                self.0,
+                TokenUser,
+                buf.as_mut_ptr() as *mut c_void,
+                512,
+                &mut len,
+            ) == 0
+            {
+                return None;
+            }
+            let sid = (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid;
+            let (mut name, mut dom) = ([0u16; 256], [0u16; 256]);
+            let (mut nl, mut dl) = (256u32, 256u32);
+            let mut kind: SID_NAME_USE = 0;
+            if LookupAccountSidW(
+                null(),
+                sid,
+                name.as_mut_ptr(),
+                &mut nl,
+                dom.as_mut_ptr(),
+                &mut dl,
+                &mut kind,
+            ) == 0
+            {
+                return None;
+            }
+            Some(format!(
+                "{}\\{}",
+                String::from_utf16_lossy(&dom[..dl as usize]),
+                String::from_utf16_lossy(&name[..nl as usize])
+            ))
         }
     }
 

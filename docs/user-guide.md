@@ -172,7 +172,8 @@ diacritics" (Search → Match Diacritics off) to make `Angstrom` find
   service runs as LocalSystem, which has no access to your shares, so it
   scans them **with the identity of the user whose GUI/CLI connects to it**
   (impersonating the pipe client). Until someone connects after a reboot,
-  shares show "waiting for credentials" and serve the cached index. An
+  shares show "waiting for credentials" and serve the cached index; if the
+  identity can't be borrowed, the status says why ("no credentials: …"). An
   unreachable share shows "offline", keeps its last index and is retried.
   Shares added in the GUI default to watching plus an hourly rescan, in case
   change notifications get lost over a WAN link.

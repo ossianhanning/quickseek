@@ -472,6 +472,11 @@ fn add_folder(path: String) {
     if path.is_empty() {
         return;
     }
+    if let Err(e) = quickseek_core::folder::check_root(&path) {
+        let owner = OPT.with(|o| o.borrow().as_ref().map_or(null_mut(), |o| o.hwnd));
+        crate::msgbox::show(owner, &e, "Quickseek", MB_ICONWARNING);
+        return;
+    }
     OPT.with(|o| {
         let mut b = o.borrow_mut();
         let o = b.as_mut().unwrap();

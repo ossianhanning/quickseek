@@ -104,7 +104,8 @@ pub struct Volume {
     pub unsaved: AtomicU64,
     /// Cleared when the volume disappears or is excluded; its watcher exits.
     pub alive: AtomicBool,
-    /// Human-readable state: ready, scanning, cached, offline, waiting for credentials.
+    /// Human-readable state: ready, scanning, cached, offline, waiting for
+    /// credentials (network folders in the service, until a client connects).
     pub state: Mutex<String>,
     /// Folder indexes: keep a copy on disk (off for shares with caching off).
     pub cache: AtomicBool,
@@ -1316,6 +1317,15 @@ fn rescan_folder(v: &Volume, token: Option<Arc<crate::ntfs::win::Token>>) {
     v.unsaved.store(0, Ordering::Relaxed);
 }
 
+/// The state of a network folder the service can't reach yet because no
+/// client has lent it their identity (or capturing it failed: `error`).
+fn waiting_state(error: Option<String>) -> String {
+    match error {
+        Some(e) => format!("no credentials: {e}"),
+        None => "waiting for credentials (from the next Quickseek window or command)".into(),
+    }
+}
+
 /// Sleeps up to `d`, waking early when the volume is dropped.
 fn nap(v: &Volume, stop: &AtomicBool, d: Duration) {
     let t = Instant::now();
@@ -1372,14 +1382,16 @@ fn watch_folder(
         {
             if !root.is_dir() {
                 let running_as_service = std::env::var_os("QUICKSEEK_SERVICE").is_some();
-                v.set_state(if network && tok.is_none() && running_as_service {
-                    "waiting for credentials"
+                let waiting = network && tok.is_none() && running_as_service;
+                if waiting {
+                    v.set_state(&waiting_state(crate::ipc::token_error()));
                 } else {
-                    "offline"
-                });
+                    v.set_state("offline");
+                }
                 watcher = None;
                 needs_walk = true;
-                nap(&v, &stop, Duration::from_secs(30));
+                // Credentials come with the next client: look again soon.
+                nap(&v, &stop, Duration::from_secs(if waiting { 2 } else { 30 }));
                 continue;
             }
             if v.state.lock().as_str() != "cached" {

@@ -282,6 +282,9 @@ pub struct App {
     deletes_running: Cell<u32>,
     /// What the last delete did, shown before the status text (until it expires).
     delete_note: RefCell<Option<(String, Option<Instant>)>>,
+    /// Why the last search failed (a bad query, the service away), shown
+    /// in the status bar until a search succeeds.
+    search_error: RefCell<Option<String>>,
     /// The index generation the tree was built from, and when.
     tree_gen: Cell<u64>,
     tree_at: Cell<Option<Instant>>,
@@ -494,6 +497,13 @@ impl App {
         }
         self.searching.set(false);
         let list = self.list.get();
+        *self.search_error.borrow_mut() = done.res.as_ref().err().map(|e| {
+            if e == quickseek_core::ipc::LOADING {
+                "Index is still loading…".to_string()
+            } else {
+                e.clone()
+            }
+        });
         match done.res {
             Ok(page) => {
                 let total = page.total.min(i32::MAX as u64) as usize;
@@ -536,14 +546,10 @@ impl App {
                     self.start_scan(done.seq, cq);
                 }
             }
-            Err(e) => {
+            Err(_) => {
                 *self.results.borrow_mut() = Results::default();
                 send(list, LVM_SETITEMCOUNT, 0, 0);
-                self.set_status_left(&if e == quickseek_core::ipc::LOADING {
-                    "Index is still loading…".to_string()
-                } else {
-                    e
-                });
+                self.update_status();
                 return;
             }
         }
@@ -2205,7 +2211,10 @@ impl App {
             None => {}
         }
         drop(r);
-        self.set_status_left(&s);
+        match &*self.search_error.borrow() {
+            Some(e) => self.set_status_left(e),
+            None => self.set_status_left(&s),
+        }
         let right = {
             let conn_label = self.conn.try_lock().map(|c| c.be.label()).unwrap_or("…");
             let mut parts = vec![conn_label.to_string()];
@@ -3670,6 +3679,7 @@ pub fn create(be: Box<dyn Backend>, test_mode: bool, start_hidden: bool) -> &'st
             deleting: RefCell::new(Default::default()),
             deletes_running: Cell::new(0),
             delete_note: RefCell::new(None),
+            search_error: RefCell::new(None),
             tree_gen: Cell::new(0),
             tree_at: Cell::new(None),
             tree_quiet: Cell::new(false),

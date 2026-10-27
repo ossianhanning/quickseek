@@ -1332,10 +1332,12 @@ pub fn serve_on(pipe_name: &str, factory: HandlerFactory) -> io::Result<()> {
         if ok == 0 && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
             continue; // client vanished between create and connect
         }
-        let token = crate::ntfs::win::Token::from_pipe_client(&pipe);
-        let mut handler = factory(token);
+        let factory = factory.clone();
         std::thread::spawn(move || {
             let mut pipe = pipe;
+            // Made on the first frame: Windows lets a server act as its pipe
+            // client only once it has read from the pipe (error 1368).
+            let mut handler = None;
             while let Ok(Some(frame)) = read_frame(&mut pipe) {
                 let out = if frame.first() == Some(&HELLO) {
                     answer_hello(&frame).0
@@ -1344,7 +1346,10 @@ pub fn serve_on(pipe_name: &str, factory: HandlerFactory) -> io::Result<()> {
                     // hello just send theirs); unknown ones get ours, which
                     // tells the client we differ.
                     match Request::decode_any(&frame) {
-                        Ok((ver, req)) => handler(&req).encode_for(ver),
+                        Ok((ver, req)) => {
+                            handler.get_or_insert_with(|| factory(client_token(&pipe)))(&req)
+                                .encode_for(ver)
+                        }
                         Err(e) => {
                             let ver = frame
                                 .first()
@@ -1360,6 +1365,36 @@ pub fn serve_on(pipe_name: &str, factory: HandlerFactory) -> io::Result<()> {
                 }
             }
         });
+    }
+}
+
+static TOKEN_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Why the last client's identity couldn't be captured, if it couldn't.
+pub fn token_error() -> Option<String> {
+    TOKEN_ERROR
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// The identity of the client on `pipe` (after a frame was read from it),
+/// for reaching network folders as that user.
+fn client_token(pipe: &File) -> Option<crate::ntfs::win::Token> {
+    let r = crate::ntfs::win::Token::from_pipe_client(pipe);
+    *TOKEN_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = r.as_ref().err().cloned();
+    match r {
+        Ok(t) => Some(t),
+        Err(e) => {
+            // Once per kind of failure: clients connect often.
+            static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+            let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+            if !seen.contains(&e) {
+                log::warn!("can't act as the connecting client (for network folders): {e}");
+                seen.push(e);
+            }
+            None
+        }
     }
 }
 
@@ -1430,6 +1465,7 @@ impl Client {
         let open = || {
             std::fs::OpenOptions::new()
                 .access_mode(CLIENT_ACCESS)
+                .security_qos_flags(crate::ntfs::win::CLIENT_QOS)
                 .open(pipe_name)
         };
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1804,6 +1840,63 @@ impl Backend for Remote {
 mod tests {
     use super::*;
     use crate::index::tests::sample;
+
+    /// The service acts as the connecting user to reach network shares:
+    /// the client must open the pipe allowing impersonation, or the server
+    /// only gets an identification token, which SMB refuses.
+    #[test]
+    fn client_allows_impersonation() {
+        let name = format!(r"\\.\pipe\quickseek-test-qos-{}", std::process::id());
+        let sd = Sd::new(PIPE_SDDL).unwrap();
+        let server = create_instance(&name, &sd.attrs(), true).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::os::windows::io::AsRawHandle;
+            let mut server = server;
+            unsafe { ConnectNamedPipe(server.as_raw_handle(), null_mut()) };
+            // As the service does: after the hello was read.
+            let hello = read_frame(&mut server).unwrap().unwrap();
+            let t = crate::ntfs::win::Token::from_pipe_client(&server);
+            let _ = tx.send(t.map(|t| (t.level(), t.user())));
+            let _ = write_frame(&mut server, &answer_hello(&hello).0);
+        });
+        let _client = Client::connect_to(&name).unwrap();
+        let (level, user) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap_or_else(|e| panic!("capturing the client's token: {e}"));
+        assert_eq!(
+            level,
+            Some(2),
+            "impersonation level (2 = SecurityImpersonation)"
+        );
+        assert!(user.is_some_and(|u| !u.is_empty()));
+    }
+
+    /// What the service does with each client: its handler gets the
+    /// client's identity (captured once the first request was read; asking
+    /// right after the connect fails with error 1368).
+    #[test]
+    fn serve_hands_the_client_token_to_the_handler() {
+        let name = format!(r"\\.\pipe\quickseek-test-token-{}", std::process::id());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        let factory: HandlerFactory = Arc::new(move |token: Option<crate::ntfs::win::Token>| {
+            let _ = tx.lock().unwrap().send(token.and_then(|t| t.level()));
+            Box::new(|_req: &Request| Response::Error("test".into()))
+        });
+        let server_name = name.clone();
+        std::thread::spawn(move || serve_on(&server_name, factory));
+        let mut c = Client::connect_to(&name)
+            .or_else(|_| {
+                std::thread::sleep(Duration::from_millis(200));
+                Client::connect_to(&name)
+            })
+            .unwrap();
+        let _ = c.call(&Request::Status);
+        let level = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(level, Some(2), "the handler got no impersonation token");
+    }
 
     #[test]
     fn request_roundtrip() {

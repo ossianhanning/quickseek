@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **The service now scans network shares.** It took the connecting user's identity
+  before reading from the pipe, which Windows refuses (error 1368), so shares stayed at "waiting
+  for credentials" forever. The status now says what it's waiting for, or why borrowing the
+  identity failed.
+- `quickseek folders add` and Options reject a path that isn't a drive path or `\\server\share`
+  (Git Bash turns an unquoted `\\server\share` into `\server\share`).
+- A query error stays in the status bar instead of being replaced by "0 objects" within a second.
+
 ## 19.9.0 (2026-10-24)
 
 The first public release.

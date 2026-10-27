@@ -757,6 +757,7 @@ fn main() -> anyhow::Result<()> {
             } => {
                 let unc = win::universal_path(path);
                 let path = quickseek_core::folder::root_name(&unc);
+                quickseek_core::folder::check_root(&path).map_err(anyhow::Error::msg)?;
                 if !std::path::Path::new(&format!("{path}\\")).is_dir() {
                     eprintln!(
                         "warning: {path} isn't reachable right now; it will be indexed when it is"
