@@ -59,9 +59,16 @@ pub const ID_SH_CACHE: i32 = 964;
 pub const ID_SH_REWALK: i32 = 965;
 pub const ID_SH_CREATED: i32 = 966;
 pub const ID_SH_RESCAN: i32 = 967;
+pub const ID_NAS_LIST: i32 = 970;
+pub const ID_NAS_HOST: i32 = 971;
+pub const ID_NAS_CODE: i32 = 972;
+pub const ID_NAS_PAIR: i32 = 973;
+pub const ID_NAS_REMOVE: i32 = 974;
+pub const ID_NAS_TOGGLE: i32 = 975;
+pub const ID_NAS_STATE: i32 = 976;
 
-const TABS: [&str; 6] = [
-    "General", "Volumes", "Folders", "Exclude", "Index", "Shares",
+const TABS: [&str; 7] = [
+    "General", "Volumes", "Folders", "Exclude", "Index", "Shares", "NAS",
 ];
 
 struct Opt {
@@ -72,6 +79,8 @@ struct Opt {
     font: windows_sys::Win32::Graphics::Gdi::HFONT,
     /// Drive letters in the volume list, in row order.
     vol_rows: Vec<char>,
+    /// NAS list rows: (host, share's UNC root for share rows).
+    nas_rows: Vec<(String, Option<String>)>,
     filling: bool,
 }
 
@@ -336,6 +345,109 @@ fn fill(app: &App) {
         o.filling = false;
     });
     on_folder_select();
+    fill_nas(app);
+}
+
+/// The NAS page's list, from the service (agents, their shares and states).
+fn fill_nas(app: &App) {
+    let list = app
+        .conn
+        .lock()
+        .be
+        .remote(&serde_json::json!({ "op": "list" }));
+    OPT.with(|o| {
+        let mut b = o.borrow_mut();
+        let Some(o) = b.as_mut() else { return };
+        let lb = item(o.hwnd, ID_NAS_LIST);
+        lb_clear(lb);
+        o.nas_rows.clear();
+        let list = match list {
+            Ok(v) => v.as_array().cloned().unwrap_or_default(),
+            Err(e) => {
+                w::set_text(item(o.hwnd, ID_NAS_STATE), &e);
+                return;
+            }
+        };
+        let st = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+        for r in &list {
+            let host = st(r, "host");
+            lb_add(
+                lb,
+                &format!(
+                    "{host}  (agent {}{})",
+                    st(r, "agent"),
+                    if r["paired"].as_bool() == Some(true) {
+                        ""
+                    } else {
+                        ", not paired"
+                    }
+                ),
+            );
+            o.nas_rows.push((host.clone(), None));
+            for sh in r["shares"].as_array().into_iter().flatten() {
+                lb_add(
+                    lb,
+                    &format!(
+                        "      {}   {}{}   {}",
+                        st(sh, "unc"),
+                        st(sh, "state"),
+                        match sh["entries"].as_u64() {
+                            Some(n) if n > 0 => format!(", {} entries", shell::group(n)),
+                            _ => String::new(),
+                        },
+                        st(sh, "root")
+                    ),
+                );
+                o.nas_rows.push((host.clone(), Some(st(sh, "unc"))));
+            }
+        }
+        if list.is_empty() {
+            lb_add(lb, "No NAS agents yet.");
+        }
+    });
+}
+
+/// Pairs, removes or toggles on the NAS page; the service changes the
+/// config, so the page's copy of the agent list is refreshed from it.
+fn nas_action(app: &App, a: serde_json::Value) {
+    let hwnd = OPT
+        .with(|o| o.borrow().as_ref().map(|o| o.hwnd))
+        .unwrap_or(null_mut());
+    let op = a["op"].as_str().unwrap_or("").to_string();
+    let wait = unsafe { SetCursor(LoadCursorW(null_mut(), IDC_WAIT)) };
+    let res = app.conn.lock().be.remote(&a);
+    unsafe { SetCursor(wait) };
+    let msg = match &res {
+        Ok(v) if op == "add" => format!(
+            "Paired with {}. Its shares are being indexed: {}.",
+            v["agent"].as_str().unwrap_or("the agent"),
+            v["shares"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s["unc"].as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Ok(_) => "Done.".into(),
+        Err(e) => e.clone(),
+    };
+    let remotes = app.conn.lock().be.get_config().map(|c| c.remotes);
+    OPT.with(|o| {
+        if let Some(o) = o.borrow_mut().as_mut() {
+            if let Ok(r) = remotes {
+                o.cfg.remotes = r;
+            }
+            w::set_text(item(o.hwnd, ID_NAS_STATE), &msg);
+            if res.is_ok() && op == "add" {
+                w::set_text(item(o.hwnd, ID_NAS_CODE), "");
+            }
+        }
+    });
+    if res.is_err() {
+        w::message_box(hwnd, &msg, "quickseek", MB_OK | MB_ICONWARNING);
+    }
+    fill_nas(app);
 }
 
 /// Copies control values into the working config.
@@ -650,6 +762,62 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     show_tab(t);
                 }
                 ID_FOLDERS if code == LBN_SELCHANGE => on_folder_select(),
+                ID_NAS_PAIR => {
+                    let host = w::get_text(ctl(ID_NAS_HOST)).trim().to_string();
+                    let code = w::get_text(ctl(ID_NAS_CODE)).trim().to_string();
+                    if host.is_empty() || code.is_empty() {
+                        w::message_box(
+                            hwnd,
+                            "Enter the NAS's name (e.g. hearth.local) and the pairing code its agent shows.",
+                            "quickseek",
+                            MB_OK | MB_ICONINFORMATION,
+                        );
+                    } else {
+                        nas_action(
+                            app,
+                            serde_json::json!({ "op": "add", "host": host, "code": code }),
+                        );
+                    }
+                }
+                ID_NAS_REMOVE | ID_NAS_TOGGLE => {
+                    let row = OPT.with(|o| {
+                        let b = o.borrow();
+                        let o = b.as_ref().unwrap();
+                        lb_sel(item(o.hwnd, ID_NAS_LIST)).and_then(|i| o.nas_rows.get(i).cloned())
+                    });
+                    match (id, row) {
+                        (ID_NAS_REMOVE, Some((host, _))) => {
+                            let ok = w::message_box(
+                                hwnd,
+                                &format!("Stop indexing the shares of {host} through its agent?"),
+                                "quickseek",
+                                MB_OKCANCEL | MB_ICONQUESTION,
+                            );
+                            if ok == IDOK {
+                                nas_action(
+                                    app,
+                                    serde_json::json!({ "op": "remove", "host": host }),
+                                );
+                            }
+                        }
+                        (ID_NAS_TOGGLE, Some((_, Some(unc)))) => {
+                            let on = OPT.with(|o| {
+                                o.borrow().as_ref().is_some_and(|o| {
+                                    o.cfg
+                                        .remotes
+                                        .iter()
+                                        .flat_map(|r| &r.shares)
+                                        .any(|s| s.unc == unc && !s.enabled)
+                                })
+                            });
+                            nas_action(
+                                app,
+                                serde_json::json!({ "op": "enable", "unc": unc, "enabled": on }),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
                 ID_VOL_INCLUDE if code == EN_CHANGE && !filling => OPT.with(|o| {
                     let mut b = o.borrow_mut();
                     let o = b.as_mut().unwrap();
@@ -835,6 +1003,7 @@ pub fn open(app: &App) {
                 controls: Vec::new(),
                 font,
                 vol_rows: Vec::new(),
+                nas_rows: Vec::new(),
                 filling: false,
             })
         });
@@ -1579,6 +1748,140 @@ pub fn open(app: &App) {
         snote(
             "Change notifications over SMB can be lost (dropped links, servers without support); a periodic walk catches what they missed.",
             y0 + 300,
+        );
+
+        // NAS agents
+        add(
+            "Static",
+            "Shares on a NAS running quickseek-agent are indexed on the NAS itself and kept current over the network: a fast first index, changes within a second, and growth history for days this PC was off. Start the agent (see the README), then pair with the code in its log.",
+            0,
+            0,
+            -1,
+            Some(6),
+            x0,
+            y0,
+            full,
+            56,
+        );
+        add(
+            "ListBox",
+            "",
+            lb_style,
+            WS_EX_CLIENTEDGE,
+            ID_NAS_LIST,
+            Some(6),
+            x0,
+            y0 + 60,
+            full - 130,
+            190,
+        );
+        add(
+            "Button",
+            "Remove Agent",
+            btn,
+            0,
+            ID_NAS_REMOVE,
+            Some(6),
+            x0 + full - 120,
+            y0 + 60,
+            120,
+            28,
+        );
+        add(
+            "Button",
+            "Share On/Off",
+            btn,
+            0,
+            ID_NAS_TOGGLE,
+            Some(6),
+            x0 + full - 120,
+            y0 + 94,
+            120,
+            28,
+        );
+        add(
+            "Static",
+            "NAS:",
+            0x200, /* SS_CENTERIMAGE */
+            0,
+            -1,
+            Some(6),
+            x0,
+            y0 + 262,
+            40,
+            24,
+        );
+        let host = add(
+            "Edit",
+            "",
+            edit_style,
+            WS_EX_CLIENTEDGE,
+            ID_NAS_HOST,
+            Some(6),
+            x0 + 44,
+            y0 + 262,
+            180,
+            24,
+        );
+        send(
+            host,
+            EM_SETCUEBANNER,
+            1,
+            wide("hearth.local").as_ptr() as isize,
+        );
+        add(
+            "Static",
+            "Pairing code:",
+            0x200, /* SS_CENTERIMAGE */
+            0,
+            -1,
+            Some(6),
+            x0 + 236,
+            y0 + 262,
+            90,
+            24,
+        );
+        let code = add(
+            "Edit",
+            "",
+            edit_style,
+            WS_EX_CLIENTEDGE,
+            ID_NAS_CODE,
+            Some(6),
+            x0 + 328,
+            y0 + 262,
+            full - 130 - 328,
+            24,
+        );
+        send(
+            code,
+            EM_SETCUEBANNER,
+            1,
+            wide("K7QF-3MZD").as_ptr() as isize,
+        );
+        add(
+            "Button",
+            "Pair",
+            btn,
+            0,
+            ID_NAS_PAIR,
+            Some(6),
+            x0 + full - 120,
+            y0 + 260,
+            120,
+            28,
+        );
+        add(
+            "Static",
+            "",
+            0,
+            0,
+            ID_NAS_STATE,
+            Some(6),
+            x0,
+            y0 + 296,
+            full,
+            60,
         );
 
         // Buttons

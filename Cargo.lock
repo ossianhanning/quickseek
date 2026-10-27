@@ -865,6 +865,7 @@ dependencies = [
  "log",
  "quickseek-core",
  "quickseek-mcp",
+ "quickseek-remote",
  "serde_json",
  "windows-service",
 ]
@@ -893,6 +894,8 @@ dependencies = [
  "log",
  "memchr",
  "parking_lot",
+ "quickseek-agent",
+ "quickseek-remote",
  "rayon",
  "regex",
  "serde",

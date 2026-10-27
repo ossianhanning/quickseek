@@ -138,6 +138,11 @@ enum Cmd {
         #[command(subcommand)]
         action: FolderCmd,
     },
+    /// NAS agents (quickseek-agent running on a NAS): pair, list, remove.
+    Remotes {
+        #[command(subcommand)]
+        action: RemoteCmd,
+    },
     /// Show or replace the index configuration (excludes, volumes, ...).
     Config {
         #[command(subcommand)]
@@ -253,6 +258,30 @@ enum FolderCmd {
 }
 
 #[derive(Subcommand)]
+enum RemoteCmd {
+    /// Agents and their shares, with each share's state.
+    List,
+    /// Pair with the agent on HOST and index its shares as \\HOST\SHARE volumes.
+    Add {
+        /// Host name or address of the NAS (hearth.local).
+        host: String,
+        /// The pairing code the agent shows (its log, or `quickseek-agent pair`); asked for if left out.
+        #[arg(long)]
+        pair: Option<String>,
+        #[arg(long, default_value_t = quickseek_remote::DEFAULT_PORT)]
+        port: u16,
+    },
+    /// Forget an agent; a folder index of the same share comes back if you had one.
+    Remove { host: String },
+    /// Turn one share of an agent off or on (by its UNC root).
+    Enable {
+        unc: String,
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        on: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCmd {
     /// Print the configuration as JSON.
     Show,
@@ -287,6 +316,87 @@ fn open_engine(volumes: &[char], force: bool, verbose: bool) -> Engine {
 
 /// The service when it's running and usable, otherwise an in-process engine
 /// (which needs administrator rights).
+fn remotes(cli: &Cli, action: &RemoteCmd) -> anyhow::Result<()> {
+    use serde_json::{Value, json};
+    let mut be = open_backend(cli, false)?;
+    let call = |be: &mut Box<dyn Backend>, a: Value| be.remote(&a).map_err(anyhow::Error::msg);
+    match action {
+        RemoteCmd::List => {
+            let list = call(&mut be, json!({ "op": "list" }))?;
+            let list = list.as_array().cloned().unwrap_or_default();
+            if list.is_empty() {
+                println!(
+                    "no NAS agents; add one with `quickseek remotes add <host> --pair <code>`"
+                );
+            }
+            for r in list {
+                let st = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+                println!(
+                    "{}:{}  agent {}{}  certificate {}",
+                    st(&r, "host"),
+                    r["port"],
+                    st(&r, "agent"),
+                    if r["paired"].as_bool() == Some(true) {
+                        ""
+                    } else {
+                        " (not paired)"
+                    },
+                    st(&r, "fingerprint")
+                );
+                for sh in r["shares"].as_array().into_iter().flatten() {
+                    println!(
+                        "  {:<28} {:<20} {:>10} entries  {}",
+                        st(sh, "unc"),
+                        st(sh, "state"),
+                        sh["entries"].as_u64().unwrap_or(0),
+                        st(sh, "root")
+                    );
+                }
+            }
+        }
+        RemoteCmd::Add { host, pair, port } => {
+            let code = match pair {
+                Some(c) => c.clone(),
+                None => {
+                    eprint!("Pairing code from the agent (its log, or `quickseek-agent pair`): ");
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    line.trim().to_string()
+                }
+            };
+            let r = call(
+                &mut be,
+                json!({ "op": "add", "host": host, "port": port, "code": code }),
+            )?;
+            println!(
+                "paired with {} ({host})",
+                r["agent"].as_str().unwrap_or("?")
+            );
+            for sh in r["shares"].as_array().into_iter().flatten() {
+                println!(
+                    "  {}  ←  {}",
+                    sh["unc"].as_str().unwrap_or(""),
+                    sh["root"].as_str().unwrap_or("")
+                );
+            }
+            println!("`quickseek remotes list` shows when they're ready.");
+        }
+        RemoteCmd::Remove { host } => {
+            call(&mut be, json!({ "op": "remove", "host": host }))?;
+            println!("removed {host} (`quickseek-agent revoke` on the NAS forgets this PC there)");
+        }
+        RemoteCmd::Enable { unc, on } => {
+            call(
+                &mut be,
+                json!({ "op": "enable", "unc": unc, "enabled": on }),
+            )?;
+            println!("{unc}: {}", if *on { "on" } else { "off" });
+        }
+    }
+    be.finish()?;
+    Ok(())
+}
+
 fn open_backend(cli: &Cli, verbose: bool) -> anyhow::Result<Box<dyn Backend>> {
     // The service indexes everything; a volume filter means local mode.
     if !cli.local && cli.volume.is_empty() {
@@ -885,6 +995,7 @@ fn main() -> anyhow::Result<()> {
                 println!("removed {path}");
             }
         },
+        Cmd::Remotes { ref action } => remotes(&cli, action)?,
         Cmd::Config { ref action } => match action {
             ConfigCmd::Show => println!("{}", serde_json::to_string_pretty(&show_config(&cli)?)?),
             ConfigCmd::Set { file } => {

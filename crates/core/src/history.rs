@@ -535,6 +535,50 @@ impl History {
         self.cache.lock().len()
     }
 
+    /// Adds a volume as it was at `time`, measured elsewhere (a NAS agent's
+    /// own daily snapshot), for a day this PC has no record of it: into
+    /// this PC's snapshot of the same local day if there is one without it,
+    /// else as a snapshot holding only that volume. Returns false if that
+    /// day already has the volume.
+    pub fn merge_volume(&self, time: i64, vol: SnapVolume) -> io::Result<bool> {
+        let day = local_midnight(time);
+        let same_day: Vec<SnapInfo> = self
+            .list()
+            .into_iter()
+            .filter(|s| !s.is_save_point() && s.time >= day && s.time < day + 86_400)
+            .collect();
+        let mut first = None;
+        for s in &same_day {
+            let snap = self.load(&s.id)?;
+            if snap
+                .volumes
+                .iter()
+                .any(|v| v.key.eq_ignore_ascii_case(&vol.key))
+            {
+                return Ok(false);
+            }
+            first.get_or_insert((s.id.clone(), snap));
+        }
+        match first {
+            Some((id, mut snap)) => {
+                snap.volumes.push(vol);
+                let tmp = self.dir.join(format!("{id}.tmp"));
+                std::fs::write(&tmp, snap.encode())?;
+                std::fs::rename(&tmp, self.dir.join(format!("{id}.snap")))?;
+                self.cache.lock().remove(&id);
+            }
+            None => {
+                self.save(&Snapshot {
+                    time,
+                    name: String::new(),
+                    volumes: vec![vol],
+                    has_files: true,
+                })?;
+            }
+        }
+        Ok(true)
+    }
+
     /// The newest snapshot taken today (local date), if any.
     pub fn has_one_since(&self, t: i64) -> bool {
         self.list()
@@ -691,6 +735,50 @@ mod tests {
         // 2 recent + ~29 daily + ~22 weekly + ~18 monthly + 1 save point (the other is over a year old).
         assert!((60..=80).contains(&kept), "{kept}");
         assert!(k[800] && !k[801]);
+    }
+
+    #[test]
+    fn merging_a_remote_volume_fills_its_day() {
+        let d = std::env::temp_dir().join(format!("qs-hist-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let h = History::new(d.clone());
+        let now = now_unix();
+        let today = local_midnight(now);
+        // The PC took a snapshot two days ago (noon) with C: only.
+        let mut pc = sample();
+        pc.name.clear();
+        pc.time = today - 2 * 86_400 + 43_200;
+        h.save(&pc).unwrap();
+        let nas = || SnapVolume {
+            key: r"\\nas\data".into(),
+            capacity: 100,
+            free: 40,
+            folders: vec![SnapFolder {
+                parent: u32::MAX,
+                name: r"\\nas\data".into(),
+                size: 60 << 20,
+                cloud: 0,
+                files: 3,
+            }],
+            files: vec![],
+        };
+        // Same day: goes into the PC's snapshot.
+        assert!(h.merge_volume(pc.time + 3600, nas()).unwrap());
+        assert_eq!(h.list().len(), 1);
+        let id = h.list()[0].id.clone();
+        assert_eq!(h.paths(&id).unwrap().get(r"\\nas\data"), Some(60 << 20));
+        // Again: that day has it now.
+        assert!(!h.merge_volume(pc.time + 7200, nas()).unwrap());
+        // A day the PC was off: a snapshot of its own.
+        let t = today - 86_400 + 600;
+        assert!(h.merge_volume(t, nas()).unwrap());
+        let list = h.list();
+        assert_eq!(list.len(), 2);
+        assert_eq!(
+            h.paths(&list[1].id).unwrap().get(r"\\nas\data"),
+            Some(60 << 20)
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

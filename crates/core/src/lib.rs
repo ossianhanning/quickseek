@@ -7,6 +7,7 @@
 //! * [`persist`] — instant startup from a saved index + journal cursor.
 //! * [`engine`] — multi-volume lifecycle and watcher threads.
 //! * [`ipc`] — named-pipe protocol between the elevated service and clients.
+//! * [`remote`] — shares served by a NAS agent, as replica volumes.
 //! * [`upgrade`] — replacing running programs on install/update.
 
 pub mod config;
@@ -26,6 +27,7 @@ pub mod live;
 pub mod ntfs;
 pub mod persist;
 pub mod query;
+pub mod remote;
 pub mod runs;
 pub mod search;
 pub mod tree;

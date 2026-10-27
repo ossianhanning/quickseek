@@ -54,6 +54,47 @@ impl Default for FolderConfig {
     }
 }
 
+/// A NAS running `quickseek-agent` (see `docs/design/nas-agent.md`). The
+/// token it gave when pairing is kept apart (see [`crate::remote`]), since
+/// the config is handed to every client.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoteConfig {
+    /// Host name or address, as given when pairing (`hearth.local`).
+    pub host: String,
+    pub port: u16,
+    /// SHA-256 of the agent's certificate (hex), pinned when pairing.
+    pub fingerprint: String,
+    /// The agent's own name, for display.
+    pub agent: String,
+    pub shares: Vec<RemoteShare>,
+}
+
+/// One folder an agent serves, indexed as a volume keyed by its UNC root.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteShare {
+    /// The agent's name for it (`data`).
+    pub name: String,
+    /// Its path on the NAS (`/volume1/data`), for display.
+    pub root: String,
+    /// Where Windows reaches it (`\\hearth.local\data`): the volume's key and
+    /// the start of every path in it.
+    pub unc: String,
+    pub enabled: bool,
+}
+
+impl Default for RemoteShare {
+    fn default() -> Self {
+        RemoteShare {
+            name: String::new(),
+            root: String::new(),
+            unc: String::new(),
+            enabled: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -95,6 +136,8 @@ pub struct Config {
     pub share_index_date_created: bool,
     /// Rescan interval given to newly added shares, in minutes.
     pub share_rescan_minutes: u32,
+    /// NAS agents; their shares replace folder indexes of the same UNC root.
+    pub remotes: Vec<RemoteConfig>,
 }
 
 impl Default for Config {
@@ -120,6 +163,7 @@ impl Default for Config {
             share_rewalk_on_start: true,
             share_index_date_created: true,
             share_rescan_minutes: 60,
+            remotes: Vec::new(),
         }
     }
 }
@@ -163,6 +207,17 @@ impl Config {
             o.created = self.share_index_date_created;
         }
         o
+    }
+
+    /// The enabled remote share whose UNC root is `key`.
+    pub fn remote_share(&self, key: &str) -> Option<(&RemoteConfig, &RemoteShare)> {
+        let key = key.trim_end_matches('\\');
+        self.remotes.iter().find_map(|r| {
+            r.shares
+                .iter()
+                .find(|s| s.enabled && s.unc.trim_end_matches('\\').eq_ignore_ascii_case(key))
+                .map(|s| (r, s))
+        })
     }
 
     pub fn fold_mode(&self) -> FoldMode {

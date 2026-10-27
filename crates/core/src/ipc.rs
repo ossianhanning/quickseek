@@ -59,7 +59,7 @@ use crate::tree::{NodeRef, Tree, TreeLevel, TreeRow, TreeSort};
 
 pub const PIPE_NAME: &str = r"\\.\pipe\quickseek";
 const MAX_FRAME: u32 = 64 << 20;
-/// Newest protocol version this build speaks (5: folder logins).
+/// Newest protocol version this build speaks (5: folder logins, NAS agents).
 pub const PROTOCOL: u8 = 5;
 /// Oldest version it still serves and speaks (3: before folder-size history).
 pub const MIN_PROTOCOL: u8 = 3;
@@ -153,6 +153,9 @@ pub enum Request {
         user: String,
         password: crate::credstore::Secret,
     },
+    /// NAS agents: a JSON action (see [`crate::remote::action`]), answered
+    /// with JSON in a [`Response::Config`].
+    Remote(String),
 }
 
 /// One folder's size in every snapshot (aligned with [`SeriesReply::snaps`]).
@@ -415,6 +418,10 @@ impl Request {
                 w.str(user);
                 w.str(password.expose());
             }
+            Request::Remote(json) => {
+                w.u8(17);
+                w.str(json);
+            }
             Request::Snapshot { offset, count } => {
                 w.u8(10);
                 w.u64(*offset);
@@ -515,6 +522,7 @@ impl Request {
                     count: r.u32()?,
                 },
                 12 => Request::History,
+                17 => Request::Remote(r.str()?),
                 16 => Request::FolderLogin {
                     path: r.str()?,
                     user: r.str()?,
@@ -1239,6 +1247,10 @@ impl Session {
                 Ok(s) => Response::Series(s),
                 Err(e) => Response::Error(e),
             },
+            Request::Remote(json) => match crate::remote::action(eng, json) {
+                Ok(s) => Response::Config(s),
+                Err(e) => Response::Error(e),
+            },
         }
     }
 }
@@ -1738,6 +1750,16 @@ pub trait Backend: Send {
             Err(e) => Err(format!("service connection: {e}")),
         }
     }
+
+    /// A NAS agent action (see [`crate::remote::action`]); answers JSON.
+    fn remote(&mut self, action: &serde_json::Value) -> Result<serde_json::Value, String> {
+        match self.call(&Request::Remote(action.to_string())) {
+            Ok(Response::Config(s)) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+            Ok(Response::Error(e)) => Err(e),
+            Ok(_) => Err("unexpected response".into()),
+            Err(e) => Err(format!("service connection: {e}")),
+        }
+    }
 }
 
 fn page_reply(r: io::Result<Response>) -> Result<Page, String> {
@@ -2031,6 +2053,7 @@ mod tests {
                 user: r"NAS\me".into(),
                 password: crate::credstore::Secret::new("pässword".into()),
             },
+            Request::Remote(r#"{"op":"list"}"#.into()),
         ] {
             assert_eq!(Request::decode(&req.encode()).unwrap(), req);
         }

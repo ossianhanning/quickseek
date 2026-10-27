@@ -582,6 +582,10 @@ pub(crate) fn disk_space(root: &str) -> (u64, u64) {
             .find(|(r, _, _)| r.trim_end_matches('\\').eq_ignore_ascii_case(key))
             .map_or((0, 0), |&(_, c, f)| (c, f));
     }
+    // A NAS agent's share: what the agent reports, not what SMB would.
+    if let Some(d) = crate::remote::disk_space(root) {
+        return d;
+    }
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let mut path = root.to_string();
     if !path.ends_with('\\') {
