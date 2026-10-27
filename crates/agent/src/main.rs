@@ -28,6 +28,8 @@ Options (environment variable in brackets):
   --threads N         walker threads [QUICKSEEK_THREADS, default min(4, cores)]
   --rewalk-hours N    safety re-walk interval, 0 = never [QUICKSEEK_REWALK_HOURS, default 24]
   --name NAME         shown on the PC [QUICKSEEK_NAME, default the host name]
+  --walk-io KIND      I/O priority of walks: idle (only when the disks are otherwise free) or
+                      normal [QUICKSEEK_WALK_IO, default idle]; live changes always read at normal
 ";
 
 fn env(name: &str) -> Option<String> {
@@ -65,6 +67,13 @@ fn parse(args: &[String]) -> anyhow::Result<(String, Vec<String>, Options)> {
     if let Some(v) = env("QUICKSEEK_NAME") {
         o.name = v;
     }
+    if let Some(v) = env("QUICKSEEK_WALK_IO") {
+        o.idle_walks = match v.as_str() {
+            "idle" => true,
+            "normal" => false,
+            _ => anyhow::bail!("QUICKSEEK_WALK_IO: idle or normal, not {v}"),
+        };
+    }
     let mut cmd = String::from("run");
     let mut rest = Vec::new();
     let mut from_cli = Vec::new();
@@ -85,6 +94,13 @@ fn parse(args: &[String]) -> anyhow::Result<(String, Vec<String>, Options)> {
             "--threads" => o.threads = val()?.parse()?,
             "--rewalk-hours" => o.rewalk_hours = val()?.parse()?,
             "--name" => o.name = val()?,
+            "--walk-io" => {
+                o.idle_walks = match val()?.as_str() {
+                    "idle" => true,
+                    "normal" => false,
+                    v => anyhow::bail!("--walk-io: idle or normal, not {v}"),
+                }
+            }
             "-h" | "--help" | "help" => cmd = "help".into(),
             "-V" | "--version" => cmd = "version".into(),
             s if s.starts_with('-') => anyhow::bail!("unknown option {s}\n\n{USAGE}"),
@@ -169,15 +185,12 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Background priority: the NAS's own work (Samba, media servers) wins.
-/// Called before any thread starts, so every thread inherits it.
+/// Background CPU priority: the NAS's own work (Samba, media servers) wins.
+/// Called before any thread starts, so every thread inherits it. (Walker
+/// threads also get idle I/O priority, see `Options::idle_walks`.)
 #[cfg(target_os = "linux")]
 fn lower_priority() {
-    unsafe {
-        libc::setpriority(libc::PRIO_PROCESS as _, 0, 10);
-        // ioprio_set(IOPRIO_WHO_PROCESS, this thread, IOPRIO_CLASS_IDLE << 13)
-        libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13);
-    }
+    unsafe { libc::setpriority(libc::PRIO_PROCESS as _, 0, 10) };
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -44,6 +44,9 @@ pub struct Options {
     pub rewalk_hours: u64,
     /// Shown on the PC (default: the host name).
     pub name: String,
+    /// Walker threads read at idle I/O priority: they only get the disks
+    /// when nothing else wants them (the live changes' few reads don't wait).
+    pub idle_walks: bool,
 }
 
 impl Default for Options {
@@ -58,6 +61,7 @@ impl Default for Options {
             threads: std::thread::available_parallelism().map_or(2, |n| n.get().min(4)),
             rewalk_hours: 24,
             name: host_name(),
+            idle_walks: true,
         }
     }
 }
@@ -156,9 +160,15 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
 fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &AtomicBool) {
     let shares = &agent.shares;
     let hist = agent.store.history_dir();
+    let idle = opts.idle_walks;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(opts.threads.max(1))
         .thread_name(|i| format!("walk-{i}"))
+        .start_handler(move |_| {
+            if idle {
+                idle_io();
+            }
+        })
         .build()
         .expect("thread pool");
     let marks: Vec<std::path::PathBuf> = if opts.marks.is_empty() {
@@ -227,6 +237,16 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
         }
     }
 }
+
+/// Idle I/O priority for the calling thread (I/O priority is per thread on Linux).
+#[cfg(target_os = "linux")]
+fn idle_io() {
+    // ioprio_set(IOPRIO_WHO_PROCESS, this thread, IOPRIO_CLASS_IDLE << 13)
+    unsafe { libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13) };
+}
+
+#[cfg(not(target_os = "linux"))]
+fn idle_io() {}
 
 /// `NAME=PATH` or just `PATH` (named after its last folder).
 pub fn parse_share(s: &str) -> anyhow::Result<(String, PathBuf)> {
