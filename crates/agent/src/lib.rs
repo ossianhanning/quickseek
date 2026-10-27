@@ -2,6 +2,7 @@
 //! serves the index to the Quickseek service on Windows, which keeps a
 //! replica (see `docs/design/nas-agent.md`).
 //!
+//! * [`btrfs`]: the index read from btrfs's own trees, and catching up by generation.
 //! * [`tree`]: entries by id, the walk, and merging a walk into the tree.
 //! * [`share`]: one served folder: tree, change log, reconciling events.
 //! * [`watch`]: fanotify / inotify.
@@ -9,6 +10,8 @@
 //! * [`state`]: certificate, paired PCs, pairing codes.
 //! * [`snaps`]: daily folder-size snapshots.
 
+#[cfg(target_os = "linux")]
+pub mod btrfs;
 pub mod server;
 pub mod share;
 pub mod snaps;
@@ -49,6 +52,18 @@ pub struct Options {
     /// the PC waits for) runs at normal priority, and the live changes' few
     /// reads never wait.
     pub idle_walks: bool,
+    /// How shares are read in full.
+    pub index: IndexKind,
+}
+
+/// How a share is read in full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexKind {
+    /// From btrfs's own trees where possible (catching up by generation),
+    /// else by walking.
+    Auto,
+    /// Always by walking (readdir and lstat).
+    Walk,
 }
 
 impl Default for Options {
@@ -64,6 +79,7 @@ impl Default for Options {
             rewalk_hours: 24,
             name: host_name(),
             idle_walks: true,
+            index: IndexKind::Auto,
         }
     }
 }
@@ -159,9 +175,103 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
     })
 }
 
+/// Set by SIGTERM/SIGINT (`docker stop`): save the indexes and exit.
+pub static TERM: AtomicBool = AtomicBool::new(false);
+
+/// What a background indexing job produced for one share.
+struct Indexed {
+    share: usize,
+    fresh: tree::Fresh,
+    took: Duration,
+    /// From btrfs's trees: the subvolumes and their generations.
+    #[cfg(target_os = "linux")]
+    subvols: Option<Vec<btrfs::Subvol>>,
+}
+
+/// Reads a share in full: from btrfs's trees when it can, else by walking.
+fn index_share(
+    i: usize,
+    root: &std::path::Path,
+    try_btrfs: bool,
+    pool: &rayon::ThreadPool,
+) -> Indexed {
+    let t0 = Instant::now();
+    #[cfg(target_os = "linux")]
+    if try_btrfs {
+        match btrfs::index(root, pool.current_num_threads()) {
+            Ok((fresh, subvols)) => {
+                return Indexed {
+                    share: i,
+                    fresh,
+                    took: t0.elapsed(),
+                    subvols: Some(subvols),
+                };
+            }
+            Err(e) => log::warn!(
+                "{}: reading btrfs's trees failed ({e}); walking instead",
+                root.display()
+            ),
+        }
+    }
+    let _ = try_btrfs;
+    Indexed {
+        share: i,
+        fresh: tree::walk(root, pool),
+        took: t0.elapsed(),
+        #[cfg(target_os = "linux")]
+        subvols: None,
+    }
+}
+
+/// btrfs: applies what changed since the share's generations. False if it
+/// couldn't (the share then needs a full index).
+#[cfg(target_os = "linux")]
+fn catch_up(
+    sh: &Share,
+    i: usize,
+    pool: &rayon::ThreadPool,
+    w: &mut Box<dyn watch::Watcher>,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let subvols = sh.subvols.lock().unwrap().clone();
+    if subvols.is_empty() {
+        return false;
+    }
+    let t0 = Instant::now();
+    let (changed, mut gens) = match btrfs::changed(&sh.root, &subvols) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("{}: btrfs catch-up failed ({e})", sh.name);
+            return false;
+        }
+    };
+    let ch = sh.catch_up(&changed, pool);
+    w.untrack(i, &ch.removed);
+    w.track(i, &ch.added);
+    // Subvolumes created inside the share since: follow them too.
+    for (_, path) in &ch.added {
+        if let Ok(m) = std::fs::symlink_metadata(path)
+            && m.ino() == 256
+            && !gens.iter().any(|s| s.dev == m.dev())
+            && let Ok(s) = btrfs::subvol_of(path)
+        {
+            gens.push(s);
+        }
+    }
+    *sh.subvols.lock().unwrap() = gens;
+    log::debug!(
+        "{}: btrfs catch-up in {} ms",
+        sh.name,
+        t0.elapsed().as_millis()
+    );
+    true
+}
+
 fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &AtomicBool) {
     let shares = &agent.shares;
+    let n = shares.len();
     let hist = agent.store.history_dir();
+    let cfg_dir = agent.store.dir.clone();
     let pool = Arc::new(
         rayon::ThreadPoolBuilder::new()
             .num_threads(opts.threads.max(1))
@@ -182,53 +292,130 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
     };
     let mut w = watch::open(opts.watch, &marks);
     *agent.watcher.lock().unwrap() = w.name();
-    // Walks run on their own thread, share by share, while this loop keeps
-    // applying change events; each finished walk is merged and the events
-    // seen during it are applied again (the listing may predate them).
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, tree::Fresh, Duration)>();
-    let start_walk = |tx: std::sync::mpsc::Sender<(usize, tree::Fresh, Duration)>| {
-        let (pool, roots) = (
-            pool.clone(),
-            shares.iter().map(|s| s.root.clone()).collect::<Vec<_>>(),
-        );
-        std::thread::Builder::new()
-            .name("walk".into())
-            .spawn(move || {
-                for (i, root) in roots.iter().enumerate() {
-                    let t0 = Instant::now();
-                    let fresh = tree::walk(root, &pool);
-                    if tx.send((i, fresh, t0.elapsed())).is_err() {
-                        return;
-                    }
+    // Which shares are read from btrfs's trees.
+    #[cfg(target_os = "linux")]
+    let use_btrfs: Vec<bool> = shares
+        .iter()
+        .map(|s| {
+            let ok = opts.index == IndexKind::Auto && btrfs::probe(&s.root).is_ok();
+            log::info!(
+                "{}: {}",
+                s.name,
+                if ok {
+                    "indexed from btrfs's trees, caught up by generation"
+                } else {
+                    "indexed by walking it"
                 }
-            })
-            .expect("walk thread");
-    };
-    // Two at the start: the second catches what changed in folders the
-    // watcher didn't follow yet during the first.
-    let mut walks_due = 2;
-    let mut walks_done = 0u32;
-    // While a walk runs: the events applied since it started, per share, and
+            );
+            ok
+        })
+        .collect();
+    #[cfg(not(target_os = "linux"))]
+    let use_btrfs = vec![false; n];
+    // Saved indexes: serve them at once, then catch up.
+    let loaded: Vec<bool> = shares.iter().map(|s| s.load(&cfg_dir).is_ok()).collect();
+    for (i, sh) in shares.iter().enumerate() {
+        if loaded[i] {
+            let dirs = sh.state.lock().unwrap().tree.all_dirs();
+            w.track(i, &dirs);
+        }
+    }
+    // Shares due for a full index (walk or tree search), done on a thread
+    // while this loop keeps applying change events; each finished one is
+    // merged and the events seen during it are applied again (the listing
+    // may predate them).
+    let mut due: Vec<u8> = (0..n).map(|_| 0).collect();
+    for i in 0..n {
+        #[cfg(target_os = "linux")]
+        let caught = loaded[i] && use_btrfs[i] && catch_up(&shares[i], i, &pool, &mut w);
+        #[cfg(not(target_os = "linux"))]
+        let caught = false;
+        // Walked shares go twice the first time: the second catches what
+        // changed in folders the watcher didn't follow yet during the first.
+        // A btrfs share catches up right after its first index instead.
+        due[i] = if caught {
+            0
+        } else if use_btrfs[i] || loaded[i] {
+            1
+        } else {
+            2
+        };
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Indexed>();
+    // While a job runs: the events applied since it started, per share, and
     // how many shares it has left.
-    let mut walking: Option<(Vec<Vec<Event>>, usize)> = None;
-    let mut last_walk = Instant::now();
+    let mut running: Option<(Vec<Vec<Event>>, usize)> = None;
+    let mut first_done = vec![false; n];
+    let mut last_full = Instant::now();
     let mut last_disk = Instant::now();
     let mut last_snap = Instant::now() - Duration::from_secs(3600);
-    while !stop.load(Ordering::Relaxed) {
-        if walking.is_none() && walks_due > 0 {
-            walks_due -= 1;
-            start_walk(tx.clone());
-            walking = Some((vec![Vec::new(); shares.len()], shares.len()));
-            last_walk = Instant::now();
+    let mut last_save = Instant::now();
+    // btrfs writes new entries and sizes into its trees at its next commit
+    // (up to 30 s; a file's size even at writeback), so what a tree search
+    // reads can lag a little: a cheap catch-up every minute (a search for
+    // newer leaves skips everything unchanged) picks those up, and anything
+    // a lost event hid.
+    #[cfg(target_os = "linux")]
+    let mut last_catch = Instant::now();
+    let mut saved_seq: Vec<u64> = vec![u64::MAX; n];
+    let save = |saved_seq: &mut Vec<u64>, force: bool| {
+        for (i, sh) in shares.iter().enumerate() {
+            let seq = sh.state.lock().unwrap().seq;
+            if force || seq != saved_seq[i] {
+                match sh.save(&cfg_dir) {
+                    Ok(s) => saved_seq[i] = s,
+                    Err(e) => log::warn!("{}: saving the index: {e}", sh.name),
+                }
+            }
         }
-        let events = w.wait(Duration::from_millis(if walking.is_some() {
+    };
+    loop {
+        if TERM.load(Ordering::Relaxed) {
+            save(&mut saved_seq, true);
+            log::info!("stopping (indexes saved)");
+            std::process::exit(0);
+        }
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        if running.is_none() && due.iter().any(|&d| d > 0) {
+            let which: Vec<usize> = (0..n).filter(|&i| due[i] > 0).collect();
+            for &i in &which {
+                due[i] -= 1;
+            }
+            let jobs: Vec<(usize, std::path::PathBuf, bool)> = which
+                .iter()
+                .map(|&i| (i, shares[i].root.clone(), use_btrfs[i]))
+                .collect();
+            let (pool2, tx2) = (pool.clone(), tx.clone());
+            std::thread::Builder::new()
+                .name("index".into())
+                .spawn(move || {
+                    for (i, root, b) in jobs {
+                        if tx2.send(index_share(i, &root, b, &pool2)).is_err() {
+                            return;
+                        }
+                    }
+                })
+                .expect("index thread");
+            running = Some((vec![Vec::new(); n], which.len()));
+            last_full = Instant::now();
+        }
+        let events = w.wait(Duration::from_millis(if running.is_some() {
             200
         } else {
             1000
         }));
         if events.contains(&Event::Overflow) {
-            log::info!("change events were lost; re-walking");
-            walks_due = 1;
+            log::info!("change events were lost; catching up");
+            for (i, sh) in shares.iter().enumerate() {
+                #[cfg(target_os = "linux")]
+                if use_btrfs[i] && running.is_none() && catch_up(sh, i, &pool, &mut w) {
+                    continue;
+                }
+                let _ = sh;
+                due[i] = due[i].max(1);
+            }
         } else if !events.is_empty() {
             for (i, sh) in shares.iter().enumerate() {
                 let mine: Vec<Event> = events
@@ -240,18 +427,19 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
                     let ch = sh.apply(&mine, &pool);
                     w.untrack(i, &ch.removed);
                     w.track(i, &ch.added);
-                    if let Some((seen, _)) = walking.as_mut() {
+                    if let Some((seen, _)) = running.as_mut() {
                         seen[i].extend(mine);
                     }
                 }
             }
         }
-        while let Ok((i, fresh, took)) = rx.try_recv() {
+        while let Ok(done) = rx.try_recv() {
+            let i = done.share;
             let sh = &shares[i];
-            let ch = sh.merge_walk(fresh, took);
+            let ch = sh.merge_walk(done.fresh, done.took);
             w.untrack(i, &ch.removed);
             w.track(i, &ch.added);
-            if let Some((seen, left)) = walking.as_mut() {
+            if let Some((seen, left)) = running.as_mut() {
                 let again = std::mem::take(&mut seen[i]);
                 if !again.is_empty() {
                     let ch = sh.apply(&again, &pool);
@@ -260,22 +448,47 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
                 }
                 *left -= 1;
                 if *left == 0 {
-                    walking = None;
-                    walks_done += 1;
-                    if walks_done == 2 && opts.idle_walks {
-                        // After the first walks, walk at idle I/O priority
-                        // (it's per thread: every walker sets its own).
-                        pool.broadcast(|_| idle_io());
-                    }
+                    running = None;
                 }
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(subvols) = done.subvols {
+                *sh.subvols.lock().unwrap() = subvols;
+                // What changed while the trees were read, in folders not
+                // followed yet: the generations were read first.
+                catch_up(sh, i, &pool, &mut w);
+            }
+            if !first_done[i] {
+                first_done[i] = true;
+                save(&mut saved_seq, false);
+            }
+            if first_done.iter().all(|&d| d) && opts.idle_walks {
+                // After the first indexes, walk at idle I/O priority (it's
+                // per thread: every walker sets its own).
+                pool.broadcast(|_| idle_io());
             }
         }
         if rewalk_now.swap(false, Ordering::Relaxed)
             || (opts.rewalk_hours > 0
-                && walking.is_none()
-                && last_walk.elapsed() > Duration::from_secs(opts.rewalk_hours * 3600))
+                && running.is_none()
+                && last_full.elapsed() > Duration::from_secs(opts.rewalk_hours * 3600))
         {
-            walks_due = walks_due.max(1);
+            for d in due.iter_mut() {
+                *d = (*d).max(1);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if running.is_none() && last_catch.elapsed() > Duration::from_secs(60) {
+            for (i, sh) in shares.iter().enumerate() {
+                if use_btrfs[i] && first_done[i] && !catch_up(sh, i, &pool, &mut w) {
+                    due[i] = due[i].max(1);
+                }
+            }
+            last_catch = Instant::now();
+        }
+        if last_save.elapsed() > Duration::from_secs(600) {
+            save(&mut saved_seq, false);
+            last_save = Instant::now();
         }
         if last_disk.elapsed() > Duration::from_secs(60) {
             for sh in shares {
@@ -292,13 +505,128 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
 
 /// Idle I/O priority for the calling thread (I/O priority is per thread on Linux).
 #[cfg(target_os = "linux")]
-fn idle_io() {
+pub fn idle_io() {
     // ioprio_set(IOPRIO_WHO_PROCESS, this thread, IOPRIO_CLASS_IDLE << 13)
     unsafe { libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13) };
 }
 
 #[cfg(not(target_os = "linux"))]
-fn idle_io() {}
+pub fn idle_io() {}
+
+#[cfg(target_os = "linux")]
+/// (dev, ino, size, mtime, name) of every entry, sorted: to tell whether
+/// two readings of a share agree.
+fn entry_keys(f: &tree::Fresh) -> Vec<(u64, u64, u64, i64, &str)> {
+    let mut v: Vec<(u64, u64, u64, i64, &str)> = f.items[1..]
+        .iter()
+        .map(|(_, it)| {
+            (
+                it.meta.dev,
+                it.meta.ino,
+                it.meta.size,
+                it.meta.modified,
+                &*it.name,
+            )
+        })
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// `quickseek-agent bench`: times reading each share from btrfs's trees and
+/// by walking (first and again), and a catch-up, and checks both readings
+/// give the same entries. Read-only.
+pub fn bench(opts: &Options, idle: bool) -> anyhow::Result<()> {
+    if idle {
+        idle_io();
+    }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(opts.threads.max(1))
+        .start_handler(move |_| {
+            if idle {
+                idle_io();
+            }
+        })
+        .build()?;
+    let pressure = || {
+        std::fs::read_to_string("/proc/pressure/io")
+            .ok()
+            .and_then(|s| s.lines().next().map(str::to_string))
+            .unwrap_or_else(|| "n/a".into())
+    };
+    println!(
+        "I/O priority: {}; threads: {}; I/O pressure now: {}",
+        if idle { "idle" } else { "normal" },
+        opts.threads,
+        pressure()
+    );
+    for (name, root) in &opts.shares {
+        println!("== {name} ({})", root.display());
+        let walk = |label: &str| {
+            let t = Instant::now();
+            let f = tree::walk(root, &pool);
+            println!(
+                "  walk ({label}): {} entries in {:.1} s",
+                f.items.len() - 1,
+                t.elapsed().as_secs_f64()
+            );
+            f
+        };
+        #[cfg(target_os = "linux")]
+        {
+            if let Err(e) = btrfs::probe(root) {
+                println!("  btrfs tree search not available here: {e}");
+                walk("first");
+                continue;
+            }
+            let search = |label: &str| -> anyhow::Result<(tree::Fresh, Vec<btrfs::Subvol>)> {
+                let t = Instant::now();
+                let (f, s) = btrfs::index(root, opts.threads.max(1))?;
+                println!(
+                    "  btrfs tree search ({label}): {} entries in {:.1} s ({} subvolumes)",
+                    f.items.len() - 1,
+                    t.elapsed().as_secs_f64(),
+                    s.len()
+                );
+                Ok((f, s))
+            };
+            // Which goes first gets the colder cache (QS_BENCH_FIRST=walk to swap).
+            let (a, w) = if std::env::var("QS_BENCH_FIRST").as_deref() == Ok("walk") {
+                let w = walk("first");
+                (search("first")?.0, w)
+            } else {
+                let a = search("first")?.0;
+                (a, walk("first"))
+            };
+            let same = entry_keys(&a) == entry_keys(&w);
+            println!(
+                "  the same entries (inode, size, date, name): {}",
+                if same { "yes" } else { "NO" }
+            );
+            drop((a, w));
+            let (_, subvols) = search("again")?;
+            walk("again");
+            let t = Instant::now();
+            let (changed, _) = btrfs::changed(root, &subvols)?;
+            println!(
+                "  catch-up from the generations of the last search: {} changed inodes in {} ms",
+                changed.len(),
+                t.elapsed().as_millis()
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            walk("first");
+        }
+        println!("  I/O pressure now: {}", pressure());
+    }
+    if let Ok(s) = std::fs::read_to_string("/proc/self/status")
+        && let Some(l) = s.lines().find(|l| l.starts_with("VmHWM"))
+    {
+        println!("peak memory: {}", l.trim_start_matches("VmHWM:").trim());
+    }
+    Ok(())
+}
 
 /// `NAME=PATH` or just `PATH` (named after its last folder).
 pub fn parse_share(s: &str) -> anyhow::Result<(String, PathBuf)> {

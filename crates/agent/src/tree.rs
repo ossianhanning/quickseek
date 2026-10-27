@@ -17,35 +17,60 @@ use quickseek_remote::{
     ROOT_ID, filetime_of,
 };
 
-/// What the PC needs to know about an entry.
+/// What the PC needs to know about an entry, and which inode it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Meta {
     pub attrs: u32,
     pub size: u64,
     pub modified: i64,
     pub created: i64,
+    /// Device (on btrfs: one per subvolume) and inode number: how a btrfs
+    /// catch-up ([`crate::btrfs`]) finds the entries of a changed inode.
+    pub dev: u64,
+    pub ino: u64,
+}
+
+/// File attributes for a name and kind (Samba's default: dot files are hidden).
+pub fn attrs_of(name: &str, dir: bool, symlink: bool) -> u32 {
+    let mut attrs = 0;
+    if dir {
+        attrs |= FILE_ATTRIBUTE_DIRECTORY;
+    }
+    if symlink {
+        attrs |= FILE_ATTRIBUTE_REPARSE_POINT;
+    }
+    if name.starts_with('.') {
+        attrs |= FILE_ATTRIBUTE_HIDDEN;
+    }
+    attrs
 }
 
 impl Meta {
     pub fn of(name: &str, m: &Metadata) -> Meta {
         let ft = m.file_type();
-        let mut attrs = 0;
-        if ft.is_dir() {
-            attrs |= FILE_ATTRIBUTE_DIRECTORY;
-        }
-        if ft.is_symlink() {
-            attrs |= FILE_ATTRIBUTE_REPARSE_POINT;
-        }
-        // Samba's default ("hide dot files").
-        if name.starts_with('.') {
-            attrs |= FILE_ATTRIBUTE_HIDDEN;
-        }
+        #[cfg(unix)]
+        let (dev, ino) = {
+            use std::os::unix::fs::MetadataExt;
+            (m.dev(), m.ino())
+        };
+        #[cfg(not(unix))]
+        let (dev, ino) = (0, 0);
         Meta {
-            attrs,
+            attrs: attrs_of(name, ft.is_dir(), ft.is_symlink()),
             size: if ft.is_file() { m.len() } else { 0 },
             modified: filetime_of(m.modified()),
             created: filetime_of(m.created()),
+            dev,
+            ino,
         }
+    }
+
+    /// The same entry as far as the PC can tell (not which inode it is).
+    pub fn shown_eq(&self, o: &Meta) -> bool {
+        self.attrs == o.attrs
+            && self.size == o.size
+            && self.modified == o.modified
+            && self.created == o.created
     }
 
     pub fn is_dir(&self) -> bool {
@@ -157,6 +182,97 @@ impl Tree {
             modified: n.meta.modified,
             created: n.meta.created,
         }
+    }
+
+    /// Every folder (the root included) with its path, for a watcher that
+    /// follows them all.
+    pub fn all_dirs(&self) -> Vec<(u32, PathBuf)> {
+        let mut out = vec![(ROOT_ID, self.root.clone())];
+        out.extend(
+            (FIRST_ID..self.next_id())
+                .filter(|&i| self.nodes[i as usize].live && self.nodes[i as usize].meta.walks())
+                .map(|i| (i, self.path(i))),
+        );
+        out
+    }
+
+    /// The whole tree for saving: next id, the root's metadata, then every
+    /// entry as a record with its device and inode.
+    pub fn save_to(&self, out: &mut Vec<u8>) {
+        use quickseek_remote::wire::{put, put_i};
+        put(out, self.next_id() as u64);
+        let r = &self.nodes[ROOT_ID as usize].meta;
+        for v in [r.modified, r.created] {
+            put_i(out, v);
+        }
+        put(out, r.dev);
+        put(out, r.ino);
+        put(out, self.live as u64);
+        let mut prev = 0;
+        for id in FIRST_ID..self.next_id() {
+            let n = &self.nodes[id as usize];
+            if !n.live {
+                continue;
+            }
+            let m = &n.meta;
+            quickseek_remote::wire::put_record_fields(
+                out, id, n.parent, &n.name, m.attrs, m.size, m.modified, m.created, prev,
+            );
+            put(out, m.dev);
+            put(out, m.ino);
+            prev = id;
+        }
+    }
+
+    /// A tree saved by [`Tree::save_to`].
+    pub fn load_from(root: &Path, rd: &mut quickseek_remote::wire::Rd) -> std::io::Result<Tree> {
+        use quickseek_remote::wire::{bad, get_record};
+        let next = rd.u32()?.max(FIRST_ID);
+        let mut t = Tree::new(root);
+        {
+            let r = &mut t.nodes[ROOT_ID as usize].meta;
+            r.modified = rd.i()?;
+            r.created = rd.i()?;
+            r.dev = rd.u()?;
+            r.ino = rd.u()?;
+        }
+        let n = rd.u()? as usize;
+        t.nodes.resize(next as usize, Node::default());
+        let mut prev = 0;
+        for _ in 0..n {
+            let rec = get_record(rd, prev)?;
+            prev = rec.id;
+            if rec.id < FIRST_ID || rec.id >= next {
+                return Err(bad("saved index: id"));
+            }
+            t.nodes[rec.id as usize] = Node {
+                parent: rec.parent,
+                name: rec.name.into_boxed_str(),
+                meta: Meta {
+                    attrs: rec.attrs,
+                    size: rec.size,
+                    modified: rec.modified,
+                    created: rec.created,
+                    dev: rd.u()?,
+                    ino: rd.u()?,
+                },
+                children: Vec::new(),
+                live: true,
+            };
+        }
+        // Children lists, and nothing hanging off a missing folder.
+        for id in FIRST_ID..next {
+            let p = t.nodes[id as usize].parent;
+            if t.nodes[id as usize].live {
+                if (p as usize) < t.nodes.len() && t.nodes[p as usize].live {
+                    t.nodes[p as usize].children.push(id);
+                } else {
+                    return Err(bad("saved index: parent"));
+                }
+            }
+        }
+        t.live = n;
+        Ok(t)
     }
 
     /// Every entry below the root encoded for a full transfer (ascending

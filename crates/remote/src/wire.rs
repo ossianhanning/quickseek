@@ -657,6 +657,15 @@ pub fn encode_records(records: impl IntoIterator<Item = Record>) -> (u64, Vec<Ve
     (n, chunks(&raw))
 }
 
+/// zstd at a moderate level (for files the agent keeps).
+pub fn compress(b: &[u8]) -> Vec<u8> {
+    zstd::bulk::compress(b, 3).unwrap_or_default()
+}
+
+pub fn decompress(b: &[u8]) -> io::Result<Vec<u8>> {
+    zstd::stream::decode_all(b)
+}
+
 /// Encoded records (see [`put_record_fields`]) compressed and split into
 /// `Chunk` payloads.
 pub fn chunks(raw: &[u8]) -> Vec<Vec<u8>> {

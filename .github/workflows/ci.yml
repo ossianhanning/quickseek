@@ -61,9 +61,11 @@ jobs:
           sudo btrfs subvolume create /mnt/btrfs/share
           sudo chmod 1777 /mnt/btrfs/share
       # Root for CAP_SYS_ADMIN, with its own target folder so the cache stays the runner's.
-      - name: Tests as root (fanotify), on ext4
-        run: sudo -E env "PATH=$PATH" CARGO_TARGET_DIR=/tmp/root-target cargo test -p quickseek-agent --test live --locked
-      - name: Tests as root (fanotify), on a btrfs subvolume
+      # As root: fanotify, and the btrfs tests (tree search against the walk,
+      # catch-up by generation), which make and mount their own btrfs image.
+      - name: Tests as root (fanotify, btrfs tree search and catch-up), on ext4
+        run: sudo -E env "PATH=$PATH" CARGO_TARGET_DIR=/tmp/root-target cargo test -p quickseek-agent --locked
+      - name: Live tests as root on a btrfs subvolume (fanotify, tree search, restart)
         run: sudo -E env "PATH=$PATH" CARGO_TARGET_DIR=/tmp/root-target TMPDIR=/mnt/btrfs/share cargo test -p quickseek-agent --test live --locked
       - name: Docker image
         run: docker build -f packaging/agent/Dockerfile -t quickseek-agent:ci . && docker run --rm quickseek-agent:ci version

@@ -15,6 +15,11 @@ use crate::watch::Event;
 
 /// Ops kept for clients that reconnect (older ones get a full transfer).
 pub const LOG_CAP: usize = 200_000;
+/// After loading a saved index, sequence numbers continue this far above
+/// the saved one: a PC that saw ops after the save (which the agent no
+/// longer has) gets a full transfer, never another history's ops.
+const RESUME_GAP: u64 = 1 << 40;
+const SAVE_MAGIC: &[u8; 8] = b"QSAIDX01";
 
 pub struct State {
     pub tree: Tree,
@@ -29,11 +34,18 @@ pub struct State {
     pub status: String,
     pub capacity: u64,
     pub free: u64,
+    /// Loaded from a save made at seq `.0`; the log continues from `.1`.
+    pub resumed: Option<(u64, u64)>,
 }
 
 impl State {
     /// Ops after `seq`, at most `max`; `None` if they're no longer in the log.
     pub fn ops_after(&self, seq: u64, max: usize) -> Option<Vec<Op>> {
+        // A PC that was in step with the saved index continues from it.
+        let seq = match self.resumed {
+            Some((saved, base)) if seq == saved => base,
+            _ => seq,
+        };
         let first = self.seq + 1 - self.log.len() as u64;
         if seq + 1 < first || seq > self.seq {
             return None;
@@ -49,6 +61,10 @@ pub struct Share {
     pub state: Mutex<State>,
     /// Signalled after every change and state change.
     pub changed: Condvar,
+    /// btrfs: the subvolumes and the generation the index is current to
+    /// (empty when the share isn't indexed through btrfs).
+    #[cfg(target_os = "linux")]
+    pub subvols: Mutex<Vec<crate::btrfs::Subvol>>,
 }
 
 /// What a batch did to the folders a watcher has to follow.
@@ -72,9 +88,117 @@ impl Share {
                 status: "walking".into(),
                 capacity: 0,
                 free: 0,
+                resumed: None,
             }),
             changed: Condvar::new(),
+            #[cfg(target_os = "linux")]
+            subvols: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Where this share's index is saved in config folder `dir`.
+    pub fn save_path(&self, dir: &Path) -> PathBuf {
+        let safe: String = self
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        dir.join(format!("index-{safe}.idx"))
+    }
+
+    /// Saves the index (tree, epoch, seq, btrfs generations) so a restart
+    /// only catches up and PCs in step with it don't need it all again.
+    /// Returns the seq saved.
+    pub fn save(&self, dir: &Path) -> std::io::Result<u64> {
+        use quickseek_remote::wire::{put, put_str};
+        let mut body = Vec::new();
+        let seq = {
+            let st = self.state.lock().unwrap();
+            if !st.ready {
+                return Ok(0);
+            }
+            put(&mut body, st.epoch);
+            put(&mut body, st.seq);
+            put_str(&mut body, &self.root.to_string_lossy());
+            #[cfg(target_os = "linux")]
+            let subvols: Vec<(u64, u64, u64)> = self
+                .subvols
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|s| (s.tree, s.dev, s.generation))
+                .collect();
+            #[cfg(not(target_os = "linux"))]
+            let subvols: Vec<(u64, u64, u64)> = Vec::new();
+            put(&mut body, subvols.len() as u64);
+            for (t, d, g) in subvols {
+                put(&mut body, t);
+                put(&mut body, d);
+                put(&mut body, g);
+            }
+            st.tree.save_to(&mut body);
+            st.seq
+        };
+        let mut data = SAVE_MAGIC.to_vec();
+        data.extend(quickseek_remote::wire::compress(&body));
+        let path = self.save_path(dir);
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, data)?;
+        std::fs::rename(tmp, path)?;
+        Ok(seq)
+    }
+
+    /// Loads a saved index (before anything else touched this share).
+    pub fn load(&self, dir: &Path) -> std::io::Result<()> {
+        use quickseek_remote::wire::{Rd, bad};
+        let data = std::fs::read(self.save_path(dir))?;
+        let body = data
+            .strip_prefix(SAVE_MAGIC)
+            .ok_or_else(|| bad("saved index: magic"))?;
+        let body = quickseek_remote::wire::decompress(body)?;
+        let mut rd = Rd(&body);
+        let epoch = rd.u()?;
+        let seq = rd.u()?;
+        if rd.str()? != self.root.to_string_lossy() {
+            return Err(bad("saved index: another folder"));
+        }
+        let n = rd.u()? as usize;
+        let mut subvols = Vec::with_capacity(n.min(4096));
+        for _ in 0..n {
+            subvols.push((rd.u()?, rd.u()?, rd.u()?));
+        }
+        let tree = Tree::load_from(&self.root, &mut rd)?;
+        let entries = tree.len();
+        let mut st = self.state.lock().unwrap();
+        st.tree = tree;
+        st.epoch = epoch;
+        st.resumed = Some((seq, seq + RESUME_GAP));
+        st.seq = seq + RESUME_GAP;
+        st.log.clear();
+        st.ready = true;
+        st.status = "ready".into();
+        #[cfg(target_os = "linux")]
+        {
+            *self.subvols.lock().unwrap() = subvols
+                .into_iter()
+                .map(|(tree, dev, generation)| crate::btrfs::Subvol {
+                    tree,
+                    dev,
+                    generation,
+                })
+                .collect();
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = subvols;
+        log::info!("{}: loaded the saved index ({entries} entries)", self.name);
+        self.changed.notify_all();
+        Ok(())
     }
 
     fn commit(&self, st: &mut State, ops: Vec<Op>) {
@@ -116,6 +240,10 @@ impl Share {
         let mut removed = Vec::new();
         let first = !st.ready;
         st.tree.quiet = first;
+        if let Some((_, r)) = fresh.items.first() {
+            // The root's own metadata (no op: the PC doesn't show the root's dates).
+            st.tree.nodes[ROOT_ID as usize].meta = r.meta;
+        }
         st.tree
             .merge(ROOT_ID, &fresh, &mut ops, &mut added, &mut removed);
         st.tree.quiet = false;
@@ -251,6 +379,125 @@ impl Share {
             .filter(|&d| st.tree.is_dir(d))
             .map(|d| (d, st.tree.path(d)))
             .collect();
+        out
+    }
+
+    /// Applies a btrfs catch-up ([`crate::btrfs::changed`]): new metadata for
+    /// changed inodes, and every changed folder compared with a listing of
+    /// it (deletions, additions, and moves recognised by inode).
+    #[cfg(target_os = "linux")]
+    pub fn catch_up(
+        &self,
+        changed: &[crate::btrfs::Changed],
+        pool: &rayon::ThreadPool,
+    ) -> DirChanges {
+        use std::collections::{HashMap, HashSet};
+        let mut st = self.state.lock().unwrap();
+        let tree = &mut st.tree;
+        let mut ops = Vec::new();
+        let mut out = DirChanges::default();
+        let mut added = Vec::new();
+        let mut by_ino: HashMap<(u64, u64), Vec<u32>> = HashMap::new();
+        for id in std::iter::once(ROOT_ID).chain(quickseek_remote::FIRST_ID..tree.next_id()) {
+            if let Some(n) = tree.get(id) {
+                by_ino.entry((n.meta.dev, n.meta.ino)).or_default().push(id);
+            }
+        }
+        // New metadata; the changed folders to look into.
+        let mut dirs = Vec::new();
+        for c in changed {
+            for &id in by_ino
+                .get(&(c.dev, c.ino))
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+            {
+                let n = tree.get(id).unwrap();
+                let name = n.name.to_string();
+                let walks = n.meta.walks();
+                let meta = c.inode.meta(&name, c.dev, c.ino);
+                if id == ROOT_ID {
+                    tree.nodes[ROOT_ID as usize].meta = meta;
+                } else if meta.walks() == walks {
+                    tree.update(id, meta, &mut ops);
+                }
+                if walks {
+                    dirs.push(id);
+                }
+            }
+        }
+        dirs.sort_unstable();
+        dirs.dedup();
+        // Each changed folder against its listing.
+        let mut gone: HashSet<u32> = HashSet::new();
+        let mut new: Vec<(u32, String)> = Vec::new();
+        for &d in &dirs {
+            let Ok(listing) = crate::btrfs::list(&tree.path(d)) else {
+                continue; // went away itself: its parent's listing removes it
+            };
+            let have: HashMap<&str, u32> = tree.nodes[d as usize]
+                .children
+                .iter()
+                .map(|&c| (&*tree.nodes[c as usize].name, c))
+                .collect();
+            for (&name, &c) in &have {
+                if listing.get(name) != Some(&tree.nodes[c as usize].meta.ino) {
+                    gone.insert(c);
+                }
+            }
+            for (name, ino) in &listing {
+                if have
+                    .get(name.as_str())
+                    .is_none_or(|&c| tree.nodes[c as usize].meta.ino != *ino)
+                {
+                    new.push((d, name.clone()));
+                }
+            }
+        }
+        // A new name for an inode that left its old place: a move.
+        let mut create = Vec::new();
+        for (d, name) in new {
+            let path = tree.path(d).join(&name);
+            let Ok(m) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let meta = Meta::of(&name, &m);
+            let moved = by_ino
+                .get(&(meta.dev, meta.ino))
+                .and_then(|ids| ids.iter().copied().find(|id| gone.contains(id)));
+            match moved {
+                Some(id) if tree.get(id).is_some_and(|n| n.meta.walks() == meta.walks()) => {
+                    gone.remove(&id);
+                    tree.move_to(id, d, &name, &mut ops);
+                    tree.update(id, meta, &mut ops);
+                }
+                _ => create.push((d, name)),
+            }
+        }
+        for id in gone {
+            tree.remove(id, &mut ops, &mut out.removed);
+        }
+        for (d, name) in create {
+            reconcile(tree, d, &name, &mut ops, &mut added, &mut out.removed, pool);
+        }
+        let n_ops = ops.len();
+        self.commit(&mut st, ops);
+        out.added = added
+            .into_iter()
+            .filter(|&d| st.tree.is_dir(d))
+            .map(|d| (d, st.tree.path(d)))
+            .collect();
+        let level = if n_ops > 0 {
+            log::Level::Info
+        } else {
+            log::Level::Debug
+        };
+        log::log!(
+            level,
+            "{}: caught up {} changed inodes, {} folders looked at, {n_ops} changes sent",
+            self.name,
+            changed.len(),
+            dirs.len()
+        );
         out
     }
 

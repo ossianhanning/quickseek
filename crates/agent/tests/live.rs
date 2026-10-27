@@ -19,7 +19,21 @@ fn tmp(tag: &str) -> PathBuf {
     std::fs::create_dir_all(d.join("share").join("docs")).unwrap();
     std::fs::write(d.join("share").join("docs").join("a.txt"), b"hello").unwrap();
     std::fs::write(d.join("share").join("b.bin"), vec![1u8; 4096]).unwrap();
+    settle();
     d
+}
+
+/// On btrfs a tree search sees new entries and sizes once they're committed
+/// (the agent's minute-by-minute catch-ups pick up later ones); tests that
+/// index right after writing sync first.
+fn settle() {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn sync();
+        }
+        unsafe { sync() };
+    }
 }
 
 fn start(d: &Path, watch: Kind) -> Running {
@@ -118,6 +132,7 @@ fn change_round(s: &mut Session, r: &Running, dir: &Path, name: &str, watched: b
     let t0 = Instant::now();
     std::fs::write(dir.join(name), b"new").unwrap();
     if !watched {
+        settle();
         r.rewalk_now
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -150,6 +165,7 @@ fn live_changes(watch: Kind, expect: &str) {
     std::fs::create_dir_all(share.join("new").join("deep")).unwrap();
     std::fs::write(share.join("new").join("deep").join("x.txt"), b"x").unwrap();
     if !watched {
+        settle();
         r.rewalk_now
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -163,6 +179,7 @@ fn live_changes(watch: Kind, expect: &str) {
         .unwrap();
     std::fs::rename(share.join("new"), share.join("docs").join("renamed")).unwrap();
     if !watched {
+        settle();
         r.rewalk_now
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -177,6 +194,7 @@ fn live_changes(watch: Kind, expect: &str) {
     }
     std::fs::remove_file(share.join("b.bin")).unwrap();
     if !watched {
+        settle();
         r.rewalk_now
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -227,6 +245,59 @@ fn fanotify_live() {
 unsafe extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;
+}
+
+/// The agent saves its index; after a restart it catches up (on btrfs from
+/// its trees, else with a walk) and a PC in step with the save resumes:
+/// only the changes made meanwhile arrive, no full transfer.
+#[test]
+fn restart_resumes_from_the_saved_index() {
+    let d = tmp("restart");
+    let r = start(&d, Kind::None);
+    let p = pair(&d, &r);
+    let mut s = connect(&r, &p);
+    let (epoch, seq, recs) = subscribe(&mut s, 0, 0).expect("a full transfer");
+    let a = recs.iter().find(|r| r.name == "a.txt").unwrap().id;
+    // The first index is saved once it's done.
+    let saved = d.join("config").join("index-share.idx");
+    let t0 = Instant::now();
+    while !saved.exists() {
+        assert!(t0.elapsed() < T, "no saved index");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let port = r.port;
+    drop(s);
+    drop(r);
+    // Changes while it's down.
+    std::fs::write(d.join("share").join("while-down.txt"), b"new").unwrap();
+    std::fs::remove_file(d.join("share").join("docs").join("a.txt")).unwrap();
+    settle();
+    let r = quickseek_agent::start(Options {
+        shares: vec![("share".into(), d.join("share"))],
+        config: d.join("config"),
+        listen: "127.0.0.1".into(),
+        port,
+        watch: Kind::None,
+        threads: 2,
+        rewalk_hours: 0,
+        name: "testnas".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = connect(&r, &p);
+    assert!(
+        subscribe(&mut s, epoch, seq).is_none(),
+        "resumed, no full transfer"
+    );
+    let (ops, _) = until(&mut s, created("while-down.txt"));
+    let (ops2, _) = if ops.contains(&Op::Remove { id: a }) {
+        (ops, 0)
+    } else {
+        until(&mut s, |o| *o == Op::Remove { id: a })
+    };
+    assert!(ops2.contains(&Op::Remove { id: a }));
+    drop(r);
+    std::fs::remove_dir_all(&d).ok();
 }
 
 #[test]
