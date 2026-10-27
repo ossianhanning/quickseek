@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp", "crates/setup"]
+members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp", "crates/setup", "crates/remote", "crates/agent"]
 # The installer embeds the other binaries: build it with tools\build-release.ps1.
-default-members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp"]
+default-members = ["crates/core", "crates/cli", "crates/gui", "crates/mcp", "crates/remote", "crates/agent"]
 
 [workspace.package]
 version = "19.9.0"

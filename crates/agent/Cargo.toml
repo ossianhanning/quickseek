@@ -1,0 +1,21 @@
+[package]
+name = "quickseek-agent"
+description = "Quickseek NAS agent: indexes a Linux NAS locally and serves it to the Quickseek service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+log = "0.4.34"
+env_logger = "0.11.11"
+quickseek-remote = { path = "../remote" }
+rayon = "1.12.0"
+rcgen = { version = "0.14.5", default-features = false, features = ["ring", "pem"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.191"
