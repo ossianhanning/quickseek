@@ -84,18 +84,73 @@ fanotify; mounting only the two shares limits it to inotify.
 - **Fallback: inotify per directory**, chosen automatically when fanotify isn't allowed (no
   `CAP_SYS_ADMIN`, `EXDEV` because only subvolumes were mounted, another filesystem). Same
   reconcile path, so both are tested by the same tests.
-- **Gap-filler: a diffing re-walk.** On start, on queue overflow and on a slow schedule (daily
-  by default) the agent walks the roots again in parallel and diffs against its tree, so ids of
-  unchanged entries survive and only real differences go to the PC. btrfs generation scans were
-  rejected for this version: the walk is needed anyway for non-btrfs NASes, deletions need it,
-  and on Hearth a warm walk of 590k entries takes seconds. They remain the obvious optimisation
-  for restarting the agent on a very large btrfs volume.
+- **Gap-filler on btrfs: a catch-up by generation** (below), after lost events, after a
+  restart and every minute. **Elsewhere: a diffing re-walk**, after lost events and daily. Both
+  diff against the tree, so ids of unchanged entries survive and only real differences go to
+  the PC. Walks and full re-reads run on their own thread while live events keep being applied;
+  the events seen meanwhile are applied again after the merge, since the listing may predate
+  them (on Hearth a 3-minute walk under load had held a live change up for 24 s before this).
 
 Events are not applied blindly: each `(directory, name)` an event names is *reconciled* by
 `lstat`ing it and comparing with the tree (exists → add or update, gone → remove, a new
 directory → walk it). That makes ordering, duplicates and the "created before the watch" race
 harmless, and batches of events for the same name collapse into one `lstat`. Events are
 batched for 150 ms.
+
+## Reading btrfs like the MFT
+On btrfs (where the agent may search trees: `CAP_SYS_ADMIN`; `--index walk` turns it off) a
+share isn't walked; its subvolume's tree is read directly, as Quickseek reads NTFS's `$MFT`
+(`crates/agent/src/btrfs.rs`):
+
+- **Full index.** `BTRFS_IOC_TREE_SEARCH_V2` with 16 MB of buffers, in parallel slices of the
+  inode numbers (a slice starts at an inode, so an inode's items stay together). An inode's
+  INODE_ITEM (mode, size, mtime, otime = date created) comes right before its INODE_REF items
+  (a name in a parent folder; several for hard links; INODE_EXTREF when a folder holds too many
+  names of one inode for one item), so one pass gives every entry, with no readdir or lstat per
+  file. A DIR_INDEX item pointing at a ROOT_ITEM is a nested subvolume or snapshot: its tree is
+  read too and hung under that name (its device comes from an lstat of its folder). If the
+  ROOT_REF doesn't name that folder, it's the empty stand-in a snapshot shows for a subvolume it
+  didn't copy, and gets an lstat. Inodes nobody refers to (orphans being deleted) aren't
+  reachable and drop out; the subvolume root's ".." ref to itself is skipped. A test on a btrfs
+  image compares this with a walk entry by entry (path, attributes, size, dates, device, inode)
+  with hard links past one INODE_REF item, a fifo, symlinks, non-ASCII names, a nested
+  subvolume and a snapshot; only the stand-in's dates differ, because the kernel makes them up
+  at every look.
+- **Catch-up by generation.** Each subvolume's generation (its ROOT_ITEM's) is read *before*
+  its tree, so anything changing during the read is newer. Later a search with `min_transid =
+  generation + 1` returns only the leaves written since (btrfs skips every unchanged subtree),
+  and among their INODE_ITEMs those whose own transid is newer: every changed file and folder.
+  A changed file just gets its new metadata. Deletions leave no item to find, but adding,
+  removing or renaming an entry always rewrites its folder's inode, so each changed folder is
+  listed once (readdir, which also gives inode numbers; no lstat) and compared with the tree:
+  names gone are removed, new names are looked up, and a new name whose inode is one that left
+  its old place is a move (it keeps its id; a folder keeps its contents). Subvolumes created
+  inside a share are followed from then on. A test makes those changes (new, deleted, grown and
+  renamed entries, new hard links, a new and a deleted subvolume) and compares with a walk.
+- **btrfs's own lag.** New entries and sizes reach the trees at btrfs's next commit (up to
+  30 s; a new file's size and extents even at writeback), while an lstat sees them at once. So a
+  read can trail the very latest changes; the catch-up every minute picks those up, and the live
+  events (lstat) cover files written after their folder is followed. The agent doesn't force
+  commits.
+- **Kept across restarts.** The index is saved in `/config` (every 10 minutes when it changed,
+  after the first index, and on SIGTERM, i.e. `docker stop`), with its epoch, ids, sequence
+  number and generations. At start it's loaded before the server listens, then caught up (or
+  re-walked where there's no btrfs). A PC in step with the save resumes and receives only the
+  changes; sequence numbers continue 2^40 above the saved one, so a PC that had seen ops after
+  the save (which the agent lost) gets a full transfer instead of a mix of two histories, and a
+  resuming PC is told the new number at once.
+
+Measured on Hearth (`quickseek-agent bench`, read-only, idle I/O priority, 2 threads; the cloud
+sync was paused, I/O pressure 5-40 %): `data`, 708,473 entries: warm, the tree search took 5.5 s
+and the walk 13.6-13.8 s; the first, partly cold run 45.6 s against 27.0 s for a walk right after
+it (the shares are mostly big files, and the tree search also reads every file-extent item, which
+a walk never touches, so cold it can lose). A catch-up with nothing changed: 6-38 ms. `media`,
+12,999 entries: 0.2 s warm either way. In the agent: the first index of `data` 8.2 s, `media`
+1.5 s; a `docker restart` was back with both shares loaded within about a second, and the PC
+resumed without a full transfer; a file written while the agent was down was searchable on the
+PC 7.1 s after `docker start` (container start included), the catch-up applying 1,528 changed
+inodes from that downtime. In WSL on a fast virtual disk (590k synthetic files, cache dropped
+before each first read): 5.4 s against 8.3 s for the walk, warm 1.1 s against 1.7 s.
 
 ## Protocol
 The brief suggested reusing the IPC request/response types (`Search`, `Fetch`, `Tree`, ...) over
@@ -196,8 +251,10 @@ the share, or saved as a snapshot holding only that share if the PC has none tha
 comparisons and series then cover the NAS even across weeks the PC was off.
 
 ## Resource limits on the NAS
-- Memory: the tree costs ~90 bytes per entry (≈ 55 MB for 590k) plus the change log (200k ops,
-  ≈ 10 MB). The compose file sets `mem_limit: 256m`.
+- Memory: on Hearth, 721k entries in two shares take 112-115 MB once indexed (the tree with
+  each entry's device and inode, the saved-index buffers, the change log of up to 200k ops). A
+  first walk of 640k entries peaked at 152 MB (the first index records no ops: every PC gets
+  it in full anyway). The compose file sets `mem_limit: 256m`.
 - CPU: the walk uses at most 4 threads (`--threads`, default min(4, cores)); live tracking is one
   thread mostly asleep. Compose sets `cpus: 1.0` and the process runs at `nice 10`. Walks after
   the first read at idle I/O priority (`ioprio_set` class idle, per walker thread), so Plex and

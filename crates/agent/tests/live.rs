@@ -272,7 +272,7 @@ fn restart_resumes_from_the_saved_index() {
     std::fs::write(d.join("share").join("while-down.txt"), b"new").unwrap();
     std::fs::remove_file(d.join("share").join("docs").join("a.txt")).unwrap();
     settle();
-    let r = quickseek_agent::start(Options {
+    let mut r = quickseek_agent::start(Options {
         shares: vec![("share".into(), d.join("share"))],
         config: d.join("config"),
         listen: "127.0.0.1".into(),
@@ -289,13 +289,47 @@ fn restart_resumes_from_the_saved_index() {
         subscribe(&mut s, epoch, seq).is_none(),
         "resumed, no full transfer"
     );
-    let (ops, _) = until(&mut s, created("while-down.txt"));
-    let (ops2, _) = if ops.contains(&Op::Remove { id: a }) {
-        (ops, 0)
-    } else {
-        until(&mut s, |o| *o == Op::Remove { id: a })
-    };
-    assert!(ops2.contains(&Op::Remove { id: a }));
+    let (ops, mut seq) = until(&mut s, created("while-down.txt"));
+    if !ops.contains(&Op::Remove { id: a }) {
+        let (ops2, q) = until(&mut s, |o| *o == Op::Remove { id: a });
+        assert!(ops2.contains(&Op::Remove { id: a }));
+        seq = q;
+    }
+    // Saved again (as SIGTERM does) and restarted with nothing changed: the
+    // PC resumes again, and once more after a restart with no changes at all
+    // (it's told the sequence number to resume from).
+    for round in 0..2 {
+        r.agent.shares[0].save(&d.join("config")).unwrap();
+        drop(s);
+        drop(r);
+        let r2 = quickseek_agent::start(Options {
+            shares: vec![("share".into(), d.join("share"))],
+            config: d.join("config"),
+            listen: "127.0.0.1".into(),
+            port,
+            watch: Kind::None,
+            threads: 2,
+            rewalk_hours: 0,
+            name: "testnas".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        s = connect(&r2, &p);
+        s.send(&Msg::Subscribe {
+            share: "share".into(),
+            epoch,
+            seq,
+        })
+        .unwrap();
+        match s.recv().unwrap() {
+            Msg::Changes { seq: q, ops } => {
+                assert!(ops.is_empty(), "round {round}: {ops:?}");
+                seq = q;
+            }
+            m => panic!("round {round}: wanted the resume point, got {m:?}"),
+        }
+        r = r2;
+    }
     drop(r);
     std::fs::remove_dir_all(&d).ok();
 }

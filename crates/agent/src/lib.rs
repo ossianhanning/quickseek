@@ -126,6 +126,17 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
         .iter()
         .map(|(n, p)| Arc::new(Share::new(n, p, epoch)))
         .collect();
+    // Saved indexes first, so a PC never finds these shares unready.
+    for sh in &shares {
+        if let Err(e) = sh.load(&store.dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(
+                "{}: the saved index can't be used ({e}); indexing anew",
+                sh.name
+            );
+        }
+    }
     if store.clients().is_empty() && store.code().is_none() {
         let c = store.new_code()?;
         log::info!(
@@ -313,7 +324,10 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
     #[cfg(not(target_os = "linux"))]
     let use_btrfs = vec![false; n];
     // Saved indexes: serve them at once, then catch up.
-    let loaded: Vec<bool> = shares.iter().map(|s| s.load(&cfg_dir).is_ok()).collect();
+    let loaded: Vec<bool> = shares
+        .iter()
+        .map(|s| s.state.lock().unwrap().resumed.is_some())
+        .collect();
     for (i, sh) in shares.iter().enumerate() {
         if loaded[i] {
             let dirs = sh.state.lock().unwrap().tree.all_dirs();

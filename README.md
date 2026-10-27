@@ -132,7 +132,10 @@ takes minutes, a restart picks up where it left off, a 10,000-file copy arrives 
 of a full re-walk, the PC doesn't need your NAS password to index, and the NAS keeps a daily
 snapshot so growth history covers days the PC was off. Searching is equally fast either way. What
 it costs: a container that can read the whole volume (Windows users see every file name on it,
-whatever their SMB rights) and has `CAP_SYS_ADMIN` for fanotify. The
+whatever their SMB rights) and has `CAP_SYS_ADMIN` for fanotify. On **btrfs** (UGOS, Synology,
+most Linux NAS systems) the agent reads its index straight out of btrfs's trees, as Quickseek reads
+NTFS's MFT, and after a restart or lost events asks btrfs what changed since then instead of
+walking again (milliseconds); on other filesystems (ext4, XFS, ZFS) it walks. The
 [design notes](docs/design/nas-agent.md) have the details and measurements.
 
 **Set up.** On the NAS, with [docker-compose.yml](packaging/agent/docker-compose.yml) (adjust the

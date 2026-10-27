@@ -253,7 +253,7 @@ impl Share {
             added.insert(0, ROOT_ID);
         }
         log::info!(
-            "{}: walked {} entries in {} ms ({} changes sent)",
+            "{}: indexed {} entries in {} ms ({} changes sent)",
             self.name,
             entries,
             walked.as_millis(),

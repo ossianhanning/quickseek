@@ -239,6 +239,22 @@ fn stream(s: &mut ServerStream, sh: &Share, epoch: u64, seq: u64) -> std::io::Re
         let full = {
             let st = sh.state.lock().unwrap();
             if st.epoch == epoch && st.ops_after(sent, 0).is_some() {
+                // In step with a saved index the agent loaded: continue from
+                // where its log starts, and tell the PC (so its next resume
+                // matches even if nothing changes until then).
+                if let Some((saved, base)) = st.resumed
+                    && sent == saved
+                {
+                    sent = base;
+                    drop(st);
+                    wire::send(
+                        s,
+                        &Msg::Changes {
+                            seq: sent,
+                            ops: Vec::new(),
+                        },
+                    )?;
+                }
                 None
             } else {
                 Some((st.epoch, st.seq, st.tree.encode()))
