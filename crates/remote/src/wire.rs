@@ -259,13 +259,32 @@ impl<'a> Rd<'a> {
 /// Appends a record. Ids are delta-encoded against `prev_id` (full transfers
 /// send them ascending, so the deltas are small).
 pub fn put_record(out: &mut Vec<u8>, r: &Record, prev_id: u32) {
-    put_i(out, r.id as i64 - prev_id as i64);
-    put_i(out, r.parent as i64 - r.id as i64);
-    put_str(out, &r.name);
-    put(out, r.attrs as u64);
-    put(out, r.size);
-    put_i(out, r.modified);
-    put_i(out, r.created - r.modified);
+    put_record_fields(
+        out, r.id, r.parent, &r.name, r.attrs, r.size, r.modified, r.created, prev_id,
+    );
+}
+
+/// [`put_record`] without building a [`Record`] (the agent encodes its whole
+/// tree this way, so a full transfer needs no copy of every name).
+#[allow(clippy::too_many_arguments)]
+pub fn put_record_fields(
+    out: &mut Vec<u8>,
+    id: u32,
+    parent: u32,
+    name: &str,
+    attrs: u32,
+    size: u64,
+    modified: i64,
+    created: i64,
+    prev_id: u32,
+) {
+    put_i(out, id as i64 - prev_id as i64);
+    put_i(out, parent as i64 - id as i64);
+    put_str(out, name);
+    put(out, attrs as u64);
+    put(out, size);
+    put_i(out, modified);
+    put_i(out, created - modified);
 }
 
 pub fn get_record(rd: &mut Rd, prev_id: u32) -> io::Result<Record> {
@@ -635,8 +654,14 @@ pub fn encode_records(records: impl IntoIterator<Item = Record>) -> (u64, Vec<Ve
         prev = r.id;
         n += 1;
     }
-    let z = zstd::bulk::compress(&raw, 3).unwrap_or_default();
-    (n, z.chunks(CHUNK).map(<[u8]>::to_vec).collect())
+    (n, chunks(&raw))
+}
+
+/// Encoded records (see [`put_record_fields`]) compressed and split into
+/// `Chunk` payloads.
+pub fn chunks(raw: &[u8]) -> Vec<Vec<u8>> {
+    let z = zstd::bulk::compress(raw, 3).unwrap_or_default();
+    z.chunks(CHUNK).map(<[u8]>::to_vec).collect()
 }
 
 /// Decodes the concatenated `Chunk` payloads of a full transfer.

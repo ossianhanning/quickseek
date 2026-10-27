@@ -19,7 +19,7 @@ pub mod watch;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -84,7 +84,7 @@ pub struct Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.agent.shut_down(self.port);
     }
 }
 
@@ -125,20 +125,19 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
             .join(", "),
         quickseek_remote::pair::show_fingerprint(&fingerprint)
     );
-    let agent = Arc::new(Agent {
-        name: opts.name.clone(),
-        shares: shares.clone(),
+    let stop = Arc::new(AtomicBool::new(false));
+    let agent = Arc::new(Agent::new(
+        opts.name.clone(),
+        shares.clone(),
         store,
         tls,
         fingerprint,
-        sessions: AtomicUsize::new(0),
-        watcher: std::sync::Mutex::new("starting"),
-    });
+        stop.clone(),
+    ));
     let a = agent.clone();
     std::thread::Builder::new()
         .name("server".into())
         .spawn(move || a.serve(listener))?;
-    let stop = Arc::new(AtomicBool::new(false));
     let rewalk_now = Arc::new(AtomicBool::new(false));
     let (st, rw) = (stop.clone(), rewalk_now.clone());
     let a = agent.clone();

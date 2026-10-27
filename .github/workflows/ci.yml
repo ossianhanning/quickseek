@@ -36,3 +36,34 @@ jobs:
         run: python tools/check-imports.py target/release/quickseek.exe target/release/quickseek-gui.exe target/release/quickseek-mcp.exe target/release/quickseek-setup.exe
       - name: Third-party notices are current
         run: python tools/third-party.py --check
+
+  # The NAS agent (quickseek-agent) and its protocol crate on Linux: inotify
+  # as a normal user, then fanotify as root, on the runner's disk and on a
+  # btrfs subvolume (where the filesystem mark has to go on the btrfs root,
+  # as on a UGOS or Synology NAS). Then the Docker image.
+  agent-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p quickseek-agent -p quickseek-remote --all-targets --locked -- -D warnings
+      - name: Tests (inotify)
+        run: cargo test -p quickseek-agent -p quickseek-remote --locked
+      - name: A btrfs volume with a subvolume
+        run: |
+          truncate -s 1G "$RUNNER_TEMP/btrfs.img"
+          sudo mkfs.btrfs -q "$RUNNER_TEMP/btrfs.img"
+          sudo mkdir -p /mnt/btrfs
+          sudo mount -o loop "$RUNNER_TEMP/btrfs.img" /mnt/btrfs
+          sudo btrfs subvolume create /mnt/btrfs/share
+          sudo chmod 1777 /mnt/btrfs/share
+      # Root for CAP_SYS_ADMIN, with its own target folder so the cache stays the runner's.
+      - name: Tests as root (fanotify), on ext4
+        run: sudo -E env "PATH=$PATH" CARGO_TARGET_DIR=/tmp/root-target cargo test -p quickseek-agent --test live --locked
+      - name: Tests as root (fanotify), on a btrfs subvolume
+        run: sudo -E env "PATH=$PATH" CARGO_TARGET_DIR=/tmp/root-target TMPDIR=/mnt/btrfs/share cargo test -p quickseek-agent --test live --locked
+      - name: Docker image
+        run: docker build -f packaging/agent/Dockerfile -t quickseek-agent:ci . && docker run --rm quickseek-agent:ci version

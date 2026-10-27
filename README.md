@@ -118,10 +118,48 @@ Tools: `search_files`, `folder_sizes`, `folder_growth`, `disk_overview`, `cleanu
 `delete_paths` (Recycle Bin by default, refuses system folders) and `empty_recycle_bin`. See
 [the MCP section](docs/user-guide.md#mcp-server-quickseek-mcp) of the user guide.
 
+## NAS agent
+
+Network shares can be indexed two ways. Added as folders (Options → Folders), the PC walks them over
+SMB and follows change notifications: nothing to install on the NAS. Or a small agent runs **on the
+NAS** (Linux, Docker), indexes the shares there and keeps the PC's copy current over the LAN. They
+then behave like any drive: search, the tree, folder sizes, growth history and the MCP tools, under
+the same `\\nas\share` paths, and they stay searchable while the NAS is off.
+
+The agent pays off for big shares: on a 590,000-file share it has a copy on the PC within seconds
+of starting (a walk on the NAS, then about 6 MB over the network) instead of a walk over SMB that
+takes minutes, a restart picks up where it left off, a 10,000-file copy arrives as changes instead
+of a full re-walk, the PC doesn't need your NAS password to index, and the NAS keeps a daily
+snapshot so growth history covers days the PC was off. Searching is equally fast either way. What
+it costs: a container that can read the whole volume (Windows users see every file name on it,
+whatever their SMB rights) and has `CAP_SYS_ADMIN` for fanotify. The
+[design notes](docs/design/nas-agent.md) have the details and measurements.
+
+**Set up.** On the NAS, with [docker-compose.yml](packaging/agent/docker-compose.yml) (adjust the
+share paths and the name):
+
+```sh
+docker compose up -d
+docker compose logs quickseek-agent    # shows a pairing code, valid 15 minutes
+```
+
+On the PC (or Options → NAS): `quickseek remotes add hearth.local --pair K7QF-3MZD`. `quickseek
+remotes list` shows each share's state; `docker exec quickseek-agent /quickseek-agent pair` makes a
+new code. The image is `ghcr.io/ossianhanning/quickseek-agent` (amd64 and arm64); a static binary
+for each is attached to every release.
+
+**UGOS Pro (UGREEN), Synology.** No shell needed: in the NAS's Docker app create a
+project (UGOS Pro: Docker → Project → Create; Synology Container Manager: Project → Create) from
+the compose file, with `/volume1` read-only and a folder for `/config`; the pairing code is in the
+container's log. Where `/volume1` is btrfs, mount the volume itself, not the share folders: the
+shares are subvolumes and fanotify can only watch from the volume's root (with just the shares the
+agent still works, through inotify).
+
 ## Privacy
 
 - **Everything stays on your PC.** Quickseek has no telemetry, no update check and no cloud. It
-  makes no network connections, except to the network shares you add yourself.
+  makes no network connections, except to the network shares you add yourself and the NAS agents
+  you pair with (over TLS, to the certificate pinned when pairing).
 - The index holds names, sizes and dates, not file contents. Content search reads files on demand,
   as you, and never in the service.
 - **An AI assistant sees what it asks for.** When you connect one, the file names and sizes it gets

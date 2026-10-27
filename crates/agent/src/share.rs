@@ -109,15 +109,19 @@ impl Share {
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let first = !st.ready;
+        st.tree.quiet = first;
         st.tree
             .merge(ROOT_ID, &fresh, &mut ops, &mut added, &mut removed);
+        st.tree.quiet = false;
+        let entries = fresh.items.len().saturating_sub(1);
+        drop(fresh);
         if first {
             added.insert(0, ROOT_ID);
         }
         log::info!(
-            "{}: walked {} entries in {} ms ({} changes)",
+            "{}: walked {} entries in {} ms ({} changes sent)",
             self.name,
-            fresh.items.len().saturating_sub(1),
+            entries,
             walked.as_millis(),
             ops.len()
         );

@@ -177,6 +177,21 @@ fn nas_share_as_a_volume() {
         h.list()
     );
 
+    // The service restarts while the agent runs: it resumes from the saved
+    // copy without a full transfer, and says it's live again.
+    e.save_all(0).unwrap();
+    drop(e);
+    let e = engine(&d);
+    let t2 = Instant::now();
+    wait_for("resuming", || state(&e) == "ready");
+    eprintln!("restart: live again after {} ms", t2.elapsed().as_millis());
+    assert_eq!(paths(&e, "sunset").len(), 1);
+    std::fs::write(d.join("nas").join("after-restart.txt"), b"x").unwrap();
+    agent.rewalk_now.store(true, Ordering::Relaxed);
+    wait_for("a change after resuming", || {
+        paths(&e, "after-restart").len() == 1
+    });
+
     // The agent goes away: the replica keeps serving, the state says so.
     e.save_all(0).unwrap();
     drop(agent);

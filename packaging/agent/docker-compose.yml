@@ -1,0 +1,39 @@
+# quickseek-agent on a NAS: indexes its shares where the files are and keeps
+# Quickseek on Windows current over the LAN. See the README ("NAS agent")
+# and docs/design/nas-agent.md.
+#
+#   docker compose up -d
+#   docker compose logs quickseek-agent     # the pairing code
+#   quickseek remotes add <nas name> --pair <code>     (on the PC)
+#
+# Adjust the three marked lines for your NAS. This example is for a UGOS /
+# Synology-style layout with the shares under /volume1.
+services:
+  quickseek-agent:
+    image: ghcr.io/ossianhanning/quickseek-agent:latest
+    container_name: quickseek-agent
+    hostname: hearth                     # <- the name Quickseek shows for this NAS
+    restart: unless-stopped
+    ports:
+      - "48623:48623"
+    environment:
+      # <- name=path of every share to serve; the PC maps them to \<host>\<name>
+      QUICKSEEK_SHARES: data=/volume1/data,media=/volume1/media
+      TZ: Europe/Stockholm
+    volumes:
+      # <- the volume's root, read-only. On btrfs the shares are subvolumes and
+      # fanotify can only watch the whole filesystem from its root; with only
+      # the shares mounted the agent falls back to inotify (a watch per folder).
+      - /volume1:/volume1:ro
+      # Certificate, paired PCs and daily snapshots.
+      - /volume1/docker/quickseek-agent:/config
+    cap_drop: [ALL]
+    cap_add:
+      - SYS_ADMIN          # fanotify filesystem mark (without it: inotify)
+      - DAC_READ_SEARCH    # list every folder, whoever owns it
+      - DAC_OVERRIDE       # write /config, whoever owns that folder
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    mem_limit: 256m
+    cpus: 1.0

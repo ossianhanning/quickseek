@@ -3,9 +3,9 @@
 //! from then on only the agent talks (full transfer, then changes, with
 //! pings while idle).
 
-use std::net::TcpListener;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use quickseek_remote::tls::ServerStream;
@@ -31,11 +31,51 @@ pub struct Agent {
     pub sessions: AtomicUsize,
     /// Which change notification is in use (for logs and tests).
     pub watcher: std::sync::Mutex<&'static str>,
+    /// Set when the agent stops (tests stop and start agents in one process).
+    pub stop: Arc<AtomicBool>,
+    /// Open connections, to cut them when stopping.
+    socks: Mutex<Vec<(u64, TcpStream)>>,
+    next_sock: AtomicU64,
 }
 
 pub const BUILD: &str = concat!("quickseek-agent ", env!("CARGO_PKG_VERSION"));
 
 impl Agent {
+    pub fn new(
+        name: String,
+        shares: Vec<Arc<Share>>,
+        store: Store,
+        tls: Arc<quickseek_remote::rustls::ServerConfig>,
+        fingerprint: [u8; 32],
+        stop: Arc<AtomicBool>,
+    ) -> Agent {
+        Agent {
+            name,
+            shares,
+            store,
+            tls,
+            fingerprint,
+            sessions: AtomicUsize::new(0),
+            watcher: std::sync::Mutex::new("starting"),
+            stop,
+            socks: Mutex::new(Vec::new()),
+            next_sock: AtomicU64::new(0),
+        }
+    }
+
+    /// Stops accepting and cuts every open connection.
+    pub fn shut_down(&self, port: u16) {
+        self.stop.store(true, Ordering::Relaxed);
+        for (_, s) in self.socks.lock().unwrap().drain(..) {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+        // Wake the accept loop so it sees the flag.
+        let _ = TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_secs(1),
+        );
+    }
+
     pub fn share_infos(&self) -> Vec<ShareInfo> {
         self.shares
             .iter()
@@ -47,9 +87,12 @@ impl Agent {
             .collect()
     }
 
-    /// Accepts connections forever.
+    /// Accepts connections until stopped.
     pub fn serve(self: Arc<Self>, listener: TcpListener) {
         for sock in listener.incoming() {
+            if self.stop.load(Ordering::Relaxed) {
+                return;
+            }
             let Ok(sock) = sock else { continue };
             if self.sessions.load(Ordering::Relaxed) >= MAX_SESSIONS {
                 log::warn!("too many connections; refusing one");
@@ -58,6 +101,10 @@ impl Agent {
             let peer = sock.peer_addr().map(|a| a.to_string()).unwrap_or_default();
             let me = self.clone();
             me.sessions.fetch_add(1, Ordering::Relaxed);
+            let id = me.next_sock.fetch_add(1, Ordering::Relaxed);
+            if let Ok(c) = sock.try_clone() {
+                me.socks.lock().unwrap().push((id, c));
+            }
             let _ = std::thread::Builder::new()
                 .name(format!("client {peer}"))
                 .spawn(move || {
@@ -70,6 +117,7 @@ impl Agent {
                     if let Err(e) = r {
                         log::debug!("{peer}: {e}");
                     }
+                    me.socks.lock().unwrap().retain(|(i, _)| *i != id);
                     me.sessions.fetch_sub(1, Ordering::Relaxed);
                 });
         }
@@ -193,12 +241,13 @@ fn stream(s: &mut ServerStream, sh: &Share, epoch: u64, seq: u64) -> std::io::Re
             if st.epoch == epoch && st.ops_after(sent, 0).is_some() {
                 None
             } else {
-                Some((st.epoch, st.seq, st.tree.records()))
+                Some((st.epoch, st.seq, st.tree.encode()))
             }
         };
-        if let Some((e, q, records)) = full {
+        if let Some((e, q, (count, raw))) = full {
             let t0 = Instant::now();
-            let (count, chunks) = wire::encode_records(records);
+            let chunks = wire::chunks(&raw);
+            drop(raw);
             let bytes: usize = chunks.iter().map(Vec::len).sum();
             wire::send(
                 s,

@@ -35,13 +35,15 @@ Design notes and measurements for contributors. See also [benchmarks](benchmarks
 ## Layout
 - `crates/core`: the library
   - `ntfs/`: `mft.rs` (raw scan), `record.rs` (FILE record parsing), `usn.rs` (records, enum fallback, ReFS), `journal.rs`, `win.rs` (volumes, tokens, UNC)
-  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `history.rs` (snapshots, retention), `ipc.rs` (protocol and versions, sessions, server, client, backends), `upgrade.rs` (replacing running programs, retiring old MCP servers)
+  - `index.rs` (entries, folded arena, ranks, excludes), `query.rs`, `date.rs`, `search.rs` (result sets), `content.rs` (content search: query split, decoding, the scan), `ifilter.rs`, `live.rs` (journal → index), `folder.rs` (walker + watcher), `config.rs`, `runs.rs`, `persist.rs`, `engine.rs`, `tree.rs` (folder-size trees), `history.rs` (snapshots, retention), `remote.rs` (NAS agent shares as replica volumes), `ipc.rs` (protocol and versions, sessions, server, client, backends), `upgrade.rs` (replacing running programs, retiring old MCP servers)
 - `crates/cli`: the `quickseek` binary: CLI, terminal UI and `service.rs` (the Windows service)
 - `crates/gui`: `quickseek-gui`: `app.rs` (main window), `preview.rs` (preview pane), `options.rs`, `shell.rs` (icons, context menu, drag-out, dialogs), `highlight.rs`, `results.rs`, `settings.rs`, `tree.rs` (tree mode), `growth.rs` (timeline and details pane); `tests/ui.rs` (end-to-end), `examples/mock_service.rs`
 - `crates/mcp`: `quickseek-mcp`, the MCP server (`tools.rs`) and client registration (`register.rs`)
+- `crates/remote`: `quickseek-remote`, the NAS agent protocol (messages, TLS with pinned certificates, pairing), shared by the service and the agent
+- `crates/agent`: `quickseek-agent`, the Linux NAS agent (`tree.rs`, `share.rs`, `watch.rs` for fanotify/inotify, `server.rs`, `snaps.rs`); see [the design](design/nas-agent.md)
 - `crates/setup`: `quickseek-setup`, the installer (`install.rs`, `sys.rs`, `ui.rs`)
 - `crates/gui/tests/common/demo.rs` and `examples/demo_service.rs`: the made-up demo PC for screenshots
-- `packaging/winget`: winget manifest templates; `.github/workflows`: CI and releases
+- `packaging/winget`: winget manifest templates; `packaging/agent`: the agent's Dockerfile and a compose example; `.github/workflows`: CI and releases
 - `tools/`: `build-release.ps1` (installer, .mcpb, winget manifests), `build-mcpb.ps1`, `demo-shots.ps1` and `mcp-images.py` (README images), `bench/` (benchmarks against Everything), `third-party.py` (license notices), `shot.ps1` (window screenshot), `gui-mock.ps1` (GUI against the mock service)
 
 ## Prior art

@@ -71,6 +71,8 @@ pub struct Tree {
     pub root: PathBuf,
     pub nodes: Vec<Node>,
     live: usize,
+    /// Don't produce ops (the first walk: every PC gets that in full anyway).
+    pub quiet: bool,
 }
 
 impl Tree {
@@ -90,6 +92,7 @@ impl Tree {
             root: root.to_path_buf(),
             nodes,
             live: 0,
+            quiet: false,
         }
     }
 
@@ -156,7 +159,35 @@ impl Tree {
         }
     }
 
-    /// Every entry below the root, ascending ids (for a full transfer).
+    /// Every entry below the root encoded for a full transfer (ascending
+    /// ids, see `wire::put_record_fields`), and how many.
+    pub fn encode(&self) -> (u64, Vec<u8>) {
+        let mut out = Vec::with_capacity(self.live * 24);
+        let (mut n, mut prev) = (0u64, 0u32);
+        for id in FIRST_ID..self.next_id() {
+            let node = &self.nodes[id as usize];
+            if !node.live {
+                continue;
+            }
+            let m = &node.meta;
+            quickseek_remote::wire::put_record_fields(
+                &mut out,
+                id,
+                node.parent,
+                &node.name,
+                m.attrs,
+                m.size,
+                m.modified,
+                m.created,
+                prev,
+            );
+            prev = id;
+            n += 1;
+        }
+        (n, out)
+    }
+
+    /// Every entry below the root, ascending ids.
     pub fn records(&self) -> Vec<Record> {
         (FIRST_ID..self.next_id())
             .filter(|&i| self.nodes[i as usize].live)
@@ -175,7 +206,9 @@ impl Tree {
         });
         self.nodes[parent as usize].children.push(id);
         self.live += 1;
-        ops.push(Op::Create(self.record(id)));
+        if !self.quiet {
+            ops.push(Op::Create(self.record(id)));
+        }
         id
     }
 
@@ -207,7 +240,9 @@ impl Tree {
             node.children = Vec::new();
             node.name = "".into();
             self.live -= 1;
-            ops.push(Op::Remove { id: n });
+            if !self.quiet {
+                ops.push(Op::Remove { id: n });
+            }
         }
     }
 
@@ -271,12 +306,12 @@ impl Tree {
                 let pairs = kids
                     .of(f)
                     .iter()
-                    .map(|&fc| (fc, have.remove(fresh.items[fc as usize].name.as_str())))
+                    .map(|&fc| (fc, have.remove(&*fresh.items[fc as usize].1.name)))
                     .collect();
                 (pairs, have.into_values().collect())
             };
             for (fc, existing) in pairs {
-                let item = &fresh.items[fc as usize];
+                let item = &fresh.items[fc as usize].1;
                 match existing {
                     Some(c) if self.nodes[c as usize].meta.walks() == item.meta.walks() => {
                         self.update(c, item.meta, ops);
@@ -310,7 +345,7 @@ impl Tree {
     ) {
         let mut stack = vec![(parent, f)];
         while let Some((p, f)) = stack.pop() {
-            let item = &fresh.items[f as usize];
+            let item = &fresh.items[f as usize].1;
             let id = self.create(p, &item.name, item.meta, ops);
             if item.meta.walks() {
                 new_dirs.push(id);
@@ -353,15 +388,17 @@ impl Tree {
 }
 
 /// A listing of a folder tree made by [`walk`]: item 0 is the folder itself.
+/// (Items keep the index the walk gave them, `items[i].0 == i`, so the
+/// listing is sorted in place rather than copied.)
 #[derive(Debug, Default)]
 pub struct Fresh {
-    pub items: Vec<FreshItem>,
+    pub items: Vec<(u32, FreshItem)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FreshItem {
     pub parent: u32,
-    pub name: String,
+    pub name: Box<str>,
     pub meta: Meta,
 }
 
@@ -381,7 +418,7 @@ impl Fresh {
     pub fn children(&self) -> Children {
         let n = self.items.len();
         let mut start = vec![0u32; n + 1];
-        for it in &self.items[1..] {
+        for (_, it) in &self.items[1..] {
             start[it.parent as usize + 1] += 1;
         }
         for i in 0..n {
@@ -389,7 +426,7 @@ impl Fresh {
         }
         let mut fill = start.clone();
         let mut list = vec![0u32; n.saturating_sub(1)];
-        for (i, it) in self.items.iter().enumerate().skip(1) {
+        for (i, (_, it)) in self.items.iter().enumerate().skip(1) {
             let p = it.parent as usize;
             list[fill[p] as usize] = i as u32;
             fill[p] += 1;
@@ -430,7 +467,7 @@ pub fn walk(dir: &Path, pool: &rayon::ThreadPool) -> Fresh {
                 i,
                 FreshItem {
                     parent: idx,
-                    name,
+                    name: name.into_boxed_str(),
                     meta,
                 },
             ));
@@ -443,18 +480,18 @@ pub fn walk(dir: &Path, pool: &rayon::ThreadPool) -> Fresh {
             attrs: FILE_ATTRIBUTE_DIRECTORY,
             ..Default::default()
         });
-    pool.scope(|s| visit(dir.to_path_buf(), 0, &next, &out, s));
-    let mut items = vec![
+    out.lock().unwrap().push((
+        0,
         FreshItem {
             parent: 0,
-            name: String::new(),
+            name: "".into(),
             meta: root_meta,
-        };
-        next.load(Ordering::Relaxed) as usize
-    ];
-    for (i, it) in out.into_inner().unwrap() {
-        items[i as usize] = it;
-    }
+        },
+    ));
+    pool.scope(|s| visit(dir.to_path_buf(), 0, &next, &out, s));
+    let mut items = out.into_inner().unwrap();
+    items.sort_unstable_by_key(|(i, _)| *i);
+    items.shrink_to_fit();
     Fresh { items }
 }
 

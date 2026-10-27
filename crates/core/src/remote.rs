@@ -567,11 +567,9 @@ fn session(
                 }
             }
             Msg::Disk { capacity, free } => set_disk(&v.key, (capacity, free)),
-            Msg::State(s) => {
-                if s != "ready" {
-                    v.set_state(&format!("agent: {s}"));
-                }
-            }
+            // The agent says "ready" right after a subscription it could resume.
+            Msg::State(s) if s == "ready" => v.set_state("ready"),
+            Msg::State(s) => v.set_state(&format!("agent: {s}")),
             Msg::Ping | Msg::Pong => {}
             m => return Err(format!("unexpected {m:?}")),
         }
