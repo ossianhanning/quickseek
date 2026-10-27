@@ -131,6 +131,7 @@ fn nas_share_as_a_volume() {
             path: KEY.into(),
             watch: false,
             rescan_minutes: 0,
+            ..Default::default()
         }],
         remotes: vec![rc],
         ..Default::default()

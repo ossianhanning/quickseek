@@ -325,7 +325,7 @@ fn fill(app: &App) {
             o.vol_rows.push(v.letter);
         }
         // Folder states from the service.
-        let states: Vec<String> = status
+        let mut states: Vec<String> = status
             .map(|s| {
                 s.volumes
                     .into_iter()
@@ -341,6 +341,11 @@ fn fill(app: &App) {
                     .collect()
             })
             .unwrap_or_default();
+        // Shares a NAS agent indexes instead (Options → NAS).
+        states.extend(c.folders.iter().filter_map(|f| {
+            c.remote_share(&f.path)
+                .map(|(r, _)| format!("{}: indexed by the NAS agent on {}", f.path, r.host))
+        }));
         w::set_text(item(o.hwnd, ID_FOLDER_STATE), &states.join("\n"));
         o.filling = false;
     });

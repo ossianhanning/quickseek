@@ -571,9 +571,10 @@ fn main() -> anyhow::Result<()> {
                     c.call(&ipc::Request::Status)?,
                     c.service_build().unwrap_or("an older build").to_string(),
                     c.protocol(),
+                    c.call(&ipc::Request::GetConfig).ok(),
                 ))
             }) {
-                Ok((ipc::Response::Status(s), build, ver)) => {
+                Ok((ipc::Response::Status(s), build, ver, cfg)) => {
                     println!(
                         "pipe {}: {} (service {build}, protocol v{ver})",
                         ipc::PIPE_NAME,
@@ -588,6 +589,18 @@ fn main() -> anyhow::Result<()> {
                             "  {:<28} {:<6} {:>10} entries  {}",
                             v.key, v.kind, v.entries, v.state
                         );
+                    }
+                    // Folders a NAS agent's share stands in for.
+                    let cfg: Option<quickseek_core::config::Config> = match cfg {
+                        Some(ipc::Response::Config(c)) => serde_json::from_str(&c).ok(),
+                        _ => None,
+                    };
+                    for f in cfg.iter().flat_map(|c| {
+                        c.folders
+                            .iter()
+                            .filter_map(|f| c.folder_replaced_by(&f.path).map(|w| (f, w)))
+                    }) {
+                        println!("  {:<28} Folder {:>10}          {}", f.0.path, "-", f.1);
                     }
                 }
                 Ok(_) => println!("pipe {}: unexpected answer", ipc::PIPE_NAME),
@@ -933,12 +946,20 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Folders { ref action } => match action {
             FolderCmd::List => {
-                for f in show_config(&cli)?.folders {
-                    let user = f.user.map(|u| format!(" user={u}")).unwrap_or_default();
+                let cfg = show_config(&cli)?;
+                for f in &cfg.folders {
+                    let user = f
+                        .user
+                        .as_ref()
+                        .map(|u| format!(" user={u}"))
+                        .unwrap_or_default();
                     println!(
                         "{}  watch={} rescan={}min{user}",
                         f.path, f.watch, f.rescan_minutes
                     );
+                    if let Some(why) = cfg.folder_replaced_by(&f.path) {
+                        println!("    {why}");
+                    }
                 }
             }
             FolderCmd::Add {

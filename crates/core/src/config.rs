@@ -220,6 +220,17 @@ impl Config {
         })
     }
 
+    /// Why folder `path` isn't indexed as a folder: a NAS agent covers the
+    /// same UNC root (its share replaces the folder while it's enabled).
+    pub fn folder_replaced_by(&self, path: &str) -> Option<String> {
+        self.remote_share(path).map(|(r, s)| {
+            format!(
+                "not walked over SMB: the NAS agent on {} indexes it (share {}); `quickseek remotes enable {} --on false` goes back to SMB",
+                r.host, s.name, s.unc
+            )
+        })
+    }
+
     pub fn fold_mode(&self) -> FoldMode {
         if self.match_diacritics {
             FoldMode::Lower
@@ -380,6 +391,31 @@ pub enum InclusionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_share_replaces_the_folder_of_its_root() {
+        let mut c = Config {
+            folders: vec![FolderConfig {
+                path: r"\\hearth.local\data".into(),
+                ..Default::default()
+            }],
+            remotes: vec![RemoteConfig {
+                host: "hearth.local".into(),
+                shares: vec![RemoteShare {
+                    name: "data".into(),
+                    unc: r"\\Hearth.local\Data\".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(c.folder_replaced_by(r"\\hearth.local\data").is_some());
+        assert!(c.folder_replaced_by(r"\\hearth.local\media").is_none());
+        // A share turned off gives the root back to the folder.
+        c.remotes[0].shares[0].enabled = false;
+        assert!(c.folder_replaced_by(r"\\hearth.local\data").is_none());
+    }
 
     #[test]
     fn json_roundtrip_and_defaults_for_missing_fields() {
