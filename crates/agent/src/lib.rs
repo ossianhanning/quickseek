@@ -162,11 +162,13 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
 fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &AtomicBool) {
     let shares = &agent.shares;
     let hist = agent.store.history_dir();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(opts.threads.max(1))
-        .thread_name(|i| format!("walk-{i}"))
-        .build()
-        .expect("thread pool");
+    let pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(opts.threads.max(1))
+            .thread_name(|i| format!("walk-{i}"))
+            .build()
+            .expect("thread pool"),
+    );
     let marks: Vec<std::path::PathBuf> = if opts.marks.is_empty() {
         let mut m: Vec<_> = shares
             .iter()
@@ -180,30 +182,53 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
     };
     let mut w = watch::open(opts.watch, &marks);
     *agent.watcher.lock().unwrap() = w.name();
-    let rewalk_all = |w: &mut Box<dyn watch::Watcher>| {
-        for (i, sh) in shares.iter().enumerate() {
-            let ch = sh.rewalk(&pool);
-            w.untrack(i, &ch.removed);
-            w.track(i, &ch.added);
-        }
+    // Walks run on their own thread, share by share, while this loop keeps
+    // applying change events; each finished walk is merged and the events
+    // seen during it are applied again (the listing may predate them).
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, tree::Fresh, Duration)>();
+    let start_walk = |tx: std::sync::mpsc::Sender<(usize, tree::Fresh, Duration)>| {
+        let (pool, roots) = (
+            pool.clone(),
+            shares.iter().map(|s| s.root.clone()).collect::<Vec<_>>(),
+        );
+        std::thread::Builder::new()
+            .name("walk".into())
+            .spawn(move || {
+                for (i, root) in roots.iter().enumerate() {
+                    let t0 = Instant::now();
+                    let fresh = tree::walk(root, &pool);
+                    if tx.send((i, fresh, t0.elapsed())).is_err() {
+                        return;
+                    }
+                }
+            })
+            .expect("walk thread");
     };
-    // Twice: the second pass catches what changed in folders the watcher
-    // didn't follow yet during the first (it's fast: the metadata is cached).
-    rewalk_all(&mut w);
-    rewalk_all(&mut w);
-    if opts.idle_walks {
-        // I/O priority is per thread: every walker sets its own.
-        pool.broadcast(|_| idle_io());
-    }
+    // Two at the start: the second catches what changed in folders the
+    // watcher didn't follow yet during the first.
+    let mut walks_due = 2;
+    let mut walks_done = 0u32;
+    // While a walk runs: the events applied since it started, per share, and
+    // how many shares it has left.
+    let mut walking: Option<(Vec<Vec<Event>>, usize)> = None;
     let mut last_walk = Instant::now();
     let mut last_disk = Instant::now();
     let mut last_snap = Instant::now() - Duration::from_secs(3600);
     while !stop.load(Ordering::Relaxed) {
-        let events = w.wait(Duration::from_secs(1));
+        if walking.is_none() && walks_due > 0 {
+            walks_due -= 1;
+            start_walk(tx.clone());
+            walking = Some((vec![Vec::new(); shares.len()], shares.len()));
+            last_walk = Instant::now();
+        }
+        let events = w.wait(Duration::from_millis(if walking.is_some() {
+            200
+        } else {
+            1000
+        }));
         if events.contains(&Event::Overflow) {
             log::info!("change events were lost; re-walking");
-            rewalk_all(&mut w);
-            last_walk = Instant::now();
+            walks_due = 1;
         } else if !events.is_empty() {
             for (i, sh) in shares.iter().enumerate() {
                 let mine: Vec<Event> = events
@@ -215,15 +240,42 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
                     let ch = sh.apply(&mine, &pool);
                     w.untrack(i, &ch.removed);
                     w.track(i, &ch.added);
+                    if let Some((seen, _)) = walking.as_mut() {
+                        seen[i].extend(mine);
+                    }
+                }
+            }
+        }
+        while let Ok((i, fresh, took)) = rx.try_recv() {
+            let sh = &shares[i];
+            let ch = sh.merge_walk(fresh, took);
+            w.untrack(i, &ch.removed);
+            w.track(i, &ch.added);
+            if let Some((seen, left)) = walking.as_mut() {
+                let again = std::mem::take(&mut seen[i]);
+                if !again.is_empty() {
+                    let ch = sh.apply(&again, &pool);
+                    w.untrack(i, &ch.removed);
+                    w.track(i, &ch.added);
+                }
+                *left -= 1;
+                if *left == 0 {
+                    walking = None;
+                    walks_done += 1;
+                    if walks_done == 2 && opts.idle_walks {
+                        // After the first walks, walk at idle I/O priority
+                        // (it's per thread: every walker sets its own).
+                        pool.broadcast(|_| idle_io());
+                    }
                 }
             }
         }
         if rewalk_now.swap(false, Ordering::Relaxed)
             || (opts.rewalk_hours > 0
+                && walking.is_none()
                 && last_walk.elapsed() > Duration::from_secs(opts.rewalk_hours * 3600))
         {
-            rewalk_all(&mut w);
-            last_walk = Instant::now();
+            walks_due = walks_due.max(1);
         }
         if last_disk.elapsed() > Duration::from_secs(60) {
             for sh in shares {

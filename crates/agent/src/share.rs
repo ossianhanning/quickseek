@@ -10,7 +10,7 @@ use std::time::Duration;
 use quickseek_remote::ROOT_ID;
 use quickseek_remote::wire::Op;
 
-use crate::tree::{Meta, Tree, walk};
+use crate::tree::{Fresh, Meta, Tree, walk};
 use crate::watch::Event;
 
 /// Ops kept for clients that reconnect (older ones get a full transfer).
@@ -103,7 +103,13 @@ impl Share {
     pub fn rewalk(&self, pool: &rayon::ThreadPool) -> DirChanges {
         let t0 = std::time::Instant::now();
         let fresh = walk(&self.root, pool);
-        let walked = t0.elapsed();
+        self.merge_walk(fresh, t0.elapsed())
+    }
+
+    /// Merges a walk of the whole share (made without the lock, while
+    /// changes kept being applied: the caller re-applies those afterwards,
+    /// since the listing may predate them).
+    pub fn merge_walk(&self, fresh: Fresh, walked: Duration) -> DirChanges {
         let mut st = self.state.lock().unwrap();
         let mut ops = Vec::new();
         let mut added = Vec::new();
@@ -358,6 +364,46 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    /// A walk runs while changes keep being applied; its listing can predate
+    /// them, and applying them again after the merge restores them.
+    #[test]
+    fn changes_during_a_walk_survive_its_merge() {
+        let d = tmp("walkrace");
+        let p = pool();
+        let sh = Share::new("t", &d, 1);
+        sh.rewalk(&p);
+        let t0 = std::time::Instant::now();
+        let listing = walk(&d, &p); // the walk, "still running"
+        std::fs::write(d.join("during.txt"), b"x").unwrap();
+        std::fs::remove_file(d.join("top.txt")).unwrap();
+        let seen = vec![
+            Event::Touch {
+                share: 0,
+                dir: ROOT_ID,
+                name: "during.txt".into(),
+            },
+            Event::Touch {
+                share: 0,
+                dir: ROOT_ID,
+                name: "top.txt".into(),
+            },
+        ];
+        sh.apply(&seen, &p);
+        assert!(names(&sh).contains(&"during.txt".to_string()));
+        sh.merge_walk(listing, t0.elapsed());
+        // The older listing undid both changes...
+        assert!(!names(&sh).contains(&"during.txt".to_string()));
+        assert!(names(&sh).contains(&"top.txt".to_string()));
+        // ...and applying the events seen meanwhile again restores them.
+        sh.apply(&seen, &p);
+        let n = names(&sh);
+        assert!(
+            n.contains(&"during.txt".to_string()) && !n.contains(&"top.txt".to_string()),
+            "{n:?}"
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

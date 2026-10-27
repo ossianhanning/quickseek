@@ -335,6 +335,35 @@ fn bench() {
         lats[10].as_millis(),
         lats[19].as_millis()
     );
+    // A re-walk of everything doesn't hold up live changes.
+    r.rewalk_now
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(300));
+    let mut during = Vec::new();
+    for i in 0..5 {
+        during.push(change_round(
+            &mut s,
+            &r,
+            &share.join("d0").join("e0"),
+            &format!("during walk {i}.txt"),
+            true,
+        ));
+    }
+    during.sort();
+    eprintln!(
+        "while a full re-walk runs, 5 changes: median {} ms, max {} ms",
+        during[2].as_millis(),
+        during[4].as_millis()
+    );
+    for i in 0..5 {
+        std::fs::remove_file(
+            share
+                .join("d0")
+                .join("e0")
+                .join(format!("during walk {i}.txt")),
+        )
+        .ok();
+    }
     let t2 = Instant::now();
     let burst = share.join("burst");
     std::fs::create_dir_all(&burst).unwrap();
