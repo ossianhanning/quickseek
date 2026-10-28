@@ -827,7 +827,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     if host.is_empty() || code.is_empty() {
                         w::message_box(
                             hwnd,
-                            "Enter the NAS's name (e.g. hearth.local) and the pairing code its agent shows.",
+                            "Enter the NAS's name (e.g. mynas.local) and the pairing code its agent shows.",
                             "quickseek",
                             MB_OK | MB_ICONINFORMATION,
                         );
@@ -1923,7 +1923,7 @@ pub fn open(app: &App) {
             host,
             EM_SETCUEBANNER,
             1,
-            wide("hearth.local").as_ptr() as isize,
+            wide("mynas.local").as_ptr() as isize,
         );
         add(
             "Static",

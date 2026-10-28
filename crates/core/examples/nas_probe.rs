@@ -2,8 +2,8 @@
 //! saved pairing), builds the replicas in-process exactly as the service
 //! would, and reports timings, then prints changes as they arrive.
 //!
-//! cargo run --release -p quickseek-core --example nas_probe -- hearth.local --pair K7QF-3MZD
-//! cargo run --release -p quickseek-core --example nas_probe -- hearth.local --watch 600
+//! cargo run --release -p quickseek-core --example nas_probe -- mynas.local --pair K7QF-3MZD
+//! cargo run --release -p quickseek-core --example nas_probe -- mynas.local --watch 600
 //!
 //! State lives in %TEMP%\quickseek-nas-probe (or `--db DIR`).
 

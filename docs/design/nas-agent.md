@@ -4,7 +4,7 @@ keeps the Windows service's copy current over the LAN, so NAS shares behave like
 volume in search, the tree, folder sizes, growth history and the MCP tools.
 
 Status: design accepted for the first version; the decisions below are what is built. Target
-NAS for the first trial: "Hearth", UGOS Pro (Debian 12), kernel 6.18, 4 cores, 7.5 GB RAM, two
+NAS for the first trial: a UGOS Pro box (Debian 12), kernel 6.18, 4 cores, 7.5 GB RAM, two
 16 TB disks in mdadm RAID1 → LVM → btrfs at `/volume1`, shares `/volume1/data` and
 `/volume1/media` (about 590,000 files), Docker 29.6, no password-less sudo.
 
@@ -28,15 +28,15 @@ stays the default. The agent is an option for people who can run a container on 
 
 So the agent wins on the first index, on restarts, on bursts, on credentials and on history; it
 does not make searching faster (that already happens on the PC), and it costs a privileged
-container and a wider view of the files. For a single-user home NAS like Hearth the trade is
+container and a wider view of the files. For a single-user home NAS like this one the trade is
 clearly worth it; for a shared office NAS with per-user ACLs it may not be.
 
 ## Shape of the system
 ```
 NAS                                             Windows PC
 quickseek-agent (container)                     quickseek service (LocalSystem)
-  walk /volume1/data, /volume1/media              remote volume \\hearth.local\data  ─┐
-  fanotify (FS mark on /volume1)                  remote volume \\hearth.local\media ─┤ Index, like
+  walk /volume1/data, /volume1/media              remote volume \\mynas.local\data   ─┐
+  fanotify (FS mark on /volume1)                  remote volume \\mynas.local\media  ─┤ Index, like
   in-memory tree, ids, change log                 cache: <db>\remote\*.idx            │ any volume:
   daily snapshots (/config/history)               history: imports missed days        │ search, tree,
   TLS server :48623 ───────────── TLS, pinned ──► one connection per share            │ growth, MCP
@@ -66,9 +66,9 @@ Options considered:
    and only exists on btrfs.
 
 Measured with a small C probe on kernel 6.18 (WSL2, a loop-mounted btrfs image with one
-subvolume; the same kernel series as Hearth):
+subvolume; the same kernel series as the test NAS):
 `FAN_MARK_FILESYSTEM` on the btrfs **root** mount works and reports events from inside
-subvolumes; on a subvolume path or a bind mount of a subvolume it fails with `EXDEV`. On Hearth
+subvolumes; on a subvolume path or a bind mount of a subvolume it fails with `EXDEV`. On the test NAS
 `/volume1` is the root subvolume (`subvolid=5`) while `/volume1/data` and `/volume1/media` are
 subvolumes (inode 256, their own `st_dev`). So the container must see `/volume1` itself to use
 fanotify; mounting only the two shares limits it to inotify.
@@ -89,7 +89,7 @@ fanotify; mounting only the two shares limits it to inotify.
   diff against the tree, so ids of unchanged entries survive and only real differences go to
   the PC. Walks and full re-reads run on their own thread while live events keep being applied;
   the events seen meanwhile are applied again after the merge, since the listing may predate
-  them (on Hearth a 3-minute walk under load had held a live change up for 24 s before this).
+  them (on the test NAS a 3-minute walk under load had held a live change up for 24 s before this).
 
 Events are not applied blindly: each `(directory, name)` an event names is *reconciled* by
 `lstat`ing it and comparing with the tree (exists → add or update, gone → remove, a new
@@ -140,7 +140,7 @@ share isn't walked; its subvolume's tree is read directly, as Quickseek reads NT
   the save (which the agent lost) gets a full transfer instead of a mix of two histories, and a
   resuming PC is told the new number at once.
 
-Measured on Hearth (`quickseek-agent bench`, read-only, idle I/O priority, 2 threads; the cloud
+Measured on the test NAS (`quickseek-agent bench`, read-only, idle I/O priority, 2 threads; the cloud
 sync was paused, I/O pressure 5-40 %): `data`, 708,473 entries: warm, the tree search took 5.5 s
 and the walk 13.6-13.8 s; the first, partly cold run 45.6 s against 27.0 s for a walk right after
 it (the shares are mostly big files, and the tree search also reads every file-extent item, which
@@ -204,7 +204,7 @@ authenticates the fingerprint:
 1. The agent logs a one-time code (`K7QF-3MZD`, 40 bits, 15 minutes, 5 tries) when nobody is
    paired yet, and `quickseek-agent pair` (or `docker exec … quickseek-agent pair`) prints a
    new one. UGOS shows container logs in its Docker app, so no shell is needed.
-2. `quickseek remotes add hearth.local --pair K7QF-3MZD` connects, reads the certificate the
+2. `quickseek remotes add mynas.local --pair K7QF-3MZD` connects, reads the certificate the
    agent presented and sends `Pair { proof = HMAC-SHA256(code, "pc" ‖ fingerprint ‖ nonce) }`.
 3. The agent recomputes the proof with *its own* fingerprint. A man in the middle presents a
    different certificate, so its proof can't match; five misses burn the code.
@@ -225,7 +225,7 @@ hands to every client over the pipe); the host, port, fingerprint and share mapp
   `quickseek remotes remove <host>` forgets it (and revokes nothing on the agent: that's the
   agent's `revoke`). Options → Index → *NAS agents* does the same in the GUI.
 - **Volumes**: each share is a `VolumeKind::Remote` volume keyed by its UNC root
-  (`\\hearth.local\data`), so paths look exactly like the SMB paths they correspond to and
+  (`\\mynas.local\data`), so paths look exactly like the SMB paths they correspond to and
   opening, previewing or deleting a file goes through SMB as before. The agent's root
   (`/volume1/data`) maps to the UNC root; the agent reports the share name, and the default UNC
   root is `\\<host>\<share>`. A remote volume replaces a folder index with the same key (the
@@ -251,7 +251,7 @@ the share, or saved as a snapshot holding only that share if the PC has none tha
 comparisons and series then cover the NAS even across weeks the PC was off.
 
 ## Resource limits on the NAS
-- Memory: on Hearth, 721k entries in two shares take 112-115 MB once indexed (the tree with
+- Memory: on the test NAS, 721k entries in two shares take 112-115 MB once indexed (the tree with
   each entry's device and inode, the saved-index buffers, the change log of up to 200k ops). A
   first walk of 640k entries peaked at 152 MB (the first index records no ops: every PC gets
   it in full anyway). The compose file sets `mem_limit: 256m`.
@@ -260,7 +260,7 @@ comparisons and series then cover the NAS even across weeks the PC was off.
   the first read at idle I/O priority (`ioprio_set` class idle, per walker thread), so Plex and
   Samba win any contention; the first walk (a one-time cost, which the PC is waiting for) and the
   reads behind live changes use normal priority. Under mq-deadline an idle-class read waits until
-  the disk is otherwise free or for its 10 s aging, so on a NAS whose disks are saturated (Hearth
+  the disk is otherwise free or for its 10 s aging, so on a NAS whose disks are saturated (the test NAS
   during a cloud sync: I/O pressure 80-90 %) an idle first walk crawls and an idle `lstat` would
   delay live changes by seconds.
 - I/O: the safety re-walk runs once a day (configurable, 0 = never); there is no polling.

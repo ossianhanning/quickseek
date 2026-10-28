@@ -1,6 +1,6 @@
 # quickseek-agent on a NAS: indexes its shares where the files are and keeps
-# Quickseek on Windows current over the LAN. See the README ("NAS agent")
-# and docs/design/nas-agent.md.
+# Quickseek on Windows current over the LAN. See docs/user-guide.md
+# ("NAS agents") and docs/design/nas-agent.md.
 #
 #   docker compose up -d
 #   docker compose logs quickseek-agent     # the pairing code
@@ -12,14 +12,14 @@ services:
   quickseek-agent:
     image: ghcr.io/ossianhanning/quickseek-agent:latest
     container_name: quickseek-agent
-    hostname: hearth                     # <- the name Quickseek shows for this NAS
+    hostname: mynas                      # <- the name Quickseek shows for this NAS
     restart: unless-stopped
     ports:
       - "48623:48623"
     environment:
-      # <- name=path of every share to serve; the PC maps them to \<host>\<name>
+      # <- name=path of every share to serve; the PC maps them to \\<host>\<name>
       QUICKSEEK_SHARES: data=/volume1/data,media=/volume1/media
-      TZ: Europe/Stockholm
+      TZ: Etc/UTC                          # your time zone
     volumes:
       # <- the volume's root, read-only. On btrfs the shares are subvolumes and
       # fanotify can only watch the whole filesystem from its root; with only

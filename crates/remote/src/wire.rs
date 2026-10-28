@@ -737,7 +737,7 @@ mod tests {
             name: "PC".into(),
         });
         round(Msg::Welcome {
-            agent: "hearth".into(),
+            agent: "mynas".into(),
             shares: vec![ShareInfo {
                 name: "data".into(),
                 root: "/volume1/data".into(),

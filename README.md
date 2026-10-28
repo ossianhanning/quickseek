@@ -120,43 +120,17 @@ Tools: `search_files`, `folder_sizes`, `folder_growth`, `disk_overview`, `cleanu
 
 ## NAS agent
 
-Network shares can be indexed two ways. Added as folders (Options → Folders), the PC walks them over
-SMB and follows change notifications: nothing to install on the NAS. Or a small agent runs **on the
-NAS** (Linux, Docker), indexes the shares there and keeps the PC's copy current over the LAN. They
-then behave like any drive: search, the tree, folder sizes, growth history and the MCP tools, under
-the same `\\nas\share` paths, and they stay searchable while the NAS is off.
-
-The agent pays off for big shares: on a 590,000-file share it has a copy on the PC within seconds
-of starting (a walk on the NAS, then about 6 MB over the network) instead of a walk over SMB that
-takes minutes, a restart picks up where it left off, a 10,000-file copy arrives as changes instead
-of a full re-walk, the PC doesn't need your NAS password to index, and the NAS keeps a daily
-snapshot so growth history covers days the PC was off. Searching is equally fast either way. What
-it costs: a container that can read the whole volume (Windows users see every file name on it,
-whatever their SMB rights) and has `CAP_SYS_ADMIN` for fanotify. On **btrfs** (UGOS, Synology,
-most Linux NAS systems) the agent reads its index straight out of btrfs's trees, as Quickseek reads
-NTFS's MFT, and after a restart or lost events asks btrfs what changed since then instead of
-walking again (milliseconds); on other filesystems (ext4, XFS, ZFS) it walks. The
-[design notes](docs/design/nas-agent.md) have the details and measurements.
-
-**Set up.** On the NAS, with [docker-compose.yml](packaging/agent/docker-compose.yml) (adjust the
-share paths and the name):
+Network shares can be added as folders (Options → Folders) and indexed over SMB. For big shares,
+run the optional agent on the NAS instead (Docker, amd64 and arm64). It indexes the files on the NAS
+itself and streams changes to the PC, so a share is ready in seconds rather than minutes.
 
 ```sh
-docker compose up -d
-docker compose logs quickseek-agent    # shows a pairing code, valid 15 minutes
+docker compose up -d                   # with packaging/agent/docker-compose.yml
+docker compose logs quickseek-agent    # shows a pairing code
 ```
 
-On the PC (or Options → NAS): `quickseek remotes add hearth.local --pair K7QF-3MZD`. `quickseek
-remotes list` shows each share's state; `docker exec quickseek-agent /quickseek-agent pair` makes a
-new code. The image is `ghcr.io/ossianhanning/quickseek-agent` (amd64 and arm64); a static binary
-for each is attached to every release.
-
-**UGOS Pro (UGREEN), Synology.** No shell needed: in the NAS's Docker app create a
-project (UGOS Pro: Docker → Project → Create; Synology Container Manager: Project → Create) from
-the compose file, with `/volume1` read-only and a folder for `/config`; the pairing code is in the
-container's log. Where `/volume1` is btrfs, mount the volume itself, not the share folders: the
-shares are subvolumes and fanotify can only watch from the volume's root (with just the shares the
-agent still works, through inotify).
+Then on the PC: `quickseek remotes add <nas> --pair <code>`, or use Options → NAS. See the
+[user guide](docs/user-guide.md#nas-agents-options--nas) for details.
 
 ## Privacy
 

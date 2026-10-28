@@ -263,7 +263,7 @@ enum RemoteCmd {
     List,
     /// Pair with the agent on HOST and index its shares as \\HOST\SHARE volumes.
     Add {
-        /// Host name or address of the NAS (hearth.local).
+        /// Host name or address of the NAS (mynas.local).
         host: String,
         /// The pairing code the agent shows (its log, or `quickseek-agent pair`); asked for if left out.
         #[arg(long)]

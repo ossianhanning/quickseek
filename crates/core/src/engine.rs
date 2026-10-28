@@ -1719,7 +1719,7 @@ mod tests {
     /// accounts); logins are only kept by the service.
     #[test]
     fn folder_logins() {
-        assert_eq!(server_name(r"\\hearth.local\data"), "hearth");
+        assert_eq!(server_name(r"\\mynas.local\data"), "mynas");
         assert_eq!(server_name(r"\\nas\media\sub"), "nas");
         assert!(is_login_error(1326) && is_login_error(86) && !is_login_error(53));
         let e = Engine::new(EngineOptions::default());

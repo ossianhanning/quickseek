@@ -60,7 +60,7 @@ impl Default for FolderConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RemoteConfig {
-    /// Host name or address, as given when pairing (`hearth.local`).
+    /// Host name or address, as given when pairing (`mynas.local`).
     pub host: String,
     pub port: u16,
     /// SHA-256 of the agent's certificate (hex), pinned when pairing.
@@ -78,7 +78,7 @@ pub struct RemoteShare {
     pub name: String,
     /// Its path on the NAS (`/volume1/data`), for display.
     pub root: String,
-    /// The share's UNC root (`\\hearth.local\data`): it replaces a folder
+    /// The share's UNC root (`\\mynas.local\data`): it replaces a folder
     /// index of this root, and is the volume's key unless `alias` is set.
     pub unc: String,
     /// How this PC reaches the share instead (`H:` for a mapped drive, or
@@ -419,30 +419,30 @@ mod tests {
     fn an_agent_share_replaces_the_folder_of_its_root() {
         let mut c = Config {
             folders: vec![FolderConfig {
-                path: r"\\hearth.local\data".into(),
+                path: r"\\mynas.local\data".into(),
                 ..Default::default()
             }],
             remotes: vec![RemoteConfig {
-                host: "hearth.local".into(),
+                host: "mynas.local".into(),
                 shares: vec![RemoteShare {
                     name: "data".into(),
-                    unc: r"\\Hearth.local\Data\".into(),
+                    unc: r"\\MyNas.local\Data\".into(),
                     ..Default::default()
                 }],
                 ..Default::default()
             }],
             ..Default::default()
         };
-        assert!(c.folder_replaced_by(r"\\hearth.local\data").is_some());
-        assert!(c.folder_replaced_by(r"\\hearth.local\media").is_none());
+        assert!(c.folder_replaced_by(r"\\mynas.local\data").is_some());
+        assert!(c.folder_replaced_by(r"\\mynas.local\media").is_none());
         // With an alias the volume is keyed by it, and still replaces the folder.
         c.remotes[0].shares[0].alias = "H:".into();
         assert_eq!(c.remotes[0].shares[0].key(), "H:");
-        assert!(c.folder_replaced_by(r"\\hearth.local\data").is_some());
+        assert!(c.folder_replaced_by(r"\\mynas.local\data").is_some());
         assert!(c.remote_share(r"H:\").is_some());
         // A share turned off gives the root back to the folder.
         c.remotes[0].shares[0].enabled = false;
-        assert!(c.folder_replaced_by(r"\\hearth.local\data").is_none());
+        assert!(c.folder_replaced_by(r"\\mynas.local\data").is_none());
     }
 
     #[test]
