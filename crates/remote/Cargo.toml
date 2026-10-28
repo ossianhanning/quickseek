@@ -1,0 +1,16 @@
+[package]
+name = "quickseek-remote"
+description = "Quickseek NAS agent protocol: messages, framing, TLS with pinned certificates, pairing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+ring = "0.17.14"
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "logging"] }
+zstd = "0.14.3"
+
+[dev-dependencies]
+rcgen = { version = "0.14.5", default-features = false, features = ["ring", "pem"] }

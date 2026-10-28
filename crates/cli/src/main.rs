@@ -138,6 +138,11 @@ enum Cmd {
         #[command(subcommand)]
         action: FolderCmd,
     },
+    /// NAS agents (quickseek-agent running on a NAS): pair, list, remove.
+    Remotes {
+        #[command(subcommand)]
+        action: RemoteCmd,
+    },
     /// Show or replace the index configuration (excludes, volumes, ...).
     Config {
         #[command(subcommand)]
@@ -253,6 +258,38 @@ enum FolderCmd {
 }
 
 #[derive(Subcommand)]
+enum RemoteCmd {
+    /// Agents and their shares, with each share's state.
+    List,
+    /// Pair with the agent on HOST and index its shares as \\HOST\SHARE volumes.
+    Add {
+        /// Host name or address of the NAS (hearth.local).
+        host: String,
+        /// The pairing code the agent shows (its log, or `quickseek-agent pair`); asked for if left out.
+        #[arg(long)]
+        pair: Option<String>,
+        #[arg(long, default_value_t = quickseek_remote::DEFAULT_PORT)]
+        port: u16,
+    },
+    /// Forget an agent; a folder index of the same share comes back if you had one.
+    Remove { host: String },
+    /// Show a share under a local path instead of its UNC root, e.g. a mapped
+    /// drive (H:); files then open through it. Checked from this session.
+    Alias {
+        /// The share's UNC root (\\host\share) or its current alias.
+        unc: String,
+        /// The local path (H:, or another \\server\share name); leave out to go back to the UNC root.
+        alias: Option<String>,
+    },
+    /// Turn one share of an agent off or on (by its UNC root).
+    Enable {
+        unc: String,
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        on: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCmd {
     /// Print the configuration as JSON.
     Show,
@@ -287,6 +324,107 @@ fn open_engine(volumes: &[char], force: bool, verbose: bool) -> Engine {
 
 /// The service when it's running and usable, otherwise an in-process engine
 /// (which needs administrator rights).
+fn remotes(cli: &Cli, action: &RemoteCmd) -> anyhow::Result<()> {
+    use serde_json::{Value, json};
+    let mut be = open_backend(cli, false)?;
+    let call = |be: &mut Box<dyn Backend>, a: Value| be.remote(&a).map_err(anyhow::Error::msg);
+    match action {
+        RemoteCmd::List => {
+            let list = call(&mut be, json!({ "op": "list" }))?;
+            let list = list.as_array().cloned().unwrap_or_default();
+            if list.is_empty() {
+                println!(
+                    "no NAS agents; add one with `quickseek remotes add <host> --pair <code>`"
+                );
+            }
+            for r in list {
+                let st = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+                println!(
+                    "{}:{}  agent {}{}  certificate {}",
+                    st(&r, "host"),
+                    r["port"],
+                    st(&r, "agent"),
+                    if r["paired"].as_bool() == Some(true) {
+                        ""
+                    } else {
+                        " (not paired)"
+                    },
+                    st(&r, "fingerprint")
+                );
+                for sh in r["shares"].as_array().into_iter().flatten() {
+                    let path = match st(sh, "alias").as_str() {
+                        "" => st(sh, "unc"),
+                        a => format!("{a} ({})", st(sh, "unc")),
+                    };
+                    println!(
+                        "  {:<28} {:<20} {:>10} entries  {}",
+                        path,
+                        st(sh, "state"),
+                        sh["entries"].as_u64().unwrap_or(0),
+                        st(sh, "root")
+                    );
+                }
+            }
+        }
+        RemoteCmd::Add { host, pair, port } => {
+            let code = match pair {
+                Some(c) => c.clone(),
+                None => {
+                    eprint!("Pairing code from the agent (its log, or `quickseek-agent pair`): ");
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    line.trim().to_string()
+                }
+            };
+            let r = call(
+                &mut be,
+                json!({ "op": "add", "host": host, "port": port, "code": code }),
+            )?;
+            println!(
+                "paired with {} ({host})",
+                r["agent"].as_str().unwrap_or("?")
+            );
+            for sh in r["shares"].as_array().into_iter().flatten() {
+                let unc = sh["unc"].as_str().unwrap_or("");
+                println!("  {unc}  ←  {}", sh["root"].as_str().unwrap_or(""));
+                if sh["alias"].as_str().unwrap_or("").is_empty() {
+                    for d in quickseek_core::remote::mapped_drives_for(unc) {
+                        println!(
+                            "    {d} maps here: `quickseek remotes alias {unc} {d}` shows it as {d}\\"
+                        );
+                    }
+                }
+            }
+            println!("`quickseek remotes list` shows when they're ready.");
+        }
+        RemoteCmd::Remove { host } => {
+            call(&mut be, json!({ "op": "remove", "host": host }))?;
+            println!("removed {host} (`quickseek-agent revoke` on the NAS forgets this PC there)");
+        }
+        RemoteCmd::Alias { unc, alias } => {
+            let alias = quickseek_core::remote::check_alias(unc, alias.as_deref().unwrap_or(""))
+                .map_err(anyhow::Error::msg)?;
+            let r = call(
+                &mut be,
+                json!({ "op": "alias", "unc": unc, "alias": alias }),
+            )?;
+            println!(
+                "{unc} is now indexed as {} (fetched again under that path)",
+                r["path"].as_str().unwrap_or("?")
+            );
+        }
+        RemoteCmd::Enable { unc, on } => {
+            call(
+                &mut be,
+                json!({ "op": "enable", "unc": unc, "enabled": on }),
+            )?;
+            println!("{unc}: {}", if *on { "on" } else { "off" });
+        }
+    }
+    be.finish()?;
+    Ok(())
+}
+
 fn open_backend(cli: &Cli, verbose: bool) -> anyhow::Result<Box<dyn Backend>> {
     // The service indexes everything; a volume filter means local mode.
     if !cli.local && cli.volume.is_empty() {
@@ -461,9 +599,10 @@ fn main() -> anyhow::Result<()> {
                     c.call(&ipc::Request::Status)?,
                     c.service_build().unwrap_or("an older build").to_string(),
                     c.protocol(),
+                    c.call(&ipc::Request::GetConfig).ok(),
                 ))
             }) {
-                Ok((ipc::Response::Status(s), build, ver)) => {
+                Ok((ipc::Response::Status(s), build, ver, cfg)) => {
                     println!(
                         "pipe {}: {} (service {build}, protocol v{ver})",
                         ipc::PIPE_NAME,
@@ -478,6 +617,18 @@ fn main() -> anyhow::Result<()> {
                             "  {:<28} {:<6} {:>10} entries  {}",
                             v.key, v.kind, v.entries, v.state
                         );
+                    }
+                    // Folders a NAS agent's share stands in for.
+                    let cfg: Option<quickseek_core::config::Config> = match cfg {
+                        Some(ipc::Response::Config(c)) => serde_json::from_str(&c).ok(),
+                        _ => None,
+                    };
+                    for f in cfg.iter().flat_map(|c| {
+                        c.folders
+                            .iter()
+                            .filter_map(|f| c.folder_replaced_by(&f.path).map(|w| (f, w)))
+                    }) {
+                        println!("  {:<28} Folder {:>10}          {}", f.0.path, "-", f.1);
                     }
                 }
                 Ok(_) => println!("pipe {}: unexpected answer", ipc::PIPE_NAME),
@@ -823,12 +974,20 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Folders { ref action } => match action {
             FolderCmd::List => {
-                for f in show_config(&cli)?.folders {
-                    let user = f.user.map(|u| format!(" user={u}")).unwrap_or_default();
+                let cfg = show_config(&cli)?;
+                for f in &cfg.folders {
+                    let user = f
+                        .user
+                        .as_ref()
+                        .map(|u| format!(" user={u}"))
+                        .unwrap_or_default();
                     println!(
                         "{}  watch={} rescan={}min{user}",
                         f.path, f.watch, f.rescan_minutes
                     );
+                    if let Some(why) = cfg.folder_replaced_by(&f.path) {
+                        println!("    {why}");
+                    }
                 }
             }
             FolderCmd::Add {
@@ -885,6 +1044,7 @@ fn main() -> anyhow::Result<()> {
                 println!("removed {path}");
             }
         },
+        Cmd::Remotes { ref action } => remotes(&cli, action)?,
         Cmd::Config { ref action } => match action {
             ConfigCmd::Show => println!("{}", serde_json::to_string_pretty(&show_config(&cli)?)?),
             ConfigCmd::Set { file } => {

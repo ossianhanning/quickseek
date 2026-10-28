@@ -82,6 +82,8 @@ pub enum VolumeKind {
     Ntfs,
     Refs,
     Folder,
+    /// A share served by a NAS agent ([`crate::remote`]).
+    Remote,
 }
 
 impl VolumeKind {
@@ -90,7 +92,13 @@ impl VolumeKind {
             VolumeKind::Ntfs => "NTFS",
             VolumeKind::Refs => "ReFS",
             VolumeKind::Folder => "Folder",
+            VolumeKind::Remote => "NAS",
         }
+    }
+
+    /// An NTFS or ReFS volume of this PC (journal, rescans), not a folder or share.
+    pub fn is_journaled(self) -> bool {
+        matches!(self, VolumeKind::Ntfs | VolumeKind::Refs)
     }
 }
 
@@ -230,7 +238,7 @@ impl Volume {
 
     /// Counts `n` more unsaved changes; saturates so a never-saved volume
     /// (`u64::MAX`) stays that way. Returns the new count.
-    fn add_unsaved(&self, n: u64) -> u64 {
+    pub(crate) fn add_unsaved(&self, n: u64) -> u64 {
         let old = self
             .unsaved
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
@@ -240,7 +248,7 @@ impl Volume {
         old.saturating_add(n)
     }
 
-    fn set_state(&self, s: &str) {
+    pub(crate) fn set_state(&self, s: &str) {
         let mut st = self.state.lock();
         if *st != s {
             log::info!("{}: {s}", self.key);
@@ -296,7 +304,7 @@ pub struct Engine {
     /// Index options changed in a way that needs fresh data (date created on).
     rescan_requested: AtomicBool,
     /// Folder-size snapshots (the service and in-process GUI keep them).
-    history: std::sync::OnceLock<crate::history::History>,
+    history: Arc<std::sync::OnceLock<crate::history::History>>,
     /// Last automatic snapshot attempt.
     snap_try: Mutex<Option<Instant>>,
 }
@@ -546,16 +554,25 @@ fn desired(cfg: &Config, only: &[char]) -> Vec<(String, char, VolumeKind, Option
     }
     if only.is_empty() {
         // Folders stay indexed while unreachable (offline shares keep their
-        // cached index); their watcher retries.
+        // cached index); their watcher retries. A NAS agent's share replaces
+        // a folder index of the same UNC root.
         for f in &cfg.folders {
             let key = folder::root_name(&f.path);
-            if !key.is_empty() {
+            if !key.is_empty() && cfg.remote_share(&key).is_none() {
                 out.push((
                     key.clone(),
                     key.chars().next().unwrap_or('?').to_ascii_uppercase(),
                     VolumeKind::Folder,
                     Some(f.clone()),
                 ));
+            }
+        }
+        for r in &cfg.remotes {
+            for s in r.shares.iter().filter(|s| s.enabled) {
+                let key = s.key();
+                if !key.is_empty() && !out.iter().any(|o| o.0.eq_ignore_ascii_case(&key)) {
+                    out.push((key, '\\', VolumeKind::Remote, None));
+                }
             }
         }
     }
@@ -588,7 +605,7 @@ impl Engine {
             logins: Arc::new(RwLock::new(HashMap::new())),
             login_store: Mutex::new(crate::credstore::Logins::new()),
             rescan_requested: AtomicBool::new(false),
-            history: std::sync::OnceLock::new(),
+            history: Arc::new(std::sync::OnceLock::new()),
             snap_try: Mutex::new(None),
         };
         e.load_logins();
@@ -872,8 +889,9 @@ impl Engine {
             // Rebuild each volume in the background of the old one: searches
             // keep using the old index until the new one replaces it.
             for old in self.volumes() {
-                // Folder indexes re-walk on their own (`Volume::rewalk`).
-                if old.kind == VolumeKind::Folder {
+                // Folder indexes re-walk on their own (`Volume::rewalk`); NAS
+                // agents keep theirs current.
+                if !old.kind.is_journaled() {
                     continue;
                 }
                 let Some(w) = want.iter().find(|w| w.0 == old.key) else {
@@ -929,7 +947,7 @@ impl Engine {
             match res {
                 Ok((v, rep)) => {
                     self.report(&key, &Ok(rep));
-                    if v.kind != VolumeKind::Folder && v.index.read().needs_rescan {
+                    if v.kind.is_journaled() && v.index.read().needs_rescan {
                         // Saved by a build that kept removed hard links: rebuild
                         // it once in the background (it serves meanwhile).
                         log::info!("{key}: index from an older build; rescanning it once");
@@ -1023,6 +1041,47 @@ impl Engine {
                 std::thread::Builder::new()
                     .name(format!("dir-{letter}"))
                     .spawn(move || watch_folder(vv, fcfg, stop, tok, logins, walk_now))?;
+                Ok((v, rep))
+            }
+            VolumeKind::Remote => {
+                // Serve the saved replica (or just the root) right away; the
+                // connection thread brings it up to date.
+                let (rc, share) = cfg
+                    .remote_share(key)
+                    .map(|(r, s)| (r.clone(), s.clone()))
+                    .with_context(|| format!("{key}: no such NAS share"))?;
+                let t0 = Instant::now();
+                let cached = persist::load(&crate::remote::cache_path(key)).ok();
+                let had_cache = cached.is_some();
+                let mut ix = cached.unwrap_or_else(|| folder::empty(key, fold));
+                ix.set_options(opts);
+                ix.set_fold_mode(fold);
+                ix.apply_rules(rules);
+                let rep = LoadReport::Walked {
+                    entries: ix.len_live(),
+                    ms: t0.elapsed().as_millis(),
+                };
+                let missing = ix.ranks_missing();
+                let v = Volume::new(
+                    key,
+                    letter,
+                    kind,
+                    ix,
+                    Applier::default(),
+                    0,
+                    if had_cache {
+                        crate::remote::CACHED
+                    } else {
+                        crate::remote::CONNECTING
+                    },
+                );
+                if missing {
+                    rank_in_background(v.clone());
+                }
+                let (vv, stop, hist) = (v.clone(), self.stop.clone(), self.history.clone());
+                std::thread::Builder::new()
+                    .name(format!("nas-{}", share.name))
+                    .spawn(move || crate::remote::watch(vv, rc, share, stop, hist))?;
                 Ok((v, rep))
             }
         }
@@ -1165,11 +1224,7 @@ impl Engine {
             let o = self.config.read();
             (o.index_date_created, o.share_index_date_created)
         };
-        let any_ntfs = self
-            .volumes
-            .read()
-            .iter()
-            .any(|v| v.kind != VolumeKind::Folder);
+        let any_ntfs = self.volumes.read().iter().any(|v| v.kind.is_journaled());
         if c.index_date_created && !old_local && any_ntfs {
             self.rescan_requested.store(true, Ordering::Relaxed);
         }
@@ -1252,10 +1307,10 @@ impl Engine {
         for v in self.volumes.read().iter() {
             let n = v.unsaved.load(Ordering::Relaxed);
             if n > 0 && n >= min_changes && v.cache.load(Ordering::Relaxed) {
-                let path = if v.kind == VolumeKind::Folder {
-                    persist::folder_db_path(&v.key)
-                } else {
-                    persist::db_path(v.letter)
+                let path = match v.kind {
+                    VolumeKind::Folder => persist::folder_db_path(&v.key),
+                    VolumeKind::Remote => crate::remote::cache_path(&v.key),
+                    _ => persist::db_path(v.letter),
                 };
                 if v.save(&path)
                     .with_context(|| format!("{}: saving {}", v.key, path.display()))?
@@ -1282,7 +1337,7 @@ impl Drop for Engine {
 
 /// Computes sort ranks under a read lock and installs them if the index
 /// didn't change shape meanwhile (retries a few times otherwise).
-fn rank_in_background(v: Arc<Volume>) {
+pub(crate) fn rank_in_background(v: Arc<Volume>) {
     let _ = std::thread::Builder::new()
         .name(format!("ranks-{}", v.letter))
         .spawn(move || {
@@ -1313,7 +1368,7 @@ fn rank_in_background(v: Arc<Volume>) {
 
 /// Housekeeping after a batch of changes: re-apply exclude rules after
 /// folder moves, and refresh stale sort ranks (computed under a read lock).
-fn maintain(v: &Volume, last_ranks: &mut Instant) {
+pub(crate) fn maintain(v: &Volume, last_ranks: &mut Instant) {
     if v.index.read().rules_stale {
         let mut ix = v.index.write();
         let rules = ix.rules.clone();

@@ -40,6 +40,12 @@ Also:
 - `$env:QUICKSEEK_TEST_UNC='\\localhost\S\some\dir'; cargo test -p quickseek-core --release unc_share -- --ignored` indexes and watches a real SMB share.
 - `cargo run -p quickseek-gui --example mock_service -- --live` serves a synthetic index. Start the GUI with `QUICKSEEK_PIPE=\\.\pipe\quickseek-mock` to try it without the service.
 - `quickseek selftest` (elevated) checks the real index against the filesystem and exercises live updates.
+- The NAS agent builds and runs on Linux (WSL works): `cargo test -p quickseek-agent -p quickseek-remote`
+  runs the agent against temp folders with inotify, and as root also with fanotify; CI does both, plus
+  fanotify on a btrfs subvolume. `cargo test -p quickseek-core --test remote_agent` (on Windows) runs the
+  service's side against a real agent. `cargo test -p quickseek-agent --release --test live bench -- --ignored
+  --nocapture` times the first walk, the full transfer and event latency on 590,000 synthetic files
+  (`QS_BENCH_FILES`, `QS_BENCH_DIR`, `QS_BENCH_WATCH`). `docker build -f packaging/agent/Dockerfile .` builds the image.
 
 ## The demo PC
 
