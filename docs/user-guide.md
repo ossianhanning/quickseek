@@ -8,6 +8,7 @@ line, the service and the MCP server. The [README](../README.md) has the overvie
 - [Query syntax](#query-syntax)
 - [What gets indexed](#what-gets-indexed)
 - [Command line](#command-line)
+- [PCs searching each other](#pcs-searching-each-other)
 - [MCP server](#mcp-server-quickseek-mcp)
 - [Updating](#updating)
 - [Service security](#service-security)
@@ -273,6 +274,37 @@ The PC keeps the agent's token in the service's index folder, not in
 `config.json`. On the NAS, `quickseek-agent clients` lists paired PCs and
 `quickseek-agent revoke <name>` forgets one.
 
+### PCs searching each other
+
+The service can serve this PC's own drives the way a NAS agent serves its shares, so another PC
+(with Quickseek) searches them live. On the PC to be searched:
+
+```
+quickseek peer on            # every local NTFS/ReFS drive; --drives C,D for some, --port N
+quickseek peer pair          # a pairing code, valid for a few minutes
+```
+
+On the other PC: `quickseek remotes add <first PC's name> --pair <code>`. Its drives appear as
+`\\<first PC>\C$`, `\\<first PC>\D$`: the administrative shares, so opening a result works when
+you can reach those (an administrator account on that PC). For two-way search, do the same the
+other way round. `quickseek remotes list` shows the states (as for a NAS), `quickseek peer` what
+is shared and which PCs are paired, `quickseek peer revoke <PC>` forgets one, `quickseek peer off`
+stops sharing.
+
+- **What is shared:** names, sizes and dates of what this PC indexes, minus what its exclude rules
+  hide; never the replicas of a NAS or another PC (so two PCs sharing with each other don't loop),
+  and never file contents. A hard-linked file is shared at one of its names.
+- **Network:** port 48623 (TCP). `peer on` makes the service add a Windows Firewall rule for it
+  ("Quickseek PC sharing": private and domain networks, local subnet only); `peer off` removes it.
+- **Trade-off:** as with a NAS, anyone using Quickseek on the paired PC sees every file name this
+  PC indexes, whatever their rights here. Any user who can use Quickseek on this PC can turn sharing
+  on and make pairing codes.
+- **Memory:** the service keeps a copy of each shared drive's tree, roughly 150 bytes per file
+  (a drive with 2 million files: about 300 MB). `--drives` limits sharing to the drives worth it.
+- Changes reach the other PC within about a second. The served trees are saved in
+  `%ProgramData%\quickseek\peer` (with this PC's certificate and the paired PCs), so after a
+  restart the other PC usually continues without a full transfer.
+
 Configuration is `config.json` next to the index: `%ProgramData%\quickseek`
 for the service, `%LOCALAPPDATA%\quickseek` in-process. GUI preferences are
 in `%APPDATA%\quickseek\gui.json`.
@@ -322,6 +354,18 @@ On a test PC with 6.8M files, `cleanup_candidates` answers in 1.6 s,
 
 ## Updating
 
+- **By itself.** The service looks for a new release once a day (five minutes after it starts,
+  then daily; an hour later if GitHub couldn't be reached). What it does then is
+  `quickseek update mode`: `ask` (the default) only notes it (`quickseek update` says so, and
+  `quickseek update install` installs it), `auto` installs it, `off` doesn't look.
+  `quickseek update` looks now.
+- **What is checked.** A release's `update.json` lists every file with its SHA-256 and size and is
+  signed (Ed25519) with the project's update key. The service installs only a newer version whose
+  manifest verifies with the public key built into the installed copy, and only an installer
+  matching the manifest. It runs it as `quickseek-setup-<version>-x64.exe --update` from
+  `%ProgramData%\quickseek\updates`: programs and service are replaced, the shortcut, PATH,
+  startup entry and AI clients stay as they were. Open Quickseek windows keep running the old
+  version until they're restarted.
 - Running the new `quickseek-setup.exe` replaces the programs in the install
   folder (moving running ones aside), updates the service's copy and restarts
   it, then ends `quickseek-mcp` processes still running the old code. AI apps

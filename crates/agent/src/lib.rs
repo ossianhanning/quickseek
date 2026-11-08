@@ -9,9 +9,11 @@
 //! * [`server`]: TLS sessions with PCs.
 //! * [`state`]: certificate, paired PCs, pairing codes.
 //! * [`snaps`]: daily folder-size snapshots.
+//! * [`selfupdate`]: installing new signed releases.
 
 #[cfg(target_os = "linux")]
 pub mod btrfs;
+pub mod selfupdate;
 pub mod server;
 pub mod share;
 pub mod snaps;
@@ -54,6 +56,8 @@ pub struct Options {
     pub idle_walks: bool,
     /// How shares are read in full.
     pub index: IndexKind,
+    /// New releases: ignore, log, or install ([`selfupdate`]).
+    pub update: selfupdate::Mode,
 }
 
 /// How a share is read in full.
@@ -80,6 +84,7 @@ impl Default for Options {
             name: host_name(),
             idle_walks: true,
             index: IndexKind::Auto,
+            update: selfupdate::Mode::Ask,
         }
     }
 }
@@ -180,6 +185,10 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
         .spawn(move || a.serve(listener))?;
     let rewalk_now = Arc::new(AtomicBool::new(false));
     let (st, rw) = (stop.clone(), rewalk_now.clone());
+    let (mode, dir) = (opts.update, agent.store.dir.clone());
+    std::thread::Builder::new()
+        .name("update".into())
+        .spawn(move || selfupdate::run(mode, dir))?;
     let a = agent.clone();
     std::thread::Builder::new()
         .name("index".into())
@@ -197,6 +206,8 @@ pub fn start(opts: Options) -> anyhow::Result<Running> {
 
 /// Set by SIGTERM/SIGINT (`docker stop`): save the indexes and exit.
 pub static TERM: AtomicBool = AtomicBool::new(false);
+/// With [`TERM`]: run the staged update after saving instead of exiting.
+pub static RESTART: AtomicBool = AtomicBool::new(false);
 
 /// What a background indexing job produced for one share.
 struct Indexed {
@@ -396,6 +407,9 @@ fn index_loop(opts: &Options, agent: &Agent, stop: &AtomicBool, rewalk_now: &Ato
         if TERM.load(Ordering::Relaxed) {
             save(&mut saved_seq, true);
             log::info!("stopping (indexes saved)");
+            if RESTART.load(Ordering::Relaxed) {
+                selfupdate::restart(&cfg_dir);
+            }
             std::process::exit(0);
         }
         if stop.load(Ordering::Relaxed) {

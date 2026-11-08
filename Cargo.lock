@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek"
-version = "19.9.0"
+version = "19.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-agent"
-version = "19.9.0"
+version = "19.10.0"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-core"
-version = "19.9.0"
+version = "19.10.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-gui"
-version = "19.9.0"
+version = "19.10.0"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "quickseek-mcp"
-version = "19.9.0"
+version = "19.10.0"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -941,17 +941,20 @@ dependencies = [
 
 [[package]]
 name = "quickseek-remote"
-version = "19.9.0"
+version = "19.10.0"
 dependencies = [
  "rcgen",
  "ring",
  "rustls",
+ "serde",
+ "serde_json",
+ "webpki-roots",
  "zstd",
 ]
 
 [[package]]
 name = "quickseek-setup"
-version = "19.9.0"
+version = "19.10.0"
 dependencies = [
  "embed-resource",
  "quickseek-core",
@@ -1527,6 +1530,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

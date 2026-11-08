@@ -8,10 +8,12 @@
 //! * [`client`]: the PC's side of hello, pairing and authentication.
 //! * [`pair`]: pairing codes, the proofs that bind a code to the certificate,
 //!   and tokens.
+//! * [`update`]: signed update manifests and downloading releases.
 
 pub mod client;
 pub mod pair;
 pub mod tls;
+pub mod update;
 pub mod wire;
 
 pub use rustls;

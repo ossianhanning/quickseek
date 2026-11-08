@@ -40,6 +40,17 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             "no-startup" => a.opts.startup = false,
             "no-arp" => a.opts.arp = false,
             "no-launch" => a.launch = false,
+            // An automatic update (the service runs it as SYSTEM): new files,
+            // the service and the uninstall entry; the shortcut, PATH, startup
+            // entry and AI clients stay as the user left them.
+            "update" => {
+                a.silent = true;
+                a.launch = false;
+                a.opts.shortcut = false;
+                a.opts.path = false;
+                a.opts.startup = false;
+                a.mcp_choice = Some(false);
+            }
             "log" => {
                 let _ = LOG.set(PathBuf::from(it.next().ok_or("--log needs a file")?));
             }
@@ -106,6 +117,9 @@ mod tests {
             "silent installs connect detected clients"
         );
         assert!(p("--silent --no-mcp").opts.mcp.is_empty());
+        let u = p(r"--update --dir C:\Q");
+        assert!(u.silent && !u.launch && u.opts.service && u.opts.arp);
+        assert!(!u.opts.shortcut && !u.opts.path && !u.opts.startup && u.opts.mcp.is_empty());
         let a = p("--silent --mcp-clients cursor,claude-code");
         assert_eq!(a.opts.mcp, [reg::Client::Cursor, reg::Client::ClaudeCode]);
         assert!(p("--uninstall --purge").purge);

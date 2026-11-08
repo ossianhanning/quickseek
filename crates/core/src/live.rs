@@ -171,6 +171,7 @@ impl Applier {
         if reason & DATA_CHANGE != 0 {
             e.mtime = e.mtime.max(crate::index::mtime_of(r.timestamp));
         }
+        ix.touch(rec);
         if !is_dir && reason & USN_REASON_HARD_LINK_CHANGE != 0 {
             self.link_checks.push((rec, r.frn128));
         }

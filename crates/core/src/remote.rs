@@ -186,6 +186,16 @@ pub fn action(eng: &crate::engine::Engine, json: &str) -> Result<String, String>
     use serde_json::{Value, json};
     let a: Value = serde_json::from_str(json).map_err(|e| format!("bad request: {e}"))?;
     let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").trim();
+    // Serving this PC to others, and updates: the same request, other ops.
+    match s("op") {
+        op @ ("peer" | "peer_pair" | "peer_revoke") => {
+            return crate::peer::action(eng, op, &a).map(|v| v.to_string());
+        }
+        op @ ("update" | "update_check" | "update_install") => {
+            return crate::update::action(eng, op).map(|v| v.to_string());
+        }
+        _ => {}
+    }
     let host = s("host").to_string();
     let mut cfg = eng.config();
     let out = match s("op") {

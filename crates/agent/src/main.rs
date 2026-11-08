@@ -32,6 +32,8 @@ Options (environment variable in brackets):
   --name NAME         shown on the PC [QUICKSEEK_NAME, default the host name]
   --index KIND        auto (read btrfs's own trees where possible, catch up by generation after a
                       restart or lost events) or walk [QUICKSEEK_INDEX, default auto]
+  --update KIND       new signed releases: off, ask (log that there is one) or auto (install
+                      it into <config>/bin and restart into it) [QUICKSEEK_UPDATE, default ask]
   --walk-io KIND      I/O priority of walks after the first: idle (only when the disks are otherwise
                       free) or normal [QUICKSEEK_WALK_IO, default idle]; the first walk and live
                       changes read at normal
@@ -75,6 +77,11 @@ fn parse(args: &[String]) -> anyhow::Result<(String, Vec<String>, Options)> {
     if let Some(v) = env("QUICKSEEK_INDEX") {
         o.index = parse_index(&v)?;
     }
+    if let Some(v) = env("QUICKSEEK_UPDATE") {
+        o.update = v
+            .parse()
+            .map_err(|e| anyhow::anyhow!("QUICKSEEK_UPDATE: {e}"))?;
+    }
     if let Some(v) = env("QUICKSEEK_WALK_IO") {
         o.idle_walks = match v.as_str() {
             "idle" => true,
@@ -103,6 +110,7 @@ fn parse(args: &[String]) -> anyhow::Result<(String, Vec<String>, Options)> {
             "--rewalk-hours" => o.rewalk_hours = val()?.parse()?,
             "--name" => o.name = val()?,
             "--index" => o.index = parse_index(&val()?)?,
+            "--update" => o.update = val()?.parse().map_err(anyhow::Error::msg)?,
             "--walk-io" => {
                 o.idle_walks = match val()?.as_str() {
                     "idle" => true,
@@ -204,6 +212,8 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             pair::show_fingerprint(&Store::new(&o.config)?.fingerprint()?)
         ),
         _ => {
+            // A newer signed release staged by an earlier run takes over here.
+            quickseek_agent::selfupdate::run_staged(&o.config);
             lower_priority();
             on_term();
             let r = quickseek_agent::start(o)?;

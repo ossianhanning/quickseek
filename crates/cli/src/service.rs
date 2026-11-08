@@ -422,6 +422,9 @@ fn run_service() -> anyhow::Result<()> {
             }
             log::info!("ready");
             loop {
+                // Serving this PC to others follows the config (and the
+                // drives as they load).
+                quickseek_core::peer::keep(&eng);
                 std::thread::sleep(Duration::from_secs(3));
                 eng.sync_if_changed();
                 eng.maybe_snapshot();
@@ -431,6 +434,11 @@ fn run_service() -> anyhow::Result<()> {
                 }
             }
         })?;
+
+    let eng = engine.clone();
+    std::thread::Builder::new()
+        .name("update".into())
+        .spawn(move || quickseek_core::update::run(eng))?;
 
     // Wait for stop (or the pipe server dying, which makes the service useless).
     loop {
@@ -443,6 +451,7 @@ fn run_service() -> anyhow::Result<()> {
         ServiceControlAccept::empty(),
         Duration::from_secs(60),
     ))?;
+    quickseek_core::peer::shut_down();
     log::info!("saving indexes");
     if let Err(err) = engine.save_all(1) {
         log::error!("save failed: {err:#}");

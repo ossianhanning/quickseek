@@ -20,12 +20,15 @@ services:
       # <- name=path of every share to serve; the PC maps them to \\<host>\<name>
       QUICKSEEK_SHARES: data=/volume1/data,media=/volume1/media
       TZ: Etc/UTC                          # your time zone
+      # New signed releases: ask (log that there is one), auto (install it into
+      # /config/bin and restart into it) or off.
+      QUICKSEEK_UPDATE: ask
     volumes:
       # <- the volume's root, read-only. On btrfs the shares are subvolumes and
       # fanotify can only watch the whole filesystem from its root; with only
       # the shares mounted the agent falls back to inotify (a watch per folder).
       - /volume1:/volume1:ro
-      # Certificate, paired PCs and daily snapshots.
+      # Certificate, paired PCs, daily snapshots and staged updates.
       - /volume1/docker/quickseek-agent:/config
     cap_drop: [ALL]
     cap_add:
