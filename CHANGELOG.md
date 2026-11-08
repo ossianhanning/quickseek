@@ -1,7 +1,23 @@
 # Changelog
 
-## Unreleased
+## 19.10.0 (2026-11-08)
 
+- **PCs search each other.** `quickseek peer on` shares this PC's NTFS/ReFS drives with other PCs
+  on the local network: the other PC pairs with it like with a NAS agent (`quickseek peer pair` here,
+  `quickseek remotes add <this PC> --pair <code>` there) and keeps a live replica, shown as
+  `\\<this PC>\C$\…`. Do the same the other way round for two-way search. The service opens the port
+  (48623) in Windows Firewall for private networks and the local subnet only, and closes it again
+  with `quickseek peer off`. Only local drives are served, never replicas of a NAS or another PC.
+- **Signed updates.** The service looks for a new release once a day (`quickseek update mode
+  off|ask|auto`, default `ask`: it says so in `quickseek update`, and `quickseek update install`
+  installs it). Releases carry `update.json` with every file's SHA-256, signed with the project's
+  Ed25519 update key; an update is used only if that signature verifies with the public key built
+  into the installed copy, the version is newer and the download matches the manifest. The
+  installer's new `--update` mode replaces the programs and the service and leaves the shortcut,
+  PATH, startup entry and AI clients alone.
+- **The NAS agent updates itself** the same way (`QUICKSEEK_UPDATE=off|ask|auto`, default `ask`,
+  which only logs). In `auto` it stages the new binary in its config volume, saves its indexes and
+  restarts into it; the image's own binary checks the signature again before running it.
 - **The service now scans network shares.** It took the connecting user's identity
   before reading from the pipe, which Windows refuses (error 1368), so shares stayed at "waiting
   for credentials" forever. The status now says what it's waiting for, or why borrowing the

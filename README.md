@@ -132,11 +132,20 @@ docker compose logs quickseek-agent    # shows a pairing code
 Then on the PC: `quickseek remotes add <nas> --pair <code>`, or use Options → NAS. See the
 [user guide](docs/user-guide.md#nas-agents-options--nas) for details.
 
+## Two PCs
+
+A PC can serve its own drives the same way: `quickseek peer on` and `quickseek peer pair` on one,
+`quickseek remotes add <that PC> --pair <code>` on the other, which then searches both live. Do it
+both ways round for two-way search. See [PCs searching each other](docs/user-guide.md#pcs-searching-each-other).
+
 ## Privacy
 
-- **Everything stays on your PC.** Quickseek has no telemetry, no update check and no cloud. It
-  makes no network connections, except to the network shares you add yourself and the NAS agents
-  you pair with (over TLS, to the certificate pinned when pairing).
+- **Everything stays on your PC.** Quickseek has no telemetry and no cloud. It connects only to
+  the network shares you add yourself, the NAS agents and PCs you pair with (over TLS, to the
+  certificate pinned when pairing), PCs you let search this one (`quickseek peer on`), and, once a
+  day unless you turn it off (`quickseek update mode off`), GitHub, to see if there's a new release.
+  That request sends nothing about you or your files; an update is installed only when you say so
+  (or set `auto`), and only if it's signed with the project's update key.
 - The index holds names, sizes and dates, not file contents. Content search reads files on demand,
   as you, and never in the service.
 - **An AI assistant sees what it asks for.** When you connect one, the file names and sizes it gets

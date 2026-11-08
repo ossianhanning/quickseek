@@ -138,10 +138,23 @@ enum Cmd {
         #[command(subcommand)]
         action: FolderCmd,
     },
-    /// NAS agents (quickseek-agent running on a NAS): pair, list, remove.
+    /// NAS agents and other PCs (quickseek-agent on a NAS, or a PC sharing
+    /// its drives): pair, list, remove.
     Remotes {
         #[command(subcommand)]
         action: RemoteCmd,
+    },
+    /// Share this PC's drives with other PCs: they pair with it like with a
+    /// NAS (`quickseek remotes add <this PC> --pair <code>`) and search it live.
+    Peer {
+        #[command(subcommand)]
+        action: Option<PeerCmd>,
+    },
+    /// Updates from the project's signed releases: look, install, or choose
+    /// what the service does by itself (off, ask, auto).
+    Update {
+        #[command(subcommand)]
+        action: Option<UpdateCmd>,
     },
     /// Show or replace the index configuration (excludes, volumes, ...).
     Config {
@@ -290,6 +303,41 @@ enum RemoteCmd {
 }
 
 #[derive(Subcommand)]
+enum PeerCmd {
+    /// Whether this PC is shared, what, and which PCs are paired.
+    Status,
+    /// Start sharing (the service also opens the port in the firewall, for
+    /// private networks and the local subnet only).
+    On {
+        /// Port to listen on.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Only these drives (C,D); default every local NTFS/ReFS drive.
+        #[arg(long, value_delimiter = ',')]
+        drives: Option<Vec<String>>,
+    },
+    /// Stop sharing (and close the port again).
+    Off,
+    /// A pairing code for the other PC's `quickseek remotes add`.
+    Pair,
+    /// Forget a paired PC.
+    Revoke { name: String },
+}
+
+#[derive(Subcommand)]
+enum UpdateCmd {
+    /// This version and the newest release the service has seen.
+    Status,
+    /// Look for a new release now.
+    Check,
+    /// Install the newest release (downloaded and checked against the
+    /// release signature by the service).
+    Install,
+    /// What the service does by itself: off, ask (say so) or auto (install).
+    Mode { mode: String },
+}
+
+#[derive(Subcommand)]
 enum ConfigCmd {
     /// Print the configuration as JSON.
     Show,
@@ -320,6 +368,162 @@ fn open_engine(volumes: &[char], force: bool, verbose: bool) -> Engine {
         Ok(_) => {}
         Err(e) => eprintln!("{l}: failed: {e:#}"),
     })
+}
+
+fn peer(cli: &Cli, action: &PeerCmd) -> anyhow::Result<()> {
+    use serde_json::json;
+    let mut be = open_backend(cli, false)?;
+    let st = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+    match action {
+        PeerCmd::Status => {
+            let s = be
+                .remote(&json!({ "op": "peer" }))
+                .map_err(anyhow::Error::msg)?;
+            if s["enabled"].as_bool() != Some(true) {
+                println!(
+                    "this PC ({}) isn't shared; `quickseek peer on` shares it",
+                    st(&s, "name")
+                );
+            } else {
+                println!(
+                    "{} is shared on port {}{}; certificate {}",
+                    st(&s, "name"),
+                    s["port"],
+                    if s["running"].as_bool() == Some(true) {
+                        ""
+                    } else {
+                        " (starting)"
+                    },
+                    st(&s, "fingerprint")
+                );
+                for sh in s["shares"].as_array().into_iter().flatten() {
+                    println!(
+                        "  {:<6} {:<12} {:>10} entries",
+                        st(sh, "name"),
+                        st(sh, "state"),
+                        sh["entries"].as_u64().unwrap_or(0)
+                    );
+                }
+                println!(
+                    "  {} connection(s) open",
+                    s["connections"].as_u64().unwrap_or(0)
+                );
+            }
+            let clients = s["clients"].as_array().cloned().unwrap_or_default();
+            if clients.is_empty() {
+                println!("no PC is paired; `quickseek peer pair` makes a code");
+            }
+            for c in clients {
+                println!("paired: {}", st(&c, "name"));
+            }
+            if let Some(e) = s["error"].as_str() {
+                println!("problem: {e}");
+            }
+        }
+        PeerCmd::On { port, drives } => {
+            edit_config(cli, |c| {
+                c.peer.enabled = true;
+                if let Some(p) = port {
+                    c.peer.port = *p;
+                }
+                if let Some(d) = drives {
+                    c.peer.volumes = d
+                        .iter()
+                        .map(|x| x.trim().trim_end_matches([':', '\\']).to_uppercase())
+                        .collect();
+                }
+                Ok(())
+            })?;
+            println!("sharing this PC; `quickseek peer pair` makes a code for the other PC");
+        }
+        PeerCmd::Off => {
+            edit_config(cli, |c| {
+                c.peer.enabled = false;
+                Ok(())
+            })?;
+            println!("this PC isn't shared any more (paired PCs stay paired)");
+        }
+        PeerCmd::Pair => {
+            let r = be
+                .remote(&json!({ "op": "peer_pair" }))
+                .map_err(anyhow::Error::msg)?;
+            println!("Pairing code: {}", st(&r, "code"));
+            println!(
+                "Valid for {} minutes. On the other PC: quickseek remotes add {} --pair {}",
+                r["minutes"],
+                st(&r, "name"),
+                st(&r, "code")
+            );
+            println!("Certificate: {}", st(&r, "fingerprint"));
+            if r["enabled"].as_bool() != Some(true) {
+                println!("(this PC isn't shared yet: `quickseek peer on`)");
+            }
+        }
+        PeerCmd::Revoke { name } => {
+            be.remote(&json!({ "op": "peer_revoke", "name": name }))
+                .map_err(anyhow::Error::msg)?;
+            println!("{name} is no longer paired (open connections end when sharing restarts)");
+        }
+    }
+    Ok(())
+}
+
+fn update(cli: &Cli, action: &UpdateCmd) -> anyhow::Result<()> {
+    use quickseek_core::config::UpdateMode;
+    use serde_json::json;
+    if let UpdateCmd::Mode { mode } = action {
+        let m =
+            UpdateMode::parse(mode).ok_or_else(|| anyhow::anyhow!("{mode}: off, ask or auto"))?;
+        edit_config(cli, |c| {
+            c.update = m;
+            Ok(())
+        })?;
+        println!(
+            "updates: {}",
+            match m {
+                UpdateMode::Off => "the service doesn't look for them",
+                UpdateMode::Ask =>
+                    "the service looks once a day; `quickseek update install` installs",
+                UpdateMode::Auto => "the service looks once a day and installs them",
+            }
+        );
+        return Ok(());
+    }
+    // Downloading and running the installer is the service's job (it runs
+    // it as SYSTEM, after checking the signature).
+    let c = ipc::Client::connect().map_err(|e| {
+        anyhow::anyhow!("updates go through the Quickseek service, which isn't reachable: {e}")
+    })?;
+    let mut be: Box<dyn Backend> = Box::new(ipc::Remote::new(c));
+    let op = match action {
+        UpdateCmd::Status => "update",
+        UpdateCmd::Check => "update_check",
+        UpdateCmd::Install => "update_install",
+        UpdateCmd::Mode { .. } => unreachable!(),
+    };
+    let r = be
+        .remote(&json!({ "op": op }))
+        .map_err(anyhow::Error::msg)?;
+    if let Some(v) = r["installing"].as_str()
+        && op == "update_install"
+    {
+        println!("installing Quickseek {v}: the service restarts when it's done");
+        return Ok(());
+    }
+    let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
+    println!("Quickseek {} (updates: {})", s("version"), s("mode"));
+    if r["available"].as_bool() == Some(true) {
+        println!(
+            "{} is available: `quickseek update install` installs it",
+            s("latest")
+        );
+    } else if !s("latest").is_empty() {
+        println!("that's the newest release ({})", s("latest"));
+    }
+    if let Some(e) = r["error"].as_str() {
+        println!("the last look failed: {e}");
+    }
+    Ok(())
 }
 
 /// The service when it's running and usable, otherwise an in-process engine
@@ -1045,6 +1249,8 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Cmd::Remotes { ref action } => remotes(&cli, action)?,
+        Cmd::Peer { ref action } => peer(&cli, action.as_ref().unwrap_or(&PeerCmd::Status))?,
+        Cmd::Update { ref action } => update(&cli, action.as_ref().unwrap_or(&UpdateCmd::Check))?,
         Cmd::Config { ref action } => match action {
             ConfigCmd::Show => println!("{}", serde_json::to_string_pretty(&show_config(&cli)?)?),
             ConfigCmd::Set { file } => {

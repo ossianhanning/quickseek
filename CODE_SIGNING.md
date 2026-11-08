@@ -35,6 +35,16 @@ reviewed before they're merged.
 
 ## Privacy
 
-Quickseek makes no network connections of its own: no telemetry, no update checks, nothing sent
-anywhere. It only reaches network shares that the user adds to the index. See the
+Quickseek has no telemetry and sends nothing about its users or their files anywhere. It reaches
+the network shares, NAS agents and PCs the user adds or pairs with, and once a day (unless turned
+off with `quickseek update mode off`) GitHub, to fetch the newest release's signed `update.json`.
+
+## Update signatures
+
+Separately from Authenticode, every release carries `update.json` (each file's SHA-256 and size)
+and `update.json.sig`, an Ed25519 signature made by the release workflow with the
+`UPDATE_SIGNING_KEY` secret. Installed copies (the Windows service and the NAS agent) update only to
+a newer version whose manifest verifies against the public key built into them
+([`crates/remote/src/update_key.in`](crates/remote/src/update_key.in)) and whose files match it.
+The private key exists only as that secret and an offline backup with the maintainer. See the
 [privacy section](README.md#privacy) of the README.

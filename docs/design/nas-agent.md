@@ -273,3 +273,25 @@ comparisons and series then cover the NAS even across weeks the PC was off.
 - Content search reads files over SMB as before (the agent doesn't serve file contents).
 - No write operations through the agent (deletes go through SMB with the user's credentials).
 - One agent per host; several NAS volumes are several roots of one agent.
+
+## PCs as agents
+
+A Windows PC serves its own drives with the same server (`crates/core/src/peer.rs`, turned on with
+`quickseek peer on`): one agent share per local NTFS/ReFS drive, named like its administrative
+share (`C$`), so the other PC's replica is keyed `\<PC>\C$`. The tree isn't walked: the drive's
+index notes the records its live updates touch (`Index::touched`), and once a second the service
+compares those with the share's tree, which produces the ops (a rebuilt index or new exclude rules
+compare everything once). Tree ids map to records through the inode field of the tree's metadata,
+so a saved tree maps back after a restart. Only local drives are served (never replicas), so two
+PCs serving each other don't loop. The service adds a Windows Firewall rule for the port (private
+and domain profiles, local subnet).
+
+## Updates
+
+Releases carry `update.json` (every file's SHA-256 and size) and `update.json.sig` (Ed25519, made
+by the release workflow with the `UPDATE_SIGNING_KEY` secret); builds carry the public key
+(`crates/remote/src/update.rs`). The agent (`QUICKSEEK_UPDATE=auto`) stages
+`quickseek-agent-<version>-<arch>-linux-musl.zst` with the manifest and signature in
+`/config/bin`, saves its indexes and execs the new binary. The image is read-only, so at every
+start the image's binary checks the staged one (signature against its own key, newer version,
+hash) before running it, and deletes it once the image is as new.

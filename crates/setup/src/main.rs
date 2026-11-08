@@ -7,6 +7,7 @@
 //!     --dir <folder> --no-service --no-shortcut --no-path --no-startup --no-launch
 //!     --mcp-clients claude-code,cursor      connect only these AI clients
 //!     --log <file>                          (default %TEMP%\quickseek-setup.log)
+//! quickseek-setup.exe --update [--dir <folder>]  new files and service only (auto-update)
 //! quickseek-setup.exe --uninstall [--silent] [--purge]
 //! ```
 //! Everything is logged to %TEMP%\quickseek-setup.log.

@@ -2,6 +2,9 @@
 # Cargo.toml) and attaches it to a draft GitHub release for review:
 # quickseek-setup-<version>-x64.exe, the Claude Desktop extension and the
 # winget manifests (as a workflow artifact, with the installer's SHA-256).
+# Last, update.json (every file's SHA-256 and size) and update.json.sig, its
+# Ed25519 signature with the UPDATE_SIGNING_KEY secret: what installed copies
+# check before they update themselves (see crates/remote/src/update.rs).
 #
 # Code signing (SignPath Foundation, see CODE_SIGNING.md) runs only when the
 # SIGNPATH_API_TOKEN secret and the SIGNPATH_ORGANIZATION_ID variable are
@@ -188,7 +191,9 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           docker buildx build -f packaging/agent/Dockerfile --platform ${{ matrix.platform }} --output type=local,dest=out .
           tar -C out -czf "quickseek-agent-$version-${{ matrix.arch }}-linux-musl.tar.gz" quickseek-agent
-          gh release upload "${{ github.ref_name }}" quickseek-agent-*.tar.gz --clobber --repo "${{ github.repository }}"
+          # The same binary as the agent's self-update fetches it.
+          zstd -19 -q out/quickseek-agent -o "quickseek-agent-$version-${{ matrix.arch }}-linux-musl.zst"
+          gh release upload "${{ github.ref_name }}" quickseek-agent-*.tar.gz quickseek-agent-*.zst --clobber --repo "${{ github.repository }}"
 
   agent-manifest:
     needs: agent-image
@@ -217,3 +222,33 @@ jobs:
           docker buildx imagetools create -t "$IMAGE:$version" -t "$IMAGE:latest" \
             $(printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools inspect "$IMAGE:$version"
+
+  # update.json and its signature, from the files now on the release.
+  update-manifest:
+    needs: [build, agent-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Sign the update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "UPDATE_SIGNING_KEY isn't set"; exit 1; fi
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          mkdir -p dist
+          gh release download "${{ github.ref_name }}" --dir dist --clobber --repo "${{ github.repository }}" \
+            --pattern "quickseek-setup-$version-x64.exe" --pattern "quickseek-agent-$version-*-linux-musl.zst"
+          ls -l dist
+          test -f "dist/quickseek-setup-$version-x64.exe"
+          test "$(ls dist/quickseek-agent-*.zst | wc -l)" -ge 2
+          cargo run -q --locked -p quickseek-remote --example release_sign -- manifest "$version" dist/* > update.json
+          cat update.json
+          # Fails unless the result verifies with the public key built in.
+          cargo run -q --locked -p quickseek-remote --example release_sign -- sign - update.json
+          cargo run -q --locked -p quickseek-remote --example release_sign -- verify update.json
+          gh release upload "${{ github.ref_name }}" update.json update.json.sig --clobber --repo "${{ github.repository }}"

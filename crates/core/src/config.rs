@@ -162,6 +162,77 @@ pub struct Config {
     pub share_rescan_minutes: u32,
     /// NAS agents; their shares replace folder indexes of the same UNC root.
     pub remotes: Vec<RemoteConfig>,
+    /// Serving this PC's own drives to other PCs ([`crate::peer`]).
+    pub peer: PeerConfig,
+    /// Updates from the project's signed releases ([`crate::update`]).
+    pub update: UpdateMode,
+}
+
+/// This PC as an agent for other PCs: they pair with it like with a NAS
+/// (`quickseek remotes add <this PC> --pair <code>`) and keep a live replica
+/// of its NTFS/ReFS drives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeerConfig {
+    pub enabled: bool,
+    pub port: u16,
+    /// Drive letters to serve (`C`, `D`); empty: every local NTFS/ReFS drive
+    /// that is indexed.
+    pub volumes: Vec<String>,
+}
+
+impl Default for PeerConfig {
+    fn default() -> Self {
+        PeerConfig {
+            enabled: false,
+            port: quickseek_remote::DEFAULT_PORT,
+            volumes: Vec::new(),
+        }
+    }
+}
+
+impl PeerConfig {
+    /// Whether drive `key` (`C`) is served.
+    pub fn serves(&self, key: &str) -> bool {
+        self.volumes.is_empty()
+            || self
+                .volumes
+                .iter()
+                .any(|v| v.trim_end_matches([':', '\\']).eq_ignore_ascii_case(key))
+    }
+}
+
+/// What the service does about new releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    /// Never look.
+    Off,
+    /// Look once a day and say so when there is one (`quickseek update`
+    /// installs it).
+    #[default]
+    Ask,
+    /// Look once a day and install it.
+    Auto,
+}
+
+impl UpdateMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            UpdateMode::Off => "off",
+            UpdateMode::Ask => "ask",
+            UpdateMode::Auto => "auto",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<UpdateMode> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "never" | "no" => UpdateMode::Off,
+            "ask" | "notify" => UpdateMode::Ask,
+            "auto" | "on" | "yes" => UpdateMode::Auto,
+            _ => return None,
+        })
+    }
 }
 
 impl Default for Config {
@@ -188,6 +259,8 @@ impl Default for Config {
             share_index_date_created: true,
             share_rescan_minutes: 60,
             remotes: Vec::new(),
+            peer: PeerConfig::default(),
+            update: UpdateMode::default(),
         }
     }
 }

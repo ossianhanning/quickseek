@@ -381,6 +381,11 @@ pub struct Index {
     pub journal_id: u64,
     pub next_usn: i64,
     pub volume_serial: u32,
+    /// Records changed since this was last taken, kept only while someone
+    /// follows the index ([`crate::peer`], serving it to another PC). `None`
+    /// while nobody does, and after changes too broad to list (exclude rules
+    /// applied, a rebuilt index): the follower then compares everything.
+    pub touched: Option<std::collections::HashSet<u32>>,
     pub(crate) child_count_cache: Mutex<Option<(u64, Arc<Vec<u32>>)>>,
 }
 
@@ -1651,6 +1656,7 @@ impl Index {
     pub fn apply_rules(&mut self, rules: Rules) {
         self.rules = rules;
         self.rules_stale = false;
+        self.touched = None;
         let n = self.entries.len();
         for e in &mut self.entries {
             e.flags &= !(F_EXCLUDED | F_INCLUDE_ANCESTOR);
@@ -1940,7 +1946,16 @@ impl Index {
         }
         self.apply_rules_to_new(idx);
         self.generation += 1;
+        self.touch(record);
         idx
+    }
+
+    /// Notes a changed record for whoever follows the index ([`Index::touched`]).
+    #[inline]
+    pub(crate) fn touch(&mut self, record: u32) {
+        if let Some(t) = &mut self.touched {
+            t.insert(record);
+        }
     }
 
     pub fn seq(&self, i: u32) -> u16 {
@@ -1951,6 +1966,9 @@ impl Index {
         let e = self.entries[i as usize];
         if e.is_deleted() {
             return;
+        }
+        if self.touched.is_some() {
+            self.touch(self.record(i));
         }
         if i >= self.rec_sorted {
             // Unlink from the record's chain of late links.
@@ -2056,6 +2074,9 @@ impl Index {
             self.apply_rules_to_new(i);
         }
         self.generation += 1;
+        if self.touched.is_some() {
+            self.touch(self.record(i));
+        }
     }
 
     pub fn set_file_info(&mut self, record: u32, size: u64, modified: i64, created: i64) {
@@ -2079,6 +2100,7 @@ impl Index {
             }
         }
         self.generation += 1;
+        self.touch(record);
     }
 
     /// Drops deleted entries and unreferenced arena bytes, renumbering entries.

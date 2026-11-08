@@ -205,6 +205,18 @@ impl Share {
         Ok(())
     }
 
+    /// Changes the tree (and state) under the lock with `f`, then sends the
+    /// ops it produced to the PCs: for a share kept current by something
+    /// other than this crate's watchers (a Windows PC serving its own index).
+    pub fn edit<R>(&self, f: impl FnOnce(&mut State, &mut Vec<Op>) -> R) -> R {
+        let mut st = self.state.lock().unwrap();
+        let mut ops = Vec::new();
+        let r = f(&mut st, &mut ops);
+        self.commit(&mut st, ops);
+        self.changed.notify_all();
+        r
+    }
+
     fn commit(&self, st: &mut State, ops: Vec<Op>) {
         if ops.is_empty() {
             return;
