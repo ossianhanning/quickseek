@@ -156,8 +156,25 @@ fn file_url(version: &str, name: &str) -> String {
 /// The newest release's manifest, verified: (manifest bytes, signature, parsed).
 pub fn fetch_latest() -> Result<(Vec<u8>, Vec<u8>, Manifest), String> {
     let raw = get(&manifest_url(MANIFEST), MAX_MANIFEST)?;
-    let sig = get(&manifest_url(SIGNATURE), 1024)?;
+    // The signature from that release's own folder: GitHub's `latest/download`
+    // answers 504 for `.sig` files. The version read here only picks the
+    // folder; nothing in the manifest counts until the signature verifies.
+    #[derive(Deserialize)]
+    struct Unverified {
+        version: String,
+    }
+    let version = serde_json::from_slice::<Unverified>(&raw)
+        .map_err(|e| format!("the update manifest: {e}"))?
+        .version;
+    if parse_version(&version).is_none() {
+        return Err(format!("the update manifest's version {version:?}"));
+    }
+    let sig = get(&file_url(&version, SIGNATURE), 1024)
+        .or_else(|_| get(&manifest_url(SIGNATURE), 1024))?;
     let m = verify(&raw, &sig)?;
+    if m.version != version {
+        return Err("the update manifest changed while it was read".into());
+    }
     Ok((raw, sig, m))
 }
 
@@ -473,6 +490,16 @@ mod tests {
         assert!(!newer("19.9.0", "19.9.0"));
         assert!(!newer("19.9", "1.0.0"));
         assert!(!newer("garbage", "1.0.0"));
+    }
+
+    /// Over the internet: the newest release's manifest, verified with the
+    /// built-in key.
+    #[test]
+    #[ignore = "network"]
+    fn the_latest_release_verifies() {
+        let (_, _, m) = fetch_latest().unwrap();
+        assert!(parse_version(&m.version).is_some());
+        assert!(m.find("quickseek-setup-", "-x64.exe").is_some());
     }
 
     /// Over the internet: a release file through GitHub's redirect to its CDN.
